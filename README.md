@@ -1,5 +1,7 @@
 # 📄 AI Invoice Extractor & GSTR-2B Reconciler
 
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/Yugshri/invoiceextractor&env=NEXT_PUBLIC_API_URL)
+
 A full-stack AI-powered application designed to automate the extraction of data from PDF invoices and seamlessly reconcile them against GSTR-2B JSON data downloaded from the GST portal.
 
 ## 🌟 Features
