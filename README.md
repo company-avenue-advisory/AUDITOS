@@ -10,6 +10,14 @@ An enterprise-grade, highly-accurate AI pipeline designed to extract, mathematic
 - **Mathematical Tax Apportionment:** Automatically distributes overall invoice taxes (IGST, CGST, SGST) across distinct line items based on their individual net taxable values.
 - **Automated Balancing:** If the AI misses a small item (like a late fee at the bottom of the page), the Python backend detects the discrepancy between the extracted lines and the "Final Total", automatically injecting an `Unallocated / Missing Lines` row so the final ledger balances perfectly to the penny.
 
+## Tech Stack & Languages
+
+- **Python 3.10+**: Core backend logic, mathematical math balancers, and OCR data pipelines.
+- **TypeScript & React / Next.js**: Frontend UI, document utilities, and tax audit dashboards.
+- **Pandas & OpenPyXL**: DataFrame manipulation and `.xlsx` Excel report generation.
+- **PyMuPDF (`fitz`)**: Lightning-fast text extraction from unstructured PDF invoices.
+- **LiteLLM / Pydantic**: Structured schema enforcement and universal routing to LLMs like Gemini and GPT-4o.
+
 ## System Architecture
 
 1. **OCR & LLM Extraction (`invoice_processor.py`):** Uses PyMuPDF (`fitz`) to extract raw text, which is parsed by an LLM via OpenRouter (`litellm`). The AI enforces strict Pydantic schemas and strict "CA Guardrails" in the prompt.
