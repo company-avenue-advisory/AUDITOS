@@ -14,6 +14,10 @@ import sys
 import os
 from pathlib import Path
 
+# Reconfigure stdout to handle unicode/emojis properly on Windows
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8')
+
 # ── Paths ─────────────────────────────────────────────────────────────────────
 ROOT = Path(__file__).parent
 BACKEND_DEPLOY = ROOT / "backend" / "modal_deploy.py"
@@ -25,11 +29,16 @@ def run_deploy():
     print("=" * 60)
 
     try:
+        env = os.environ.copy()
+        env["PYTHONIOENCODING"] = "utf-8"
+        env["PYTHONUTF8"] = "1"
         result = subprocess.run(
             [sys.executable, "-m", "modal", "deploy", str(BACKEND_DEPLOY)],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             cwd=str(ROOT),
+            env=env,
         )
         output = result.stdout + result.stderr
         print(output)

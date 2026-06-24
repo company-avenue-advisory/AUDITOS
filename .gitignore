@@ -58,3 +58,8 @@ Thumbs.db
 # Sensitive Data
 invoices/
 *.pdf
+
+# Extra Data Dirs
+salesinvoices/
+purchaseinvoices/
+debug_extraction.py

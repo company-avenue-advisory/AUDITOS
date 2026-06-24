@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
+import Sidebar from "../components/Sidebar";
 
 const inter = Inter({
   subsets: ["latin"],
@@ -10,8 +11,9 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "Invoice AI — Extractor & Auditor",
-  description: "Convert multi-page merged PDF invoices into audited, validated Excel files using AI.",
+  title: "Audit OS — Invoice Compliance Platform",
+  description:
+    "Deterministic invoice extraction, GST validation, and GSTR-2B reconciliation. AI as extraction utility, compliance via code.",
 };
 
 export default function RootLayout({
@@ -20,7 +22,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className={`${inter.variable} h-full antialiased`}>
+    <html lang="en" className={`${inter.variable} h-full antialiased`} suppressHydrationWarning>
       <head>
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
@@ -28,8 +30,35 @@ export default function RootLayout({
           href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap"
           rel="stylesheet"
         />
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+              try {
+                let theme = localStorage.getItem('theme');
+                if (!theme) {
+                  theme = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+                }
+                document.documentElement.setAttribute('data-theme', theme);
+              } catch (e) {}
+            `,
+          }}
+        />
       </head>
-      <body className="min-h-full flex flex-col">{children}</body>
+      <body className="min-h-full flex">
+        <Sidebar />
+        <div
+          id="main-content-area"
+          style={{
+            marginLeft: 240,
+            flex: 1,
+            minHeight: "100vh",
+            display: "flex",
+            flexDirection: "column",
+          }}
+        >
+          {children}
+        </div>
+      </body>
     </html>
   );
 }

@@ -46,7 +46,9 @@ app = modal.App("ai-invoice-extractor")
 # allow_concurrent_inputs removed in v1.x — use @modal.concurrent() decorator.
 @app.function(
     image=image,
-    secrets=[modal.Secret.from_name("openrouter-secrets")],
+    secrets=[
+        modal.Secret.from_name("openrouter-secrets"),
+    ],
     timeout=600,   # 10-min timeout for large multi-page PDFs
     cpu=2.0,       # allocate 2 vCPUs for text-heavy extraction
 )

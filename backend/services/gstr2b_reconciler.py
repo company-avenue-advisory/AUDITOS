@@ -1,12 +1,17 @@
 """
-gstr2b_reconciler.py
-====================
-Core GSTR-2B reconciliation engine.
+gstr2b_reconciler.py — GSTR-2B Reconciliation Engine
+=====================================================
+Stateless, deterministic matching engine.
 
 Parses the GSTR-2B JSON downloaded from the GST portal and matches it
 against invoice line items extracted from PDFs.
 
 Match key: normalize(GSTIN) + normalize(Invoice Number)
+
+Enhanced features (v2):
+  - Strips ALL punctuation and whitespace before key comparison
+  - Aggregates multi-item invoice lines by (inum, ctin) before matching
+  - ₹2 rounding tolerance for amount comparison
 
 Statuses:
   matched        — GSTIN + InvNo match, amounts within ₹2 tolerance
@@ -22,18 +27,23 @@ from typing import Any
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+def _strip_all(s: str) -> str:
+    """Remove ALL non-alphanumeric characters (spaces, punctuation, dashes, slashes)."""
+    return re.sub(r"[^A-Z0-9]", "", str(s).strip().upper())
+
+
 def normalize_inv(s: str) -> str:
-    """Normalize invoice number for fuzzy matching: uppercase, strip spaces/dashes/slashes."""
+    """Normalize invoice number: uppercase, strip ALL non-alphanumeric chars."""
     if not s:
         return ""
-    return re.sub(r"[\s\-/\\]", "", str(s).strip().upper())
+    return _strip_all(s)
 
 
 def normalize_gstin(s: str) -> str:
-    """Normalize GSTIN: uppercase, strip spaces."""
+    """Normalize GSTIN: uppercase, strip spaces and punctuation."""
     if not s:
         return ""
-    return str(s).strip().upper().replace(" ", "")
+    return _strip_all(s)
 
 
 def safe_float(v: Any, default: float = 0.0) -> float:
@@ -132,6 +142,52 @@ def _dig(d: dict, *keys):
     return cur
 
 
+# ── Aggregation Layer (v2) ────────────────────────────────────────────────────
+
+def _aggregate_books_by_invoice(books_items: list[dict]) -> list[dict]:
+    """
+    Aggregate multi-line-item invoices into single invoice-level rows
+    grouped by (normalized GSTIN, normalized Invoice Number).
+
+    If a single invoice has 3 line items (e.g. Rentals, Electricity, Maintenance),
+    this sums their taxable + tax amounts into one row for matching against the
+    single 2B invoice-level record.
+
+    The first occurrence's metadata (party name, date, particulars) is preserved.
+    """
+    groups: dict[str, dict] = {}
+
+    for item in books_items:
+        gstin   = normalize_gstin(item.get("gst_no") or "")
+        inv_no  = normalize_inv(item.get("supplier_inv") or "")
+        norm_key = f"{gstin}||{inv_no}"
+
+        if norm_key not in groups:
+            # First occurrence — clone metadata
+            groups[norm_key] = {
+                **item,
+                "_agg_amount":       safe_float(item.get("amount")),
+                "_agg_sgst":         safe_float(item.get("sgst")),
+                "_agg_cgst":         safe_float(item.get("cgst")),
+                "_agg_igst":         safe_float(item.get("igst")),
+                "_agg_total_amount": safe_float(item.get("total_amount")),
+                "_agg_count":        1,
+                "_norm_key":         norm_key,
+                "_original_items":   [item],
+            }
+        else:
+            grp = groups[norm_key]
+            grp["_agg_amount"]       += safe_float(item.get("amount"))
+            grp["_agg_sgst"]         += safe_float(item.get("sgst"))
+            grp["_agg_cgst"]         += safe_float(item.get("cgst"))
+            grp["_agg_igst"]         += safe_float(item.get("igst"))
+            grp["_agg_total_amount"] += safe_float(item.get("total_amount"))
+            grp["_agg_count"]        += 1
+            grp["_original_items"].append(item)
+
+    return list(groups.values())
+
+
 # ── Reconciliation Engine ─────────────────────────────────────────────────────
 
 AMOUNT_TOLERANCE = 2.0   # ₹2 rounding tolerance
@@ -139,6 +195,12 @@ AMOUNT_TOLERANCE = 2.0   # ₹2 rounding tolerance
 def reconcile(books_items: list[dict], gstr2b_records: list[dict]) -> dict:
     """
     Match books_items (extracted from PDFs) against gstr2b_records.
+
+    Enhanced v2 flow:
+      1. Aggregate books items by (GSTIN, Invoice No) — multi-line items become one row.
+      2. Build a lookup from 2B records by the same normalized key.
+      3. Match aggregated books row against 2B invoice.
+      4. Return annotated rows (per-original-item, not aggregated) + extra 2B rows.
 
     Args:
         books_items:    List of invoice dicts from the PDF extraction
@@ -152,7 +214,10 @@ def reconcile(books_items: list[dict], gstr2b_records: list[dict]) -> dict:
             "summary": {...},   # aggregate counts + amounts
         }
     """
-    # Build lookup: norm_key → 2B record  (keep first if duplicates)
+    # Step 1: Aggregate books items by invoice
+    aggregated = _aggregate_books_by_invoice(books_items)
+
+    # Step 2: Build lookup from 2B: norm_key → 2B record (keep first if duplicates)
     lookup_2b: dict[str, dict] = {}
     for rec in gstr2b_records:
         k = rec["_norm_key"]
@@ -162,53 +227,53 @@ def reconcile(books_items: list[dict], gstr2b_records: list[dict]) -> dict:
     used_2b_keys: set[str] = set()
     annotated_rows = []
 
-    for item in books_items:
-        gstin  = normalize_gstin(item.get("gst_no") or "")
-        inv_no = normalize_inv(item.get("supplier_inv") or "")
-        norm_key = f"{gstin}||{inv_no}"
-
-        books_total = safe_float(item.get("total_amount"))
-        books_taxable = safe_float(item.get("amount"))
+    # Step 3: Match aggregated books vs 2B
+    for agg in aggregated:
+        norm_key = agg["_norm_key"]
+        agg_total = round(agg["_agg_total_amount"], 2)
 
         if norm_key in lookup_2b:
             used_2b_keys.add(norm_key)
             rec = lookup_2b[norm_key]
-            diff = abs(books_total - rec["total_val"])
+            diff = abs(agg_total - rec["total_val"])
 
             if diff <= AMOUNT_TOLERANCE:
                 status = "matched"
             else:
                 status = "mismatch"
 
-            row = {**item,
-                   "recon_status":    status,
-                   "2b_inv_no":       rec["inv_no"],
-                   "2b_gstin":        rec["gstin"],
-                   "2b_taxable_val":  rec["taxable_val"],
-                   "2b_igst":         rec["igst"],
-                   "2b_cgst":         rec["cgst"],
-                   "2b_sgst":         rec["sgst"],
-                   "2b_total_val":    rec["total_val"],
-                   "diff_amount":     round(books_total - rec["total_val"], 2),
-                   }
+            # Annotate every original item with the match result
+            for item in agg["_original_items"]:
+                annotated_rows.append({
+                    **item,
+                    "recon_status":    status,
+                    "2b_inv_no":       rec["inv_no"],
+                    "2b_gstin":        rec["gstin"],
+                    "2b_taxable_val":  rec["taxable_val"],
+                    "2b_igst":         rec["igst"],
+                    "2b_cgst":         rec["cgst"],
+                    "2b_sgst":         rec["sgst"],
+                    "2b_total_val":    rec["total_val"],
+                    "diff_amount":     round(agg_total - rec["total_val"], 2),
+                    "_agg_books_total": agg_total,
+                })
         else:
             # In books but not in 2B
-            status = "missing_in_2b"
-            row = {**item,
-                   "recon_status":    status,
-                   "2b_inv_no":       None,
-                   "2b_gstin":        None,
-                   "2b_taxable_val":  None,
-                   "2b_igst":         None,
-                   "2b_cgst":         None,
-                   "2b_sgst":         None,
-                   "2b_total_val":    None,
-                   "diff_amount":     None,
-                   }
+            for item in agg["_original_items"]:
+                annotated_rows.append({
+                    **item,
+                    "recon_status":    "missing_in_2b",
+                    "2b_inv_no":       None,
+                    "2b_gstin":        None,
+                    "2b_taxable_val":  None,
+                    "2b_igst":         None,
+                    "2b_cgst":         None,
+                    "2b_sgst":         None,
+                    "2b_total_val":    None,
+                    "diff_amount":     None,
+                })
 
-        annotated_rows.append(row)
-
-    # 2B records not found in books
+    # Step 4: 2B records not found in books
     extra_rows = []
     for rec in gstr2b_records:
         if rec["_norm_key"] not in used_2b_keys:

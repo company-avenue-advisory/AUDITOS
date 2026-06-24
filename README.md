@@ -1,88 +1,38 @@
-# 📄 AI Invoice Extractor & GSTR-2B Reconciler
+# AntiGravity CA-Level Invoice Auditor
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/Yugshri/invoiceextractor&env=NEXT_PUBLIC_API_URL)
+An enterprise-grade, highly-accurate AI pipeline designed to extract, mathematically balance, and audit complex tax invoices (Sales & Purchase) with the rigor of a Chartered Accountant.
 
-**🌟 Live Demo:** [https://frontend-alpha-two-81.vercel.app](https://frontend-alpha-two-81.vercel.app)
+## Key Features
 
+- **Granular Line-Item Extraction:** Uses advanced LLMs (`gemini-2.5-flash` / `gpt-4o`) to intelligently parse highly unstructured and complex PDF tables, ignoring structural headers and capturing actual billed items perfectly.
+- **Gross vs. Net Auto-Correction:** Dynamically detects LLM hallucinations where Gross amounts are mistakenly extracted instead of Net amounts, automatically netting them against discounts to mathematically balance the invoice.
+- **Anti-Double Counting Guardrail:** Prevents duplicate line items by detecting when the AI erroneously extracts both the granular line items AND the "Sub Total" row.
+- **Mathematical Tax Apportionment:** Automatically distributes overall invoice taxes (IGST, CGST, SGST) across distinct line items based on their individual net taxable values.
+- **Automated Balancing:** If the AI misses a small item (like a late fee at the bottom of the page), the Python backend detects the discrepancy between the extracted lines and the "Final Total", automatically injecting an `Unallocated / Missing Lines` row so the final ledger balances perfectly to the penny.
 
-A full-stack AI-powered application designed to automate the extraction of data from PDF invoices and seamlessly reconcile them against GSTR-2B JSON data downloaded from the GST portal.
+## System Architecture
 
-## 🌟 Features
+1. **OCR & LLM Extraction (`invoice_processor.py`):** Uses PyMuPDF (`fitz`) to extract raw text, which is parsed by an LLM via OpenRouter (`litellm`). The AI enforces strict Pydantic schemas and strict "CA Guardrails" in the prompt.
+2. **Python Math Engine:** Before saving the data, the backend mathematically verifies that the sum of the line items equals the invoice's Final Total. Any discrepancies are automatically audited and scaled/corrected.
+3. **Data Aggregation (`run_sales_extraction.py`):** Loops over incoming invoices, runs the auditing pipeline, deduplicates entries, and outputs a perfectly balanced, CA-ready `Sales_Output.xlsx` (or `Purchase_Output.xlsx`).
 
-- **🧠 Intelligent Invoice Extraction**: Uses advanced LLMs to extract structured line-items from complex, multi-page PDF invoices.
-- **⚡ Smart Model Routing**:
-  - **OpenRouter (Cloud)**: Utilizes Llama 3.3 70B or Google's Gemini 2.5 Flash for blazing-fast extraction on standard documents.
-  - **Local Ollama (On-Device)**: Fully private extraction using local models, perfect for large batch jobs or highly confidential documents.
-- **📊 GSTR-2B Reconciliation**: Upload your GSTR-2B JSON file and reconcile it directly against extracted invoice data.
-- **✅ Math & Validation Checks**: Built-in validation checks flag GSTIN length errors, missing mandatory fields, and mismatched totals.
-- **📥 Excel Exports**:
-  - Export extracted invoice data to cleanly formatted Excel files.
-  - Generate comprehensive, color-coded reconciliation reports (Matched, Mismatched, Missing in 2B, Not Booked).
+## Setup
 
-## 🛠️ Technology Stack
+1. Clone the repository.
+2. Create a `.env` file based on `.env.example` and add your OpenRouter API key:
+   ```env
+   OPENROUTER_API_KEY="sk-or-v1-..."
+   ```
+3. Install dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
+4. Place PDFs in the `salesinvoices/` or `purchaseinvoices/` directories.
+5. Run the pipeline:
+   ```bash
+   python run_sales_extraction.py
+   ```
 
-- **Backend**: Python 3, FastAPI, Pandas, OpenPyXL, Uvicorn, Pydantic
-- **Frontend**: Next.js 16, React 19, Tailwind CSS v4, Lucide React
-- **AI/LLM**: OpenRouter API, Local Ollama
+## Scalability Roadmap
 
----
-
-## 🚀 Getting Started
-
-Follow these steps to run the project locally.
-
-### 1. Clone the repository
-```bash
-git clone https://github.com/Yugshri/invoiceextractor.git
-cd invoiceextractor
-```
-
-### 2. Backend Setup
-Navigate to the `backend` directory and set up the Python environment:
-
-```bash
-cd backend
-python -m venv venv
-source venv/bin/activate  # On Windows use `venv\Scripts\activate`
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Start the FastAPI server
-python main.py
-```
-The backend will run on `http://localhost:8000`.
-
-*Note: Ensure you have your `OPENROUTER_API_KEY` set in a `.env` file if you plan to use cloud models. If using Ollama, ensure the Ollama service is running locally.*
-
-### 3. Frontend Setup
-Open a new terminal, navigate to the `frontend` directory, and start the development server:
-
-```bash
-cd frontend
-
-# Install dependencies
-npm install
-
-# Start the Next.js dev server
-npm run dev
-```
-The frontend will run on `http://localhost:3000`.
-
----
-
-## 📖 How It Works
-
-1. **Upload Invoices**: Drag and drop your PDF invoices into the web interface.
-2. **Select Model**: Choose between OpenRouter Cloud models (Llama/Gemini) or Local Ollama.
-3. **Review Data**: The system processes the PDFs and displays the extracted line items, automatically flagging any math discrepancies or missing fields.
-4. **Reconcile (Optional)**: Upload your GSTR-2B JSON file. The system will match your books against the portal data.
-5. **Export**: Download the final data or reconciliation report as an Excel spreadsheet.
-
----
-
-## 🤝 Contributing
-Contributions, issues, and feature requests are welcome!
-
-## 📝 License
-This project is licensed under the MIT License.
+For high-volume production deployments (e.g., 10,000+ invoices/month), the sequential loop should be upgraded to asynchronous processing queues (like SQS/Celery) with database storage to handle high-throughput concurrency, fault tolerance, and API exponential backoff.

@@ -25,6 +25,35 @@
   --radius-md:     16px;
   --radius-lg:     22px;
   --radius-xl:     28px;
+  --scrollbar-thumb: rgba(255,255,255,0.12);
+  --scrollbar-thumb-hover: rgba(255,255,255,0.22);
+  --sidebar-hover: rgba(255,255,255,0.04);
+}
+
+[data-theme="light"] {
+  --bg-base:       #fafafa;
+  --bg-surface:    rgba(0,0,0,0.02);
+  --bg-card:       rgba(255,255,255,0.8);
+  --bg-card-hover: #ffffff;
+  --border:        rgba(0,0,0,0.08);
+  --border-strong: rgba(0,0,0,0.16);
+  --text-primary:  #09090b;
+  --text-secondary:#52525b;
+  --text-muted:    #a1a1aa;
+  --accent:        #4f46e5;
+  --accent-glow:   rgba(79,70,229,0.2);
+  --accent-soft:   rgba(79,70,229,0.1);
+  --amber:         #d97706;
+  --amber-soft:    rgba(217,119,6,0.1);
+  --green:         #16a34a;
+  --green-soft:    rgba(22,163,74,0.1);
+  --red:           #dc2626;
+  --red-soft:      rgba(220,38,38,0.1);
+  --blue:          #2563eb;
+  --blue-soft:     rgba(37,99,235,0.1);
+  --scrollbar-thumb: rgba(0,0,0,0.12);
+  --scrollbar-thumb-hover: rgba(0,0,0,0.22);
+  --sidebar-hover: rgba(0,0,0,0.04);
 }
 
 *, *::before, *::after { box-sizing: border-box; }
@@ -146,5 +175,21 @@ body {
 /* Scrollbar */
 ::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 99px; }
-::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.22); }
+::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 99px; }
+::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-thumb-hover); }
+
+/* ─── Sidebar link hover ─── */
+#global-sidebar a:hover {
+  background: var(--sidebar-hover) !important;
+}
+
+/* ─── Error cell highlight ─── */
+.cell-input[style*="border-color: var(--red)"] {
+  background: var(--red-soft);
+}
+
+/* ─── Metric card hover lift ─── */
+.glass {
+  transition: border-color 0.15s ease, transform 0.15s ease;
+}
+

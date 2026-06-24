@@ -3,7 +3,7 @@ import argparse
 import fitz  # PyMuPDF
 import pandas as pd
 from pydantic import BaseModel, Field, field_validator
-from typing import List, Optional
+from typing import List, Optional, Literal
 from dotenv import load_dotenv
 import re
 import tempfile
@@ -12,69 +12,74 @@ import base64
 
 load_dotenv()
 
-class LineItem(BaseModel):
-    supplier_inv: Optional[str] = Field(default=None, description="SUPPLIER INV: The exact invoice number as printed on the invoice. Must be the full alphanumeric string.")
-    invoice_date: Optional[str] = Field(default=None, description="INVOICE DATE: In DD-MMM-YYYY format (e.g. 12-Jun-2026). Extract the exact date printed on the invoice.")
-    gst_no: Optional[str] = Field(default=None, description="GST NO: The full 15-character Indian GSTIN of the supplier (e.g. 06AAACB2894P1Z5). Extract all 15 characters.")
-    party_ac_name: Optional[str] = Field(default=None, description="PARTY A/C NAME: The FULL LEGAL registered company name of the supplier exactly as it appears on the invoice header. E.g. 'Bharti Airtel Limited', 'One Stack Solution Private Limited'. Never abbreviate or truncate.")
-    place_of_supply: Optional[str] = Field(default=None, description="PLACE OF SUPPLY: State name (e.g. Haryana, Maharashtra)")
-    particulars: Optional[str] = Field(default=None, description="PARTICULARS: The line item description or service name")
-    amount: Optional[float] = Field(default=0.0, description="AMOUNT: The base taxable amount before taxes (NOT the total)")
-    sgst: Optional[float] = Field(default=0.0, description="SGST amount")
-    cgst: Optional[float] = Field(default=0.0, description="CGST amount")
-    igst: Optional[float] = Field(default=0.0, description="IGST amount")
-    total_amount: Optional[float] = Field(default=0.0, description="TOTAL AMOUNT: Final payable amount including all taxes")
-    narration: Optional[str] = Field(default=None, description="Narration or payment terms noted on invoice")
-    hsn: Optional[str] = Field(default=None, description="HSN: The HSN/SAC code (4, 6, or 8 digit numeric code)")
+class SuvitSalesItem(BaseModel):
+    voucher_date: Optional[str] = Field(None, description="Voucher Date (DD-MMM-YYYY)")
+    voucher_type: str = Field("Sales", description="Voucher Type")
+    invoice_no: Optional[str] = Field(None, description="Invoice No")
+    party_ledger_name: Optional[str] = Field(None, description="Party Ledger Name")
+    party_gstin: Optional[str] = Field(None, description="Party GSTIN")
+    place_of_supply: Optional[str] = Field(None, description="Place of Supply")
+    particulars: Optional[str] = Field(None, description="Particulars / Item Description")
+    hsn: Optional[str] = Field(None, description="HSN/SAC Code")
+    qty: Optional[float] = Field(None, description="Qty")
+    rate: Optional[float] = Field(None, description="Rate")
+    taxable_value: float = Field(0.0, description="Taxable Value")
+    discount: float = Field(0.0, description="Discount amount")
+    advances: float = Field(0.0, description="Advances amount")
+    cgst_amount: float = Field(0.0, description="CGST Amount")
+    sgst_amount: float = Field(0.0, description="SGST Amount")
+    igst_amount: float = Field(0.0, description="IGST Amount")
+    total_invoice_value: float = Field(0.0, description="Total Invoice Value")
+    gstr1_category: Optional[str] = Field(None, description="GSTR-1 Category")
+    narration: Optional[str] = Field(None, description="Narration")
 
-    @field_validator('gst_no')
-    def validate_gst(cls, v):
-        if not v:
-            return v
-        v = v.strip()
-        # Indian GSTIN must be exactly 15 characters
-        if len(v) != 15:
-            if len(v) < 10:
-                return None
-        # Reject OneStack's own GSTIN (since we only want supplier GSTIN)
-        onestack_gst = ['27aadco0061h1zq', '27aadc0061h1zq']
-        if v.lower().strip() in onestack_gst:
-            return None
+    @field_validator('qty', 'rate', 'taxable_value', 'discount', 'advances', 'cgst_amount', 'sgst_amount', 'igst_amount', 'total_invoice_value', mode='before')
+    @classmethod
+    def remove_commas(cls, v):
+        if isinstance(v, str):
+            v = v.replace(',', '').strip()
+            if not v:
+                return 0.0
         return v
 
-    @field_validator('supplier_inv')
-    def validate_inv(cls, v):
-        if not v:
-            return v
-        v = str(v).strip()
-        # Reject standalone 1-3 digit numbers (likely page numbers or serial numbers, not invoice IDs)
-        if v.isdigit() and len(v) <= 3:
-            return None
+class SuvitPurchaseItem(BaseModel):
+    voucher_date: Optional[str] = Field(None, description="Voucher Date (DD-MMM-YYYY)")
+    voucher_type: str = Field("Purchase", description="Voucher Type")
+    invoice_no: Optional[str] = Field(None, description="Invoice No")
+    party_ledger_name: Optional[str] = Field(None, description="Party Ledger Name")
+    party_gstin: Optional[str] = Field(None, description="Party GSTIN")
+    place_of_supply: Optional[str] = Field(None, description="Place of Supply")
+    particulars: Optional[str] = Field(None, description="Particulars / Item Description")
+    hsn: Optional[str] = Field(None, description="HSN/SAC Code")
+    qty: Optional[float] = Field(None, description="Qty")
+    rate: Optional[float] = Field(None, description="Rate")
+    taxable_value: float = Field(0.0, description="Taxable Value")
+    cgst_amount: float = Field(0.0, description="CGST Amount")
+    sgst_amount: float = Field(0.0, description="SGST Amount")
+    igst_amount: float = Field(0.0, description="IGST Amount")
+    total_invoice_value: float = Field(0.0, description="Total Invoice Value")
+    itc_category: Optional[str] = Field(None, description="ITC Category")
+    narration: Optional[str] = Field(None, description="Narration")
+
+    @field_validator('qty', 'rate', 'taxable_value', 'cgst_amount', 'sgst_amount', 'igst_amount', 'total_invoice_value', mode='before')
+    @classmethod
+    def remove_commas(cls, v):
+        if isinstance(v, str):
+            v = v.replace(',', '').strip()
+            if not v:
+                return 0.0
         return v
 
-    @field_validator('party_ac_name')
-    def validate_party_name(cls, v):
-        if not v:
-            return v
-        v = v.strip()
-        # Reject generic/garbage names
-        garbage_names = ['tax invoice', 'invoice', 'page', 'bill', 'receipt', 'gst']
-        if v.lower() in garbage_names:
-            return None
-        # OneStack is OUR company (the buyer), never the supplier
-        onestack_variations = ['onestack', 'one stack', 'onestack solution', 'one stack solution',
-                               'onestack solution private limited', 'one stack solution private limited',
-                               'one stack solution pvt ltd', 'onestack solution pvt ltd',
-                               'one stack solution pvt. ltd.', 'onestack solution pvt. ltd.']
-        if v.lower().strip() in onestack_variations:
-            return None
-        return v
-
-class InvoiceData(BaseModel):
-    items: List[LineItem] = Field(default_factory=list, description="List of valid line items")
+class InvoiceExtractionResponse(BaseModel):
+    overall_taxable_value: float = Field(0.0, description="Overall Taxable Value of the entire invoice")
+    overall_cgst_amount: float = Field(0.0, description="Overall CGST Amount of the entire invoice")
+    overall_sgst_amount: float = Field(0.0, description="Overall SGST Amount of the entire invoice")
+    overall_igst_amount: float = Field(0.0, description="Overall IGST Amount of the entire invoice")
+    overall_total_invoice_value: float = Field(0.0, description="Overall Total Invoice Value incl taxes")
+    sales_items: List[SuvitSalesItem] = Field(default_factory=list, description="Extracted sales items")
+    purchase_items: List[SuvitPurchaseItem] = Field(default_factory=list, description="Extracted purchase items")
 
 def extract_text_from_pdf(pdf_path):
-    """Extract text content from all pages of the PDF using PyMuPDF (fitz)."""
     text = ""
     try:
         with fitz.open(pdf_path) as doc:
@@ -84,224 +89,164 @@ def extract_text_from_pdf(pdf_path):
         print(f"  Error extracting text from PDF {pdf_path}: {e}")
     return text
 
-def call_llm_for_text(pdf_text, model_name, client):
-    """Sends extracted text block to the LLM and returns the list of LineItem objects."""
-    schema_json = InvoiceData.model_json_schema()
-    
-    prompt = f"""
-    You are an expert Indian auditor and strict invoice data extractor.
-    
-    TASK: Extract each UNIQUE invoice's data (including Tax Invoices, Demand Notes, Debit Notes, Bills, and payment requests) from the text below into structured LineItems.
-    Return a single JSON object matching this JSON schema:
-    {schema_json}
-    
-    ===== CRITICAL CONTEXT =====
-    These invoices are received by "One Stack Solution Private Limited" (also known as "OneStack", "One Stack", "ONESTACK SOLUTION"). 
-    OneStack is the BUYER / RECIPIENT. They are NOT the supplier.
-    
-    PARTY A/C NAME must ALWAYS be the SUPPLIER / VENDOR who ISSUED the invoice TO OneStack.
-    - Look for the company name in the "From", "Billed By", "Seller", or the letterhead at the top.
-    - NEVER put "OneStack", "One Stack Solution", or any variation as PARTY A/C NAME.
-    - If you see "Billed To: One Stack Solution" — that confirms OneStack is the buyer. The OTHER company on the invoice is the supplier.
-    
-    ===== STRICT EXTRACTION RULES =====
-    
-    PARTY A/C NAME (CRITICAL):
-    - Extract the FULL LEGAL registered company name of the SUPPLIER/VENDOR.
-    - Examples: "Bharti Airtel Limited" (NOT "airtel"), "Awfis Space Solutions Private Limited" (NOT "Awfis").
-    - NEVER abbreviate or truncate the company name.
-    
-    SUPPLIER INV (CRITICAL):
-    - Extract the COMPLETE invoice number as printed. Include all prefixes, slashes, and suffixes.
-    - Examples: "MF270610", "BAA062705B001987", "1-4671642"
-    
-    GST NO (CRITICAL):
-    - Must be the FULL 15-character GSTIN of the SUPPLIER (not of OneStack).
-    - Format: 2-digit state code + 10-char PAN + 1 entity code + 1Z + 1 checksum
-    - Example: "06AAACB2894P1Z5" (exactly 15 chars)
-    
-    INVOICE DATE:
-    - Format as DD-MMM-YYYY (e.g., "10-Jun-2026", "07-May-2026")
-    
-    DEDUPLICATION (CRITICAL):
-    - If one invoice has a SUMMARY line (e.g., "Current Charges" or "Grand Total") AND also individual breakdown lines (e.g., "Rentals", "Usage"), extract ONLY the individual breakdown lines, NOT the summary.
-    - Do not extract the same monetary amount twice for the same invoice IF one of them is a summary or subtotal line. However, if there are multiple legitimate separate detailed line items that happen to have the same amount (e.g., two different professional services both costing 40,000), you MUST extract each of them as separate line items.
-    
-    ZERO-VALUE LINES:
-    - If a line item has Amount = 0 AND Total Amount = 0, SKIP it entirely.
-    
-    AMOUNTS (CRITICAL):
-    - AMOUNT = base taxable amount (before tax)
-    - TOTAL AMOUNT = Amount + SGST + CGST + IGST
-    - All monetary values (AMOUNT, SGST, CGST, IGST, TOTAL AMOUNT) in the JSON MUST be parsed as plain numbers (floats/integers). Never output mathematical formulas or expressions (like "10000.0 - 2342.25" or "1038.0 + 1863.64") as values. Resolve all formulas to a single number before outputting.
-    
-    HSN / SAC (CRITICAL):
-    - Extract the HSN/SAC code (typically a 4, 6, or 8 digit numeric code like 998311, 998319, 997212).
-    - If a single HSN or SAC code is printed globally on the invoice (e.g. under bank details, centre information, general terms, or invoice summary) and not next to each individual line item, you MUST populate that same HSN/SAC code for ALL line items extracted from that invoice. Do not leave it empty.
-    
-    PREVENT FIELD MIX-UPS (CRITICAL):
-    - If the text block contains text from multiple different invoices (e.g. different suppliers, different invoice numbers, or different dates), you MUST extract the correct `supplier_inv`, `invoice_date`, `gst_no`, and `party_ac_name` for each specific line item based on the invoice it belongs to.
-    - NEVER mix headers. Do not assign the invoice number, date, GST, or supplier name of one invoice to the line items of another invoice. Keep each line item's metadata strictly associated with its own parent invoice.
-    
-    ===== TEXT CONTENT OF PDF INVOICE =====
-    {pdf_text}
-    """
-    
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            print(f"  Analyzing text (attempt {attempt+1})...")
-            # Try structured outputs using beta client first
-            try:
-                response = client.beta.chat.completions.parse(
-                    model=model_name,
-                    messages=[
-                        {"role": "user", "content": prompt}
-                    ],
-                    response_format=InvoiceData,
-                    temperature=0.0
-                )
-                if response.choices[0].message.parsed:
-                    items = response.choices[0].message.parsed.items
-                    print(f"  Extracted {len(items)} line items using structured parse.")
-                    return items
-            except Exception as parse_err:
-                print(f"  Structured parsing failed or not supported ({parse_err}). Trying standard JSON mode...")
-            
-            # Fallback to standard chat completions with JSON mode
-            response = client.chat.completions.create(
-                model=model_name,
-                messages=[
-                    {"role": "user", "content": prompt}
-                ],
-                response_format={"type": "json_object"},
-                temperature=0.0
-            )
-            
-            content = response.choices[0].message.content
-            
-            # Clean up content using regex to pull out the main JSON block if LLM added formatting
-            content_cleaned = content.strip()
-            json_match = re.search(r'\{.*\}', content_cleaned, re.DOTALL)
-            if json_match:
-                content_cleaned = json_match.group(0)
-                
-            import json
-            data = InvoiceData(**json.loads(content_cleaned))
-            print(f"  Extracted {len(data.items)} line items using JSON mode.")
-            return data.items
-            
-        except Exception as e:
-            err_str = str(e)
-            print(f"  Error on attempt {attempt+1}: {e}")
-            if attempt == max_retries - 1:
-                # Raise the error on the final attempt to trigger fallback
-                raise e
-            if "429" in err_str or "503" in err_str:
-                sleep_time = 10 * (attempt + 1)
-                print(f"  Rate limit or temporary error. Waiting {sleep_time}s...")
-                time.sleep(sleep_time)
-            else:
-                time.sleep(2)
-
 def extract_page_text_with_ocr_fallback(page, client):
-    """Extracts text from a single PDF page. If the page is empty/scanned, uses Groq vision OCR fallback."""
     text = page.get_text()
     if len(text.strip()) < 50:
-        print(f"  Low/empty text detected on Page {page.number + 1} ({len(text.strip())} chars). Performing vision OCR fallback...")
         try:
             pix = page.get_pixmap()
             img_data = pix.tobytes("png")
             base64_image = base64.b64encode(img_data).decode('utf-8')
             
-            # Instantiate a dedicated OpenRouter client for OCR fallback
             from openai import OpenAI
             openrouter_api_key = os.getenv("OPENROUTER_API_KEY")
             if not openrouter_api_key:
-                raise ValueError("OPENROUTER_API_KEY is not set in .env — cannot perform OCR fallback.")
+                return text + "\n"
             openrouter_client = OpenAI(api_key=openrouter_api_key, base_url="https://openrouter.ai/api/v1")
             
-            # Use OpenRouter's vision model
             response = openrouter_client.chat.completions.create(
                 model="google/gemini-2.5-flash",
                 messages=[
                     {
                         "role": "user",
                         "content": [
-                            {
-                                "type": "text",
-                                "text": "Perform high-fidelity OCR on this invoice page. Extract ALL text, numbers, codes, and values. Pay close attention to tabular columns (such as Description, SAC/HSN Code, and Amount) and extract them completely. Do not omit any numbers, codes, or totals."
-                            },
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:image/png;base64,{base64_image}"
-                                }
-                            }
+                            {"type": "text", "text": "Perform high-fidelity OCR on this invoice page."},
+                            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64_image}"}}
                         ]
                     }
                 ],
                 temperature=0.0
             )
-            ocr_text = response.choices[0].message.content
-            print(f"  OCR successful for Page {page.number + 1} (extracted {len(ocr_text)} characters).")
-            return ocr_text + "\n"
-        except Exception as e:
-            print(f"  OCR fallback failed for Page {page.number + 1}: {e}")
+            return response.choices[0].message.content + "\n"
+        except Exception:
             return text + "\n"
     return text + "\n"
 
-def process_pdf_open_source(pdf_path, model_override=None):
-    """Process PDF by extracting text locally and sending it to an OpenAI-compatible model, handling large PDFs by chunking.
+def call_llm_for_text(pdf_text, model_name, client, invoice_type="both"):
+    schema_json = InvoiceExtractionResponse.model_json_schema()
     
-    Args:
-        pdf_path: Path to the PDF file.
-        model_override: Optional dict with keys 'provider' and 'model' to force a specific model.
-                        If None, auto-routing logic applies (<=5 pages → Groq, >5 → Ollama).
-    """
+    prompt = f"""
+Role: You are the core processing engine for "Audit OS," an advanced tax and compliance automation platform used by Chartered Accountants in India.
+
+Objective: Extract structured data from raw, messy PDF text streams and automatically route them into strict, compliant data schemas (Suvit/Tally Excel templates) based on the current Indian GST and Income Tax laws.
+
+Part 1: Operating Principles
+- Be Specific: Extract specifically requested fields mapped to statutory naming conventions.
+- Context is King: Assume amounts are in INR. Dates are DD-MMM-YYYY. GSTIN is a 15-character string.
+- Formatting: For ALL numeric amounts, output plain floats WITHOUT commas (e.g., 29784.58 instead of 29,784.58).
+- Handle Edge Cases Gracefully: Leave missing fields null/empty.
+- Follow the Routing Rules Absolutely: Accurately determine the document's category based on logic rules.
+- Narration Field: This is ONLY for genuine CA warnings (e.g. 'TDS 2% liable to be deducted') or actual invoice notes. DO NOT output internal logic rules (like 'No buyer_gstin...') here. Leave blank if no genuine note exists.
+
+Part 2: The Core Routing Engines
+You are currently operating in "{invoice_type}" mode.
+
+Engine A: Sales & GSTR-1 (Outward Supplies)
+Input: Raw text from a Sales Invoice issued by the user's client.
+1. Extraction Requirements: Invoice Date, Invoice Number, Buyer Name, Buyer GSTIN, Place of Supply, Line Items (Item description, HSN code, Quantity, Rate), Taxable Value, Discounts, Advances, Tax Amounts, Total Invoice Value. Also extract the Overall Invoice Totals (overall_taxable_value, overall_cgst_amount, etc.) exactly as stated at the bottom of the invoice.
+2. GSTR-1 Categorization Logic:
+- Table 4 (B2B): buyer_gstin is present and valid (15 chars).
+- Table 5 (B2CL): No buyer_gstin AND place_of_supply != seller_state AND total_invoice_value > 100000.
+- Table 7 (B2CS): No buyer_gstin AND (place_of_supply == seller_state OR total_invoice_value <= 100000).
+- Table 9B (CDNR): Document type is "Credit Note" or "Debit Note" AND buyer_gstin is present.
+- Table 14/15 (ECO): Buyer is an E-Commerce Operator liable under Sec 9(5) or Sec 52.
+3. Compliance Guardrails:
+- CRITICAL: You MUST extract EVERY distinct line item from the invoice exactly as it appears. Do NOT skip any items. Do NOT summarize or group items. 
+- CA GUARDRAILS for Amount: Do NOT accidentally extract HSN codes (e.g., 5540.00, 9971) or reference values as the 'taxable_value'! The taxable value is usually the last column. If an item has a discount, ensure 'taxable_value' is the NET amount (Gross - Discount).
+- CA GUARDRAILS for Description: For 'particulars', use the actual granular description (e.g. 'SMS Login', 'SMS Transactions', 'App Notifications', 'Late Fees'). Do NOT just use the generic section header (like 'D Transactional Messages') for all items.
+- The sum of ALL extracted line item `taxable_value` amounts MUST EXACTLY EQUAL the invoice's Final Taxable Value (e.g., Sub Total before taxes).
+- If per-item tax is not explicitly stated on the invoice, apportion the overall total invoice taxes (CGST, SGST, IGST) proportionally to each line item based on its taxable value. The sum of all line item taxes must exactly equal the total tax on the invoice.
+- Any rounding off amounts should be absorbed into the total. Extract discounts and advances per line item if available.
+
+Engine B: Purchase & GSTR-2B (Inward Supplies & ITC)
+Input: Raw text from a Purchase Invoice received by the user's client from a vendor.
+1. Extraction Requirements: Invoice Date, Invoice Number, Supplier Name, Supplier GSTIN, Place of Supply, Items/Description, HSN, Taxable Value, CGST, SGST, IGST, Total Value.
+2. ITC Routing Logic:
+- Eligible ITC: Standard business purchases with valid GST.
+- Blocked ITC (Sec 17(5)): Flag "Motor Vehicles", "Food & Beverages", "Club Memberships", "Life Insurance", "Personal Consumption". Route to Ineligible ITC.
+- RCM: Flag services like "GTA", "Legal Fees", "Sponsorship". Route to RCM tables.
+- Import of Goods/Services: Identify "Bill of Entry" or foreign currency.
+- Exempt/Nil Rated: Identify 0% tax rate items.
+3. Compliance Guardrails:
+- TDS Check (Sec 194C/J): Calculate if TDS should have been deducted (e.g., Professional fees > 30000). Flag if missing in Narration.
+
+Part 3: Execution Instruction
+If mode is "both", first auto-classify the document:
+- If titled "Tax Invoice" and client's GSTIN matches Supplier GSTIN -> Classify as Sales.
+- If bill/invoice from a vendor, and client's GSTIN matches Buyer GSTIN -> Classify as Purchase.
+(Note: Our client is usually OneStack / One Stack Solution Private Limited).
+
+Output the final result as a JSON object matching this schema:
+{schema_json}
+
+===== TEXT CONTENT OF PDF INVOICE =====
+{pdf_text}
+"""
+    
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            print(f"  Analyzing text (attempt {attempt+1})...")
+            try:
+                response = client.beta.chat.completions.parse(
+                    model=model_name,
+                    messages=[{"role": "user", "content": prompt}],
+                    response_format=InvoiceExtractionResponse,
+                    temperature=0.0
+                )
+                if response.choices[0].message.parsed:
+                    return response.choices[0].message.parsed
+            except Exception as parse_err:
+                print(f"  Structured parsing failed ({parse_err}). Trying JSON mode...")
+            
+            response = client.chat.completions.create(
+                model=model_name,
+                messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"},
+                temperature=0.0
+            )
+            
+            content = response.choices[0].message.content.strip()
+            json_match = re.search(r'\{.*\}', content, re.DOTALL)
+            if json_match:
+                content = json_match.group(0)
+                
+            import json
+            data = InvoiceExtractionResponse(**json.loads(content))
+            return data
+            
+        except Exception as e:
+            if attempt == max_retries - 1:
+                raise e
+            time.sleep(10 * (attempt + 1) if "429" in str(e) or "503" in str(e) else 2)
+
+def process_pdf(pdf_path, model_override=None, invoice_type="both"):
     try:
         doc = fitz.open(pdf_path)
         total_pages = len(doc)
     except Exception as e:
         print(f"  Error opening PDF {pdf_path}: {e}")
-        return []
+        return InvoiceExtractionResponse()
         
     if total_pages == 0:
-        print(f"  Warning: PDF file {pdf_path} has 0 pages.")
-        return []
+        return InvoiceExtractionResponse()
 
     is_cloud_primary = False
-
-    # --- Model resolution ---
     if model_override and model_override.get("provider") == "openrouter":
-        # User explicitly chose an OpenRouter model
         model_name = model_override["model"]
         base_url = "https://openrouter.ai/api/v1"
-        api_key = os.getenv("OPENROUTER_API_KEY")
-        if not api_key:
-            raise ValueError("OPENROUTER_API_KEY is not set in .env")
+        api_key = os.getenv("OPENROUTER_API_KEY", "dummy")
         is_cloud_primary = True
-        print(f"  [Manual Override] Using OpenRouter model: {model_name}")
     elif model_override and model_override.get("provider") == "ollama":
-        # User explicitly chose Ollama
         model_name = model_override.get("model") or os.getenv("OLLAMA_MODEL_NAME", "qwen2.5:7b")
         base_url = os.getenv("OLLAMA_API_BASE", "http://localhost:11434/v1")
         api_key = os.getenv("OLLAMA_API_KEY", "ollama")
-        print(f"  [Manual Override] Using local Ollama model: {model_name}")
     else:
-        # Auto-threshold routing:
-        # If pages <= 5, use Groq (Fast Cloud VLM)
-        # If pages > 5, use local Ollama (Unlimited Local VLM) to avoid rate limits
         if total_pages <= 5:
-            print(f"  Page count ({total_pages}) <= 5. Auto-routing to OpenRouter (Cloud) for fast execution.")
             model_name = "meta-llama/llama-3.3-70b-instruct"
             base_url = "https://openrouter.ai/api/v1"
-            api_key = os.getenv("OPENROUTER_API_KEY")
-            if not api_key:
-                raise ValueError("OPENROUTER_API_KEY is not set in .env")
+            api_key = os.getenv("OPENROUTER_API_KEY", "dummy")
             is_cloud_primary = True
         else:
-            print(f"  Page count ({total_pages}) > 5. Auto-routing to Local Ollama to respect rate limits.")
             model_name = os.getenv("OLLAMA_MODEL_NAME", "qwen2.5:7b")
             base_url = os.getenv("OLLAMA_API_BASE", "http://localhost:11434/v1")
             api_key = os.getenv("OLLAMA_API_KEY", "ollama")
@@ -309,194 +254,254 @@ def process_pdf_open_source(pdf_path, model_override=None):
     from openai import OpenAI
     client = OpenAI(api_key=api_key, base_url=base_url)
     
-    print(f"Processing {pdf_path} ({total_pages} pages) using open-source model ({model_name})...")
-    
-    # Threshold for page chunking
     CHUNK_SIZE = 3
     OVERLAP = 1
     
-    all_items = []
+    all_res = InvoiceExtractionResponse()
     
     if total_pages <= CHUNK_SIZE:
         pdf_text = ""
         for page in doc:
             pdf_text += extract_page_text_with_ocr_fallback(page, client)
-            
-        if not pdf_text.strip():
-            print("  Warning: Extracted PDF text is empty. The file might be scanned or blank.")
-            return []
-            
-        try:
-            return call_llm_for_text(pdf_text, model_name, client)
-        except Exception as e:
-            if is_cloud_primary:
-                print(f"  Primary Cloud client failed: {e}. Falling back to local Ollama...")
-                local_model = os.getenv("OLLAMA_MODEL_NAME", "qwen2.5:7b")
-                local_base = os.getenv("OLLAMA_API_BASE", "http://localhost:11434/v1")
-                local_key = os.getenv("OLLAMA_API_KEY", "ollama")
-                local_client = OpenAI(api_key=local_key, base_url=local_base)
-                try:
-                    return call_llm_for_text(pdf_text, local_model, local_client)
-                except Exception as ollama_err:
-                    if "Connection error" in str(ollama_err):
-                        raise e  # Return the original Cloud error (like rate limit) if Ollama isn't reachable
-                    raise ollama_err
-            else:
-                raise e
+        if pdf_text.strip():
+            res = call_llm_for_text(pdf_text, model_name, client, invoice_type)
+            if res:
+                all_res.sales_items.extend(res.sales_items)
+                all_res.purchase_items.extend(res.purchase_items)
+                if res.overall_taxable_value > 0:
+                    all_res.overall_taxable_value = res.overall_taxable_value
+                    all_res.overall_cgst_amount = res.overall_cgst_amount
+                    all_res.overall_sgst_amount = res.overall_sgst_amount
+                    all_res.overall_igst_amount = res.overall_igst_amount
+                    all_res.overall_total_invoice_value = res.overall_total_invoice_value
     else:
-        print(f"  Large document detected. Processing in chunks of {CHUNK_SIZE} pages with {OVERLAP}-page overlap...")
         start = 0
-        chunk_index = 1
         while start < total_pages:
             end = min(start + CHUNK_SIZE, total_pages)
-            print(f"  --- Processing Chunk {chunk_index} (Pages {start+1} to {end}) ---")
-            
             chunk_text = ""
             for p_num in range(start, end):
                 chunk_text += extract_page_text_with_ocr_fallback(doc[p_num], client)
                 
             if chunk_text.strip():
-                try:
-                    items = call_llm_for_text(chunk_text, model_name, client)
-                except Exception as e:
-                    if is_cloud_primary:
-                        print(f"  Primary Cloud client failed on chunk {chunk_index}: {e}. Falling back to local Ollama...")
-                        local_model = os.getenv("OLLAMA_MODEL_NAME", "qwen2.5:7b")
-                        local_base = os.getenv("OLLAMA_API_BASE", "http://localhost:11434/v1")
-                        local_key = os.getenv("OLLAMA_API_KEY", "ollama")
-                        local_client = OpenAI(api_key=local_key, base_url=local_base)
-                        try:
-                            items = call_llm_for_text(chunk_text, local_model, local_client)
-                        except Exception as ollama_err:
-                            if "Connection error" in str(ollama_err):
-                                raise e
-                            raise ollama_err
-                    else:
-                        raise e
-                all_items.extend(items)
-            else:
-                print(f"  Warning: Chunk {chunk_index} has no extractable text.")
-                
+                res = call_llm_for_text(chunk_text, model_name, client, invoice_type)
+                if res:
+                    all_res.sales_items.extend(res.sales_items)
+                    all_res.purchase_items.extend(res.purchase_items)
+                    if res.overall_taxable_value > 0:
+                        all_res.overall_taxable_value = res.overall_taxable_value
+                        all_res.overall_cgst_amount = res.overall_cgst_amount
+                        all_res.overall_sgst_amount = res.overall_sgst_amount
+                        all_res.overall_igst_amount = res.overall_igst_amount
+                        all_res.overall_total_invoice_value = res.overall_total_invoice_value
             if end == total_pages:
                 break
-                
             start += CHUNK_SIZE - OVERLAP
-            chunk_index += 1
-            time.sleep(2)
             
-        return all_items
-
-def process_pdf(pdf_path, model_override=None):
-    return process_pdf_open_source(pdf_path, model_override=model_override)
-
-def deduplicate_items(df):
-    """
-    Strict deduplication based on PRD rules:
-    1. Drop exact duplicates (same invoice, same party, same amount)
-    2. If same invoice number has a summary row AND breakdown rows, keep only breakdowns.
-       Summary rows are identified by containing keywords like 'total', 'summary', 'subtotal',
-       'payable', 'balance', 'grand total', or 'current charges' in particulars.
-    3. Drop zero-value rows
-    """
-    if df.empty:
-        return df
+    # CA-level strict regex fallback for totals
+    import re
+    full_text = ""
+    for page in doc:
+        full_text += page.get_text() + "\n"
         
-    # Step 1: Drop rows where both amount and total_amount are 0 or NaN
-    df = df[~((df["AMOUNT"].fillna(0) == 0) & (df["TOTAL AMOUNT"].fillna(0) == 0))].copy()
-    
-    # Step 2: Handle identical amounts for the same invoice number.
-    # We only drop duplicates if at least one row in the duplicate group is a summary row.
-    # Otherwise, they are separate legitimate line items that happen to have the same amount.
-    summary_keywords = ['total', 'summary', 'subtotal', 'payable', 'balance', 'grand total', 'current charges']
-    
-    def filter_duplicate_amounts(group):
-        if len(group) <= 1:
-            return group
-        # Check if any row in this group of identical amounts looks like a summary
-        is_summary = group["PARTICULARS"].astype(str).str.lower().apply(
-            lambda x: any(kw in x for kw in summary_keywords)
-        )
-        if is_summary.any():
-            # If there's a mix of detailed and summary rows, keep only non-summary rows
-            non_summaries = group[~is_summary]
-            if not non_summaries.empty:
-                return non_summaries
+    if all_res.overall_taxable_value == 0:
+        net_cost_match = re.search(r'Final Total \([^)]+\)\n([0-9,.]+)', full_text) or re.search(r'Net Cost\n([0-9,.]+)', full_text)
+        if net_cost_match:
+            all_res.overall_taxable_value = float(net_cost_match.group(1).replace(',', ''))
+            
+        cgst_match = re.search(r'CGST @[0-9.%]*\n([0-9,.]+)', full_text)
+        if cgst_match:
+            all_res.overall_cgst_amount = float(cgst_match.group(1).replace(',', ''))
+            
+        sgst_match = re.search(r'SGST @[0-9.%]*\n([0-9,.]+)', full_text)
+        if sgst_match:
+            all_res.overall_sgst_amount = float(sgst_match.group(1).replace(',', ''))
+            
+        total_match = re.search(r'Total Cost incl Taxes\n([0-9,.]+)', full_text)
+        if total_match:
+            all_res.overall_total_invoice_value = float(total_match.group(1).replace(',', ''))
+            
+    return all_res
+
+def deduplicate_sales(df):
+    if df.empty: return df
+    # Removed aggressive deduplication to avoid dropping line items with the same tax rate/amount
+    return df.drop_duplicates()
+
+def deduplicate_purchase(df):
+    if df.empty: return df
+    df = df.drop_duplicates(subset=["Invoice No", "Party Ledger Name", "Item/Ledger Name", "Taxable Value"], keep="first")
+    return df
+
+def remove_subtotals(sales_items):
+    cleaned_items = []
+    current_group = []
+    for item in sales_items:
+        desc = str(item.particulars).lower()
+        if "sub total" in desc or "sub-total" in desc or "subtotal" in desc:
+            group_sum = sum(x.taxable_value or 0.0 for x in current_group)
+            if abs(group_sum - (item.taxable_value or 0.0)) <= 2.0 and len(current_group) > 0:
+                # Drop the sub-total to avoid double counting, keep the granular items
+                cleaned_items.extend(current_group)
+                current_group = []
             else:
-                # If all are summaries, keep the first one
-                return group.head(1)
-        return group # Keep all if none are summaries (legitimate duplicate amounts)
+                cleaned_items.extend(current_group)
+                cleaned_items.append(item)
+                current_group = []
+        else:
+            current_group.append(item)
+    cleaned_items.extend(current_group)
+    return cleaned_items
 
-    # Apply the custom grouping filter
-    df = df.groupby(["SUPPLIER INV", "AMOUNT"], group_keys=False).apply(filter_duplicate_amounts)
-    
-    # Step 3: Standard dedup on key composite
-    df = df.drop_duplicates(subset=["SUPPLIER INV", "PARTY A/C NAME", "PARTICULARS", "AMOUNT"], keep="first")
-    
-    return df
-
-def build_dataframe(all_items):
-    """Convert extracted items to a cleaned, deduplicated DataFrame."""
-    if not all_items:
-        return pd.DataFrame()
+def build_dataframes(extraction_response):
+    sales_dfs = {"Main": pd.DataFrame(), "Narration": pd.DataFrame(), "LineItems": pd.DataFrame()}
+    if extraction_response.sales_items:
+        # Prevent double counting by removing sub-totals
+        extraction_response.sales_items = remove_subtotals(extraction_response.sales_items)
         
-    records = []
-    for item in all_items:
-        records.append({
-            "SUPPLIER INV": item.supplier_inv,
-            "INVOICE DATE": item.invoice_date,
-            "GST NO": item.gst_no,
-            "PARTY A/C NAME": item.party_ac_name,
-            "PLACE OF SUPPLY": item.place_of_supply,
-            "PARTICULARS": item.particulars,
-            "AMOUNT": item.amount,
-            "SGST": item.sgst,
-            "CGST": item.cgst,
-            "IGST": item.igst,
-            "TOTAL AMOUNT": item.total_amount,
-            "Narration": item.narration,
-            "HSN": item.hsn
-        })
-        
-    df = pd.DataFrame(records)
-    columns = ["SUPPLIER INV", "INVOICE DATE", "GST NO", "PARTY A/C NAME", "PLACE OF SUPPLY", 
-               "PARTICULARS", "AMOUNT", "SGST", "CGST", "IGST", "TOTAL AMOUNT", "Narration", "HSN"]
-    df = df.reindex(columns=columns)
-    
-    # Apply strict PRD deduplication
-    df = deduplicate_items(df)
-    
-    return df
+        # --- Mathematical Balancing Logic ---
+        overall_taxable = extraction_response.overall_taxable_value
+        overall_cgst = extraction_response.overall_cgst_amount
+        overall_sgst = extraction_response.overall_sgst_amount
+        overall_igst = extraction_response.overall_igst_amount
+        overall_total = extraction_response.overall_total_invoice_value
 
-def main():
-    parser = argparse.ArgumentParser(description="Process PDF invoices into Excel")
-    parser.add_argument("input_path", help="Path to PDF file or directory containing PDFs")
-    parser.add_argument("--output", default="output.xlsx", help="Output Excel filename")
-    
-    args = parser.parse_args()
-    
-    all_items = []
-    
-    if os.path.isfile(args.input_path) and args.input_path.lower().endswith(".pdf"):
-        items = process_pdf(args.input_path)
-        all_items.extend(items)
-    elif os.path.isdir(args.input_path):
-        for filename in os.listdir(args.input_path):
-            if filename.lower().endswith(".pdf"):
-                file_path = os.path.join(args.input_path, filename)
-                items = process_pdf(file_path)
-                all_items.extend(items)
-    else:
-        print("Invalid input path. Provide a PDF file or a directory.")
-        return
-        
-    df = build_dataframe(all_items)
-    
-    if df.empty:
-        print("No data extracted. Exiting.")
-        return
-    
-    df.to_excel(args.output, index=False)
-    print(f"Successfully saved {len(df)} unique line items to {args.output}")
+        # Guardrail: Fix Gross vs Net hallucination dynamically
+        for item in extraction_response.sales_items:
+            if (item.discount or 0.0) > 0 and (item.taxable_value or 0.0) > 0:
+                current_sum = sum(x.taxable_value or 0.0 for x in extraction_response.sales_items)
+                if abs((current_sum - item.discount) - overall_taxable) < abs(current_sum - overall_taxable):
+                    item.taxable_value = round(item.taxable_value - item.discount, 2)
 
-if __name__ == "__main__":
-    main()
+        sum_taxable = sum(item.taxable_value or 0.0 for item in extraction_response.sales_items)
+        diff = overall_taxable - sum_taxable
+        
+        # If there's a discrepancy (under-extracted), add a missing line item
+        if sum_taxable > 0 and overall_taxable > 0 and diff > 1.0:
+            dummy_item = SuvitSalesItem(
+                voucher_date=extraction_response.sales_items[0].voucher_date,
+                invoice_no=extraction_response.sales_items[0].invoice_no,
+                party_gstin=extraction_response.sales_items[0].party_gstin,
+                party_ledger_name=extraction_response.sales_items[0].party_ledger_name,
+                place_of_supply=extraction_response.sales_items[0].place_of_supply,
+                particulars="Unallocated / Missing Lines",
+                taxable_value=diff,
+                cgst_amount=round((diff / overall_taxable) * overall_cgst, 2),
+                sgst_amount=round((diff / overall_taxable) * overall_sgst, 2),
+                igst_amount=round((diff / overall_taxable) * overall_igst, 2)
+            )
+            extraction_response.sales_items.append(dummy_item)
+            sum_taxable += diff
+
+        # Re-calculate taxes (and clamp over-extracted amounts) proportionally
+        if sum_taxable > 0 and overall_taxable > 0:
+            for item in extraction_response.sales_items:
+                proportion = (item.taxable_value or 0.0) / sum_taxable
+                item.cgst_amount = round(overall_cgst * proportion, 2)
+                item.sgst_amount = round(overall_sgst * proportion, 2)
+                item.igst_amount = round(overall_igst * proportion, 2)
+                
+                # Guardrail: If AI over-extracted, scale the taxable value down proportionally
+                if diff < -1.0:
+                    item.taxable_value = round(overall_taxable * proportion, 2)
+                    
+                item.total_invoice_value = item.taxable_value + item.cgst_amount + item.sgst_amount + item.igst_amount
+        else:
+            # Fallback if overall totals weren't extracted properly by LLM
+            # Fix hallucinated totals
+            for item in extraction_response.sales_items:
+                item.total_invoice_value = (item.taxable_value or 0.0) + (item.cgst_amount or 0.0) + (item.sgst_amount or 0.0) + (item.igst_amount or 0.0)
+
+        # --- End Balancing ---
+        
+        records = []
+        for item in extraction_response.sales_items:
+            tax = (item.cgst_amount or 0) + (item.sgst_amount or 0) + (item.igst_amount or 0)
+            taxable = item.taxable_value or 0
+            rate = round((tax / taxable) * 100) if taxable > 0 else 0
+            particulars_val = f"Sales IGST {rate}" if (item.igst_amount or 0) > 0 else f"Sales GST {rate}"
+            
+            records.append({
+                "REFERANCE NO": item.invoice_no,
+                "INVOICE DATE": item.voucher_date,
+                "GST NO": item.party_gstin,
+                "PARTY A/C NAME": item.party_ledger_name,
+                "PLACE OF SUPPLY": item.place_of_supply,
+                "RAW_PARTICULARS": item.particulars,
+                "GROUP_PARTICULARS": particulars_val,
+                "AMOUNT": item.taxable_value,
+                "DISCOUNT": getattr(item, 'discount', 0.0),
+                "ADVANCES": getattr(item, 'advances', 0.0),
+                "SGST": item.sgst_amount,
+                "CGST": item.cgst_amount,
+                "IGST": item.igst_amount,
+                "TOTAL AMOUNT": item.total_invoice_value,
+                "Narration": item.narration,
+                "HSN": item.hsn
+            })
+        df_all = pd.DataFrame(records)
+        df_all = deduplicate_sales(df_all)
+        
+        # 1. Main Sheet (Subtotals)
+        group_cols = ["REFERANCE NO", "INVOICE DATE", "GST NO", "PARTY A/C NAME", "PLACE OF SUPPLY", "GROUP_PARTICULARS"]
+        agg_dict = {
+            "AMOUNT": "sum",
+            "DISCOUNT": "sum",
+            "ADVANCES": "sum",
+            "SGST": "sum",
+            "CGST": "sum",
+            "IGST": "sum",
+            "TOTAL AMOUNT": "sum"
+        }
+        df_main = df_all.groupby(group_cols, dropna=False).agg(agg_dict).reset_index()
+        # Add Narration and HSN (first per group)
+        first_vals = df_all.groupby(group_cols, dropna=False)[["Narration", "HSN"]].first().reset_index()
+        df_main = df_main.merge(first_vals, on=group_cols, how="left")
+        df_main.rename(columns={"GROUP_PARTICULARS": "PARTICULARS"}, inplace=True)
+        
+        main_cols = ["REFERANCE NO", "INVOICE DATE", "GST NO", "PARTY A/C NAME", "PLACE OF SUPPLY", "PARTICULARS", "AMOUNT", "DISCOUNT", "ADVANCES", "SGST", "CGST", "IGST", "TOTAL AMOUNT", "Narration", "HSN"]
+        for col in main_cols:
+            if col not in df_main.columns:
+                df_main[col] = None
+        df_main = df_main[main_cols]
+        
+        # 2. Narration Sheet
+        df_narration = df_all.groupby("REFERANCE NO", dropna=False).agg({"TOTAL AMOUNT": "sum", "Narration": "first"}).reset_index()
+        df_narration.rename(columns={"TOTAL AMOUNT": "Final Total"}, inplace=True)
+        df_narration = df_narration[["Narration", "Final Total"]]
+        
+        # 3. Line Items Sheet
+        df_line = df_all.copy()
+        df_line.rename(columns={"RAW_PARTICULARS": "Particulars / Item Description"}, inplace=True)
+        df_line.drop(columns=["GROUP_PARTICULARS"], inplace=True)
+        
+        sales_dfs["Main"] = df_main
+        sales_dfs["Narration"] = df_narration
+        sales_dfs["LineItems"] = df_line
+        
+    purchase_df = pd.DataFrame()
+    if extraction_response.purchase_items:
+        records = []
+        for item in extraction_response.purchase_items:
+            records.append({
+                "Voucher Date": item.voucher_date,
+                "Voucher Type": item.voucher_type,
+                "Invoice No": item.invoice_no,
+                "Party Ledger Name": item.party_ledger_name,
+                "Party GSTIN": item.party_gstin,
+                "Place of Supply": item.place_of_supply,
+                "Item/Ledger Name": item.particulars,
+                "HSN": item.hsn,
+                "Qty": item.qty,
+                "Rate": item.rate,
+                "Taxable Value": item.taxable_value,
+                "CGST Amount": item.cgst_amount,
+                "SGST Amount": item.sgst_amount,
+                "IGST Amount": item.igst_amount,
+                "Total Invoice Value": item.total_invoice_value,
+                "ITC Category": item.itc_category,
+                "Narration": item.narration
+            })
+        purchase_df = pd.DataFrame(records)
+        purchase_df = deduplicate_purchase(purchase_df)
+        
+    return sales_dfs, purchase_df
