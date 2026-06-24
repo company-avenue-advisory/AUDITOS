@@ -1,4 +1,4 @@
-# AntiGravity CA-Level Invoice Auditor
+#CA-Level Invoice Auditor
 
 An enterprise-grade, highly-accurate AI pipeline designed to extract, mathematically balance, and audit complex tax invoices (Sales & Purchase) with the rigor of a Chartered Accountant.
 
