@@ -63,3 +63,22 @@ invoices/
 salesinvoices/
 purchaseinvoices/
 debug_extraction.py
+
+# Local Databases
+*.db
+*.db-journal
+*.sqlite3
+audit_os.db
+backend/audit_os.db
+
+# Test & Temp Scripts/Outputs
+test_results.txt
+add_*.py
+fix_*.py
+inject_*.py
+make_*.py
+patch_*.py
+append_rules.py
+test_accuracy.py
+test_pydantic.py
+frontend/gstr1_rules.json

@@ -6,3 +6,5 @@ openpyxl
 pydantic
 python-dotenv
 openai
+sqlalchemy
+tenacity

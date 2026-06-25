@@ -1,4 +1,4 @@
-from fastapi import FastAPI, File, UploadFile, Request, HTTPException, Form, Response
+from fastapi import FastAPI, File, UploadFile, Request, HTTPException, Form, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 import os
@@ -9,11 +9,24 @@ import pandas as pd
 from typing import List, Optional, Any
 from pydantic import BaseModel
 import sys
+import os
 import io
 import zipfile
+import uuid
+from fastapi import BackgroundTasks, Depends
+from sqlalchemy.orm import Session
 
-# Ensure backend directory is in the path
+# Ensure backend directory is in the path BEFORE local imports
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+from database import get_db, engine, Base
+from models import BatchJob, InvoiceTask, TaskStatus, SalesLineItem, PurchaseLineItem
+from async_tasks import process_batch
+from ws_manager import manager
+
+# Ensure database tables exist
+Base.metadata.create_all(bind=engine)
+
 from invoice_processor import process_pdf, build_dataframes, InvoiceExtractionResponse
 from services.gstr2b_reconciler import parse_gstr2b, reconcile as recon_match
 from services.udyam_parser import parse_udyam_certificate
@@ -38,10 +51,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-class ExportRequest(BaseModel):
-    sales_items: Optional[List[dict]] = []
-    purchase_items: Optional[List[dict]] = []
-
+# ExportRequest deprecated
 def validate_suvit_item(item: dict) -> List[str]:
     """Helper to check for potential errors/warnings in a Suvit line item."""
     errors = []
@@ -74,74 +84,264 @@ async def get_models():
         ]
     })
 
-@app.post("/api/extract")
-async def extract_invoices(files: List[UploadFile] = File(...), model: Optional[str] = None, type: Optional[str] = "both"):
-    tmpdirname = tempfile.mkdtemp()
+@app.post("/api/invoices/upload-batch")
+async def upload_batch(background_tasks: BackgroundTasks, files: List[UploadFile] = File(...), model: Optional[str] = None, type: Optional[str] = "both", db: Session = Depends(get_db)):
+    batch_id = str(uuid.uuid4())
+    total_files = len(files)
+    
+    batch_job = BatchJob(id=batch_id, total_files=total_files, status=TaskStatus.PENDING)
+    db.add(batch_job)
+    db.commit()
+
+    batch_dir = os.path.join(tempfile.gettempdir(), f"batch_{batch_id}")
+    os.makedirs(batch_dir, exist_ok=True)
+    
+    tasks_to_process = []
+    
     try:
-        file_paths = []
-        for file in files:
-            file_path = os.path.join(tmpdirname, file.filename)
-            with open(file_path, "wb") as buffer:
-                shutil.copyfileobj(file.file, buffer)
-            file_paths.append(file_path)
-            
-        # Resolve model config
         model_config = MODEL_OPTIONS.get(model or "auto")
         
-        all_sales = []
-        all_purchase = []
-        for i, fp in enumerate(file_paths):
-            print(f"Processing upload {i+1}: {os.path.basename(fp)} [model={model or 'auto'}, type={type}]")
-            res = process_pdf(fp, model_override=model_config, invoice_type=type)
-            if res.sales_items:
-                all_sales.extend(res.sales_items)
-            if res.purchase_items:
-                all_purchase.extend(res.purchase_items)
+        for file in files:
+            file_path = os.path.join(batch_dir, file.filename)
+            with open(file_path, "wb") as buffer:
+                shutil.copyfileobj(file.file, buffer)
+                
+            # If the file is a zip, extract it and process its contents
+            if file.filename.lower().endswith(".zip"):
+                with zipfile.ZipFile(file_path, 'r') as zip_ref:
+                    # Extract to a temp subfolder
+                    extract_dir = os.path.join(batch_dir, f"extracted_{uuid.uuid4().hex[:8]}")
+                    os.makedirs(extract_dir, exist_ok=True)
+                    zip_ref.extractall(extract_dir)
+                    
+                    # Iterate through extracted files
+                    for root, _, extracted_files in os.walk(extract_dir):
+                        for extracted_file in extracted_files:
+                            if extracted_file.lower().endswith(".pdf"):
+                                extracted_path = os.path.join(root, extracted_file)
+                                
+                                task_id = str(uuid.uuid4())
+                                invoice_task = InvoiceTask(
+                                    id=task_id,
+                                    batch_id=batch_id,
+                                    file_name=extracted_file,
+                                    status=TaskStatus.PENDING,
+                                    invoice_type=type
+                                )
+                                db.add(invoice_task)
+                                
+                                tasks_to_process.append({
+                                    "id": task_id,
+                                    "file_path": extracted_path
+                                })
+                # Remove the original zip file after extraction
+                try:
+                    os.remove(file_path)
+                except:
+                    pass
+            else:
+                # It's a standard PDF file
+                if file.filename.lower().endswith(".pdf"):
+                    task_id = str(uuid.uuid4())
+                    invoice_task = InvoiceTask(
+                        id=task_id,
+                        batch_id=batch_id,
+                        file_name=file.filename,
+                        status=TaskStatus.PENDING,
+                        invoice_type=type
+                    )
+                    db.add(invoice_task)
+                    
+                    tasks_to_process.append({
+                        "id": task_id,
+                        "file_path": file_path
+                    })
+            
+        db.commit()
+        
+        # Dispatch to BackgroundTasks
+        background_tasks.add_task(process_batch, batch_id, tasks_to_process, model_config, type)
             
     except Exception as e:
-        print(f"Extraction error: {e}")
+        print(f"Extraction enqueue error: {e}")
+        batch_job.status = TaskStatus.FAILED
+        db.commit()
         raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        shutil.rmtree(tmpdirname, ignore_errors=True)
         
-    if not all_sales and not all_purchase:
-        raise HTTPException(status_code=422, detail="No data could be extracted from the uploaded file(s).")
-        
-    sales_results = []
-    for item in all_sales:
-        item_dict = item.dict()
-        item_dict["errors"] = validate_suvit_item(item_dict)
-        sales_results.append(item_dict)
-        
-    purchase_results = []
-    for item in all_purchase:
-        item_dict = item.dict()
-        item_dict["errors"] = validate_suvit_item(item_dict)
-        purchase_results.append(item_dict)
-        
-    return JSONResponse(content={"sales_items": sales_results, "purchase_items": purchase_results})
+    return JSONResponse(content={
+        "message": "Batch enqueued successfully",
+        "batch_id": batch_id,
+        "total_files": total_files
+    })
+@app.get("/api/jobs")
+async def get_all_jobs(db: Session = Depends(get_db)):
+    batches = db.query(BatchJob).order_by(BatchJob.created_at.desc()).all()
+    return [{
+        "id": b.id,
+        "created_at": b.created_at.isoformat(),
+        "total_files": b.total_files,
+        "status": b.status.value
+    } for b in batches]
 
-@app.post("/api/export")
-async def export_to_excel(request: ExportRequest):
-    if not request.sales_items and not request.purchase_items:
-        raise HTTPException(status_code=400, detail="No items to export")
+@app.get("/api/jobs/{batch_id}/files/{filename:path}")
+async def get_pdf_file(batch_id: str, filename: str):
+    import os, tempfile
+    
+    with open("pdf_debug.log", "a", encoding="utf-8") as f:
+        f.write(f"Requested batch_id: {batch_id}, filename: {filename}\n")
+    
+    # Check direct in batch_id dir
+    batch_dir = os.path.join(tempfile.gettempdir(), f"batch_{batch_id}")
+    file_path = os.path.join(batch_dir, filename)
+    if os.path.exists(file_path):
+        return FileResponse(file_path, media_type="application/pdf")
         
+    # Check in subdirectories (if extracted from zip)
+    if os.path.exists(batch_dir):
+        for root, _, files in os.walk(batch_dir):
+            if filename in files:
+                return FileResponse(os.path.join(root, filename), media_type="application/pdf")
+                
+    # If file is genuinely missing
+    from fastapi.responses import HTMLResponse
+    html_content = f"""
+    <html>
+        <body style="font-family: sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; background-color: #f9f9fa; color: #333; text-align: center;">
+            <div>
+                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#ef4444" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-bottom: 16px;"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="9" y1="15" x2="15" y2="15"></line></svg>
+                <h3>PDF No Longer Available</h3>
+                <p style="color: #666; max-width: 300px; margin: 0 auto; line-height: 1.5;">This file was processed in an older session and has been deleted from the server to save space.<br><br>Please upload this invoice again to view it side-by-side.</p>
+            </div>
+        </body>
+    </html>
+    """
+    return HTMLResponse(content=html_content, status_code=404)
+
+@app.get("/api/jobs/{batch_id}")
+async def get_job_status(batch_id: str, db: Session = Depends(get_db)):
+    batch = db.query(BatchJob).filter(BatchJob.id == batch_id).first()
+    if not batch:
+        raise HTTPException(status_code=404, detail="Job not found")
+        
+    tasks = db.query(InvoiceTask).filter(InvoiceTask.batch_id == batch_id).all()
+    
+    total = len(tasks)
+    pending = sum(1 for t in tasks if t.status == TaskStatus.PENDING)
+    processing = sum(1 for t in tasks if t.status == TaskStatus.PROCESSING)
+    completed = sum(1 for t in tasks if t.status == TaskStatus.COMPLETED)
+    failed = sum(1 for t in tasks if t.status == TaskStatus.FAILED)
+    
+    tasks_details = []
+    all_sales = []
+    all_purchase = []
+    
+    for t in tasks:
+        task_info = {
+            "task_id": t.id,
+            "filename": t.file_name,
+            "status": t.status.value,
+            "error_message": t.error_message,
+        }
+        
+        sales = []
+        purchase = []
+        if getattr(t, 'sales_items', None):
+            sales = [{c.name: getattr(item, c.name) for c in item.__table__.columns if c.name not in ["task_id"]} for item in t.sales_items]
+        if getattr(t, 'purchase_items', None):
+            purchase = [{c.name: getattr(item, c.name) for c in item.__table__.columns if c.name not in ["task_id"]} for item in t.purchase_items]
+            
+        if sales or purchase or t.status == TaskStatus.COMPLETED:
+            for s in sales:
+                s["errors"] = validate_suvit_item(s)
+                s["filename"] = t.file_name
+            for p in purchase:
+                p["errors"] = validate_suvit_item(p)
+                p["filename"] = t.file_name
+                
+            task_info["sales_count"] = len(sales)
+            task_info["purchase_count"] = len(purchase)
+            all_sales.extend(sales)
+            all_purchase.extend(purchase)
+            
+        tasks_details.append(task_info)
+        
+    return JSONResponse(content={
+        "batch_id": batch.id,
+        "status": batch.status.value,
+        "progress": {
+            "total": total,
+            "pending": pending,
+            "processing": processing,
+            "completed": completed,
+            "failed": failed
+        },
+        "tasks": tasks_details,
+        "sales_items": all_sales if batch.status == TaskStatus.COMPLETED else [],
+        "purchase_items": all_purchase if batch.status == TaskStatus.COMPLETED else []
+    })
+
+@app.websocket("/api/ws/jobs/{batch_id}")
+async def websocket_endpoint(websocket: WebSocket, batch_id: str):
+    await manager.connect(websocket, batch_id)
+    try:
+        while True:
+            # We don't expect the client to send messages, but we need to keep the connection open
+            # and listen for disconnects
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        await manager.disconnect(websocket, batch_id)
+
+
+@app.get("/api/export/{batch_id}")
+async def export_to_excel(batch_id: str, type: str, db: Session = Depends(get_db)):
+    batch = db.query(BatchJob).filter(BatchJob.id == batch_id).first()
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch not found")
+        
+    tasks = db.query(InvoiceTask).filter(InvoiceTask.batch_id == batch_id).all()
+    
     from invoice_processor import SuvitSalesItem, SuvitPurchaseItem
     
     extraction_response = InvoiceExtractionResponse()
-    if request.sales_items:
-        extraction_response.sales_items = [SuvitSalesItem(**item) for item in request.sales_items]
-    if request.purchase_items:
-        extraction_response.purchase_items = [SuvitPurchaseItem(**item) for item in request.purchase_items]
+    
+    if type in ["sales", "both"]:
+        sales = []
+        for t in tasks:
+            if getattr(t, 'sales_items', None):
+                for item in t.sales_items:
+                    item_dict = {c.name: getattr(item, c.name) for c in item.__table__.columns if c.name not in ["id", "task_id"]}
+                    sales.append(SuvitSalesItem(**item_dict))
+        extraction_response.sales_items = sales
+        
+    if type in ["purchase", "both"]:
+        purchase = []
+        for t in tasks:
+            if getattr(t, 'purchase_items', None):
+                for item in t.purchase_items:
+                    item_dict = {c.name: getattr(item, c.name) for c in item.__table__.columns if c.name not in ["id", "task_id"]}
+                    purchase.append(SuvitPurchaseItem(**item_dict))
+        extraction_response.purchase_items = purchase
+        
+    if not extraction_response.sales_items and not extraction_response.purchase_items:
+        raise HTTPException(status_code=400, detail="No items to export")
         
     sales_df, purchase_df = build_dataframes(extraction_response)
     
-    if not sales_df.empty and not purchase_df.empty:
+    has_sales = isinstance(sales_df, dict) and any(not df.empty for df in sales_df.values())
+    has_purchase = not purchase_df.empty
+
+    def save_sales(path):
+        with pd.ExcelWriter(path) as writer:
+            for sheet_name, df in sales_df.items():
+                if not df.empty:
+                    df.to_excel(writer, sheet_name=sheet_name, index=False)
+                    
+    if has_sales and has_purchase:
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
             sales_path = os.path.join(tempfile.gettempdir(), "Suvit_Sales_Upload.xlsx")
             purchase_path = os.path.join(tempfile.gettempdir(), "Suvit_Purchase_Upload.xlsx")
-            sales_df.to_excel(sales_path, index=False)
+            save_sales(sales_path)
             purchase_df.to_excel(purchase_path, index=False)
             zip_file.write(sales_path, arcname="Suvit_Sales_Upload.xlsx")
             zip_file.write(purchase_path, arcname="Suvit_Purchase_Upload.xlsx")
@@ -152,9 +352,9 @@ async def export_to_excel(request: ExportRequest):
             media_type="application/zip",
             headers={"Content-Disposition": "attachment; filename=Suvit_Both_Upload.zip"}
         )
-    elif not sales_df.empty:
+    elif has_sales:
         output_path = os.path.join(tempfile.gettempdir(), "Suvit_Sales_Upload.xlsx")
-        sales_df.to_excel(output_path, index=False)
+        save_sales(output_path)
         return FileResponse(
             path=output_path, 
             filename="Suvit_Sales_Upload.xlsx", 
@@ -345,9 +545,43 @@ async def compress_pdf_endpoint(file: UploadFile = File(...), quality: int = For
             headers=headers
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
-@app.post("/api/docs/ocr-extract")
+class ItemUpdateRequest(BaseModel):
+    field: str
+    value: Any
+
+@app.put("/api/items/{item_id}")
+async def update_item(item_id: int, type: str, req: ItemUpdateRequest, db: Session = Depends(get_db)):
+    if type == "sales":
+        item = db.query(SalesLineItem).filter(SalesLineItem.id == item_id).first()
+    elif type == "purchase":
+        item = db.query(PurchaseLineItem).filter(PurchaseLineItem.id == item_id).first()
+    else:
+        raise HTTPException(status_code=400, detail="Invalid type")
+        
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+        
+    if not hasattr(item, req.field):
+        raise HTTPException(status_code=400, detail="Invalid field")
+        
+    # Attempt to cast float if the original column is float
+    col_type = type(getattr(item.__table__.columns, req.field).type)
+    from sqlalchemy import Float
+    if col_type == Float:
+        try:
+            val = float(req.value) if req.value else 0.0
+            setattr(item, req.field, val)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid float value")
+    else:
+        setattr(item, req.field, req.value)
+        
+    db.commit()
+    return {"status": "success"}
+
+@app.post("/api/invoice-metadata")
 async def ocr_extract_endpoint(file: UploadFile = File(...)):
     """
     Converts PDF pages into images and runs local EasyOCR.
