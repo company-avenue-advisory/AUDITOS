@@ -1,33 +1,34 @@
-# AuditOS: Enterprise CA-Level Invoice Auditor
+# AuditOS
 
-AuditOS is an enterprise-grade, high-accuracy AI pipeline designed to extract, mathematically reconcile, and audit complex tax invoices (Sales & Purchase) with the rigor and precision of a Chartered Accountant (CA) or Big-4 audit firm.
+**Enterprise CA-Level Invoice Auditor & Financial Reconciliation Platform**
 
----
-
-## 🚀 Key Features
-
-- **Layout-Aware Parsing (`pdfplumber`):** Uses layout-aware text coordinates mapping (`layout=True`) to maintain the physical spatial positioning of columns, lines, and complex tables. This avoids the text-scrambling limitations of sequential extraction libraries and gives the LLM perfect visual structure awareness.
-- **Granular Line-Item Extraction:** Seamlessly parses unstructured and multi-page PDF tables, ignoring non-data headers and capturing individual billing transactions with 100% itemization.
-- **Math Balancing & Guardrails:** Dynamically checks and corrects LLM hallucinations:
-  - **Gross vs. Net Validation:** Automatically resolves situations where Gross values are mistakenly parsed as Net values by subtracting discounts to balance ledgers.
-  - **Anti-Double Counting:** Detects and filters out "Sub-Total" or "Total" rows erroneously parsed as line items.
-  - **Statutory Math Apportionment:** Re-allocates aggregate tax amounts (IGST, CGST, SGST) down to line items proportionally based on taxable values.
-- **Unallocated Variance Injection:** Instantly flags discrepancies between itemized sum and the final invoice total, automatically injecting an `Unallocated / Missing Lines` row to balance the ledger down to the penny.
-- **Side-by-Side Verification Interface:** Next.js frontend with dual-pane layout showing the source invoice PDF alongside an interactive editing grid.
-- **Full-Screen Workspace Mode:** A dedicated high-productivity mode rendering 20+ GST fields simultaneously across a full-viewport, layout-optimized grid to allow audit team reviews.
-- **Asynchronous Batch Processing:** A zero-infra queueing backend powered by SQLite, background task threading, client-side WebSocket progress notifications, and Semaphore throttling to prevent LLM rate limiting.
-- **Enterprise Security & Auth:** Secure role-based access control (RBAC), JWT authentication with password hashing, and protected routes via Next.js `AuthGuard`.
+AuditOS is a highly specialized, enterprise-grade AI pipeline designed to automate the extraction, mathematical reconciliation, and auditing of complex tax invoices (Sales & Purchase). Engineered to meet the rigorous standards of Chartered Accountants (CAs) and Big-4 audit firms, AuditOS bridges the gap between unstructured documents and strictly typed financial ledgers.
 
 ---
 
-## 🛠️ Tech Stack & Architecture
+## 🚀 Core Capabilities
 
-- **Backend:** FastAPI, Python 3.10+, SQLAlchemy (SQLite engine).
-- **Frontend:** TypeScript, React, Next.js, TailwindCSS.
-- **Extraction Engine:** `pdfplumber` (layout preservation) combined with `Pydantic` and `LiteLLM` routing.
-- **Report Generation:** Pandas & OpenPyXL for exporting Excel ledgers.
+- **Layout-Preserving Extraction Engine:** Built on top of `pdfplumber` with coordinate-aware parsing (`layout=True`), ensuring perfect spatial awareness. This mitigates the text-scrambling limitations typical of sequential OCR/extraction libraries, providing the LLM with an accurate visual representation of complex, multi-page tables.
+- **Granular Transaction Itemization:** Intelligently parses unstructured PDF tables, gracefully ignoring non-data headers, footers, and page breaks to capture individual billing transactions with 100% itemization accuracy.
+- **Deterministic Math Reconciliation & Guardrails:** Dynamically validates and corrects LLM hallucinations against rigid accounting rules:
+  - **Gross vs. Net Validation:** Automatically resolves parsing anomalies where Gross values are misidentified as Net values by computing discount differentials to balance ledgers.
+  - **Anti-Double Counting:** Programmatically detects and filters out aggregate rows (e.g., "Sub-Total", "Grand Total") erroneously extracted as transaction line items.
+  - **Statutory Tax Apportionment:** Re-allocates aggregate tax amounts (IGST, CGST, SGST) down to the line-item level, distributed proportionally based on taxable values.
+- **Automated Ledger Balancing:** Instantly flags discrepancies between the sum of itemized lines and the final invoice total, automatically injecting an `Unallocated / Missing Lines` variance row to balance the ledger down to the penny.
+- **High-Productivity Audit Workspace:** A dedicated, full-screen Next.js interface featuring a dual-pane layout. It renders the source invoice PDF alongside an interactive, layout-optimized grid displaying 20+ GST fields simultaneously for rapid CA review.
+- **Asynchronous & Scalable Batch Processing:** Features a zero-infra queueing backend powered by SQLite and threading, complete with client-side WebSocket progress notifications and Semaphore throttling to prevent LLM API rate limits.
+- **Enterprise-Grade Security:** Implements secure Role-Based Access Control (RBAC), JWT-based authentication with bcrypt password hashing, and strictly protected Next.js routes via an `AuthGuard` middleware layer.
+
+---
+
+## 🛠️ Technology Stack & Architecture
+
+- **Backend Architecture:** FastAPI (Python 3.10+), SQLAlchemy ORM (SQLite engine), Pydantic for strict schema validation, and LiteLLM for LLM routing.
+- **Frontend Architecture:** React 18, Next.js (App Router), TypeScript, and TailwindCSS, utilizing a custom glassmorphic design system.
+- **Data Processing:** `pdfplumber` for spatial PDF extraction, alongside Pandas and OpenPyXL for robust Excel ledger generation.
 
 ### System Architecture Flowchart
+
 ```mermaid
 graph TD
     A[Upload Invoice Batch] --> B[FastAPI Batch Queue]
@@ -43,51 +44,59 @@ graph TD
 
 ---
 
-## 💻 Getting Started
+## 💻 Local Development Setup
 
-### 1. Backend Setup
-1. Navigate to the backend directory and set up a virtual environment:
-   ```bash
-   cd backend
-   python -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
-   ```
-2. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-3. Configure your environment variable in a `.env` file:
-   ```env
-   OPENROUTER_API_KEY="your-openrouter-api-key"
-   API_BASE_URL="http://localhost:8080"
-   ```
-4. Start the backend dev server:
-   ```bash
-   uvicorn main:app --reload --port 8000
-   ```
+### 1. Backend Service
+The backend service handles PDF processing, LLM orchestration, and WebSocket communication.
 
-### 2. Frontend Setup
-1. Navigate to the frontend directory:
-   ```bash
-   cd frontend
-   ```
-2. Install npm packages:
-   ```bash
-   npm install
-   ```
-3. Configure environment variables in `.env.local`:
-   ```env
-   NEXT_PUBLIC_API_URL="http://localhost:8000"
-   ```
-4. Start the frontend dev server:
-   ```bash
-   npm run dev
-   ```
+```bash
+cd backend
+python -m venv venv
+
+# Activate the virtual environment
+# Windows: venv\Scripts\activate
+# Unix/macOS: source venv/bin/activate
+
+pip install -r requirements.txt
+```
+
+Create a `.env` file in the `backend` directory:
+```env
+OPENROUTER_API_KEY="your-openrouter-api-key"
+API_BASE_URL="http://localhost:8000"
+```
+
+Start the FastAPI development server:
+```bash
+uvicorn main:app --reload --port 8000
+```
+
+### 2. Frontend Application
+The frontend application is a modern Next.js dashboard for invoice review and user authentication.
+
+```bash
+cd frontend
+npm install
+```
+
+Create a `.env.local` file in the `frontend` directory:
+```env
+NEXT_PUBLIC_API_URL="http://localhost:8000"
+```
+
+Start the Next.js development server:
+```bash
+npm run dev
+```
+
+The application will be accessible at `http://localhost:3000`.
 
 ---
 
 ## 📅 Scalability & Reliability Roadmap
-For large-scale corporate deployments (processing 10,000+ invoices daily), AuditOS is structured to migrate to cloud-native queueing:
-- **Distributed Queues:** Transitioning SQLite/FastAPI background tasks to AWS SQS / RabbitMQ with Celery workers.
-- **Object Storage:** Moving file storage to Google Cloud Storage (GCS) or AWS S3.
-- **Enterprise Database:** Scaling the relational layer to PostgreSQL or Amazon RDS.
+
+AuditOS is architected for seamless migration to cloud-native infrastructure for enterprise deployments (10,000+ invoices/day):
+
+- **Distributed Queuing:** Migration from SQLite/FastAPI background tasks to AWS SQS or RabbitMQ orchestrated by Celery workers.
+- **Persistent Object Storage:** Transitioning ephemeral file storage to Google Cloud Storage (GCS) or AWS S3.
+- **Enterprise Relational Layer:** Upgrading the local SQLite database to a highly available PostgreSQL cluster or Amazon RDS.
