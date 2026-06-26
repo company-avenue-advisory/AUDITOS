@@ -7,9 +7,7 @@
 4. SPATIAL ALIGNMENT: The text provided to you preserves exact visual column spacing (using tabs/spaces). Use this spatial layout to ensure you don't mix up columns.
 
 CRITICAL EXTRACTION RULE FOR NARRATION:
-If the invoice items relate to software/application charges, transactional messaging charges, or promotional messaging charges, you MUST set the `narration` field exactly to: 
-"Being entry for book application charges and trasactional & promotional messaging charges for the month specifed in the data"
-Otherwise, extract the narration normally or leave it blank if none is present.
+Extract the narration normally from the invoice or leave it blank if none is present. Do not populate generic narration.
 
 CRITICAL EXTRACTION RULE FOR GST RATE:
 The `rate` field MUST ONLY contain standard valid Indian GST percentages (e.g., 0, 0.1, 0.25, 1.5, 3, 5, 12, 18, 28). 

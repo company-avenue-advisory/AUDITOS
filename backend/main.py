@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from database import get_db, engine, Base
-from models import BatchJob, InvoiceTask, TaskStatus, SalesLineItem, PurchaseLineItem
+from models import BatchJob, InvoiceTask, TaskStatus, SalesLineItem, PurchaseLineItem, ObservabilityLog
 from async_tasks import process_batch
 from ws_manager import manager
 
@@ -32,6 +32,10 @@ from services.gstr2b_reconciler import parse_gstr2b, reconcile as recon_match
 from services.udyam_parser import parse_udyam_certificate
 from services.msme_compliance import calculate_43bh_compliance
 from services.document_core import parse_bank_statement, smart_split_by_size, enhance_scan, compress_pdf, ocr_extract
+from services.gcs_storage import gcs_storage
+from services.task_queue import dispatch_batch_task
+from models import User
+from services.auth import hash_password, verify_password, create_access_token, get_current_user, RoleChecker
 
 MODEL_OPTIONS = {
     "auto": None,  # Smart routing (default)
@@ -43,13 +47,81 @@ MODEL_OPTIONS = {
 app = FastAPI(title="AI Invoice Extractor API")
 
 # Configure CORS
+allowed_origins_str = os.getenv("ALLOWED_ORIGINS", "*")
+if allowed_origins_str == "*":
+    origins = ["*"]
+else:
+    origins = [origin.strip() for origin in allowed_origins_str.split(",") if origin.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Adjust for production if needed
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+class UserRegisterRequest(BaseModel):
+    email: str
+    password: str
+    role: Optional[str] = "auditor"
+
+class UserLoginRequest(BaseModel):
+    email: str
+    password: str
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str
+    role: str
+    email: str
+
+@app.post("/api/auth/register", status_code=201)
+async def register(req: UserRegisterRequest, db: Session = Depends(get_db)):
+    """Creates a new user account with hashed password and RBAC role."""
+    # Check if user already exists
+    existing_user = db.query(User).filter(User.email == req.email).first()
+    if existing_user:
+        raise HTTPException(status_code=400, detail="Email is already registered")
+    
+    # Validate role
+    allowed_roles = ["owner", "hr", "auditor", "developer", "other"]
+    user_role = req.role.lower() if req.role else "auditor"
+    if user_role not in allowed_roles:
+        raise HTTPException(status_code=400, detail=f"Invalid role. Supported: {allowed_roles}")
+
+    new_user = User(
+        id=str(uuid.uuid4()),
+        email=req.email,
+        hashed_password=hash_password(req.password),
+        role=user_role
+    )
+    db.add(new_user)
+    db.commit()
+    return {"message": "User registered successfully", "email": new_user.email, "role": new_user.role}
+
+@app.post("/api/auth/login", response_model=TokenResponse)
+async def login(req: UserLoginRequest, db: Session = Depends(get_db)):
+    """Authenticates credentials and returns a signed JWT access token."""
+    print(f"[AUTH DEBUG] Login request received for email: '{req.email}'")
+    user = db.query(User).filter(User.email == req.email).first()
+    if not user:
+        print(f"[AUTH DEBUG] User not found in database for email: '{req.email}'")
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    
+    password_ok = verify_password(req.password, user.hashed_password)
+    print(f"[AUTH DEBUG] Password check result for '{req.email}': {password_ok}")
+    if not password_ok:
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    
+    # Generate token
+    access_token = create_access_token(data={"sub": user.email})
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "role": user.role,
+        "email": user.email
+    }
 
 # ExportRequest deprecated
 def validate_suvit_item(item: dict) -> List[str]:
@@ -85,7 +157,7 @@ async def get_models():
     })
 
 @app.post("/api/invoices/upload-batch")
-async def upload_batch(background_tasks: BackgroundTasks, files: List[UploadFile] = File(...), model: Optional[str] = None, type: Optional[str] = "both", db: Session = Depends(get_db)):
+async def upload_batch(background_tasks: BackgroundTasks, files: List[UploadFile] = File(...), model: Optional[str] = None, type: Optional[str] = "both", db: Session = Depends(get_db), current_user: User = Depends(RoleChecker(["owner", "auditor"]))):
     batch_id = str(uuid.uuid4())
     total_files = len(files)
     
@@ -120,6 +192,9 @@ async def upload_batch(background_tasks: BackgroundTasks, files: List[UploadFile
                             if extracted_file.lower().endswith(".pdf"):
                                 extracted_path = os.path.join(root, extracted_file)
                                 
+                                if gcs_storage.is_active():
+                                    gcs_storage.upload_file(extracted_path, f"batches/{batch_id}/{extracted_file}")
+                                
                                 task_id = str(uuid.uuid4())
                                 invoice_task = InvoiceTask(
                                     id=task_id,
@@ -142,6 +217,9 @@ async def upload_batch(background_tasks: BackgroundTasks, files: List[UploadFile
             else:
                 # It's a standard PDF file
                 if file.filename.lower().endswith(".pdf"):
+                    if gcs_storage.is_active():
+                        gcs_storage.upload_file(file_path, f"batches/{batch_id}/{file.filename}")
+                    
                     task_id = str(uuid.uuid4())
                     invoice_task = InvoiceTask(
                         id=task_id,
@@ -159,8 +237,8 @@ async def upload_batch(background_tasks: BackgroundTasks, files: List[UploadFile
             
         db.commit()
         
-        # Dispatch to BackgroundTasks
-        background_tasks.add_task(process_batch, batch_id, tasks_to_process, model_config, type)
+        # Dispatch to queue broker or local background tasks
+        dispatch_batch_task(background_tasks, batch_id, tasks_to_process, model_config, type)
             
     except Exception as e:
         print(f"Extraction enqueue error: {e}")
@@ -174,7 +252,7 @@ async def upload_batch(background_tasks: BackgroundTasks, files: List[UploadFile
         "total_files": total_files
     })
 @app.get("/api/jobs")
-async def get_all_jobs(db: Session = Depends(get_db)):
+async def get_all_jobs(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     batches = db.query(BatchJob).order_by(BatchJob.created_at.desc()).all()
     return [{
         "id": b.id,
@@ -184,7 +262,7 @@ async def get_all_jobs(db: Session = Depends(get_db)):
     } for b in batches]
 
 @app.get("/api/jobs/{batch_id}/files/{filename:path}")
-async def get_pdf_file(batch_id: str, filename: str):
+async def get_pdf_file(batch_id: str, filename: str, current_user: User = Depends(get_current_user)):
     import os, tempfile
     
     with open("pdf_debug.log", "a", encoding="utf-8") as f:
@@ -195,6 +273,13 @@ async def get_pdf_file(batch_id: str, filename: str):
     file_path = os.path.join(batch_dir, filename)
     if os.path.exists(file_path):
         return FileResponse(file_path, media_type="application/pdf")
+        
+    # If missing locally, try to pull it from GCS
+    if gcs_storage.is_active():
+        gcs_blob_name = f"batches/{batch_id}/{filename}"
+        if gcs_storage.file_exists(gcs_blob_name):
+            if gcs_storage.download_file(gcs_blob_name, file_path):
+                return FileResponse(file_path, media_type="application/pdf")
         
     # Check in subdirectories (if extracted from zip)
     if os.path.exists(batch_dir):
@@ -218,7 +303,7 @@ async def get_pdf_file(batch_id: str, filename: str):
     return HTMLResponse(content=html_content, status_code=404)
 
 @app.get("/api/jobs/{batch_id}")
-async def get_job_status(batch_id: str, db: Session = Depends(get_db)):
+async def get_job_status(batch_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     batch = db.query(BatchJob).filter(BatchJob.id == batch_id).first()
     if not batch:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -231,6 +316,58 @@ async def get_job_status(batch_id: str, db: Session = Depends(get_db)):
     completed = sum(1 for t in tasks if t.status == TaskStatus.COMPLETED)
     failed = sum(1 for t in tasks if t.status == TaskStatus.FAILED)
     
+    # ── Observability data integration ─────────────────────────
+    # Fetch batch metrics if available
+    batch_log = db.query(ObservabilityLog).filter(
+        ObservabilityLog.batch_id == batch_id,
+        ObservabilityLog.event_type == "batch_metrics"
+    ).first()
+    batch_metrics = None
+    if batch_log:
+        try:
+            batch_metrics = json.loads(batch_log.payload_json)
+        except:
+            pass
+            
+    # Fetch batch-level system flags and task-level flags
+    flag_logs = db.query(ObservabilityLog).filter(
+        ObservabilityLog.batch_id == batch_id,
+        ObservabilityLog.event_type == "system_flag"
+    ).all()
+    
+    batch_flags = []
+    flags_by_file = {}
+    for log in flag_logs:
+        try:
+            payload = json.loads(log.payload_json)
+            flag_info = {
+                "flag_id": log.flag_id,
+                "severity": log.severity,
+                "detail": payload.get("trigger_detail", ""),
+                "timestamp": log.timestamp_utc.isoformat()
+            }
+            if log.file_id:
+                flags_by_file.setdefault(log.file_id, []).append(flag_info)
+            else:
+                batch_flags.append(flag_info)
+        except:
+            pass
+            
+    # Fetch quality scores by file
+    score_logs = db.query(ObservabilityLog).filter(
+        ObservabilityLog.batch_id == batch_id,
+        ObservabilityLog.event_type == "extraction_quality_score"
+    ).all()
+    scores_by_file = {}
+    for log in score_logs:
+        if log.file_id:
+            try:
+                payload = json.loads(log.payload_json)
+                scores_by_file[log.file_id] = payload.get("composite_score", 0.0)
+            except:
+                pass
+    # ───────────────────────────────────────────────────────────
+    
     tasks_details = []
     all_sales = []
     all_purchase = []
@@ -241,6 +378,8 @@ async def get_job_status(batch_id: str, db: Session = Depends(get_db)):
             "filename": t.file_name,
             "status": t.status.value,
             "error_message": t.error_message,
+            "composite_score": scores_by_file.get(t.id, None),
+            "flags": flags_by_file.get(t.id, []),
         }
         
         sales = []
@@ -277,8 +416,139 @@ async def get_job_status(batch_id: str, db: Session = Depends(get_db)):
         },
         "tasks": tasks_details,
         "sales_items": all_sales if batch.status == TaskStatus.COMPLETED else [],
-        "purchase_items": all_purchase if batch.status == TaskStatus.COMPLETED else []
+        "purchase_items": all_purchase if batch.status == TaskStatus.COMPLETED else [],
+        "batch_metrics": batch_metrics,
+        "batch_flags": batch_flags
     })
+
+@app.get("/api/tasks/{task_id}/observability")
+async def get_task_observability(task_id: str, db: Session = Depends(get_db)):
+    """
+    Returns step-by-step pipeline execution logs for a specific file.
+    """
+    logs = db.query(ObservabilityLog).filter(
+        ObservabilityLog.file_id == task_id
+    ).order_by(ObservabilityLog.timestamp_utc.asc()).all()
+    
+    events = []
+    for l in logs:
+        try:
+            payload = json.loads(l.payload_json)
+        except:
+            payload = {}
+        events.append({
+            "id": l.id,
+            "event_type": l.event_type,
+            "stage": l.stage,
+            "severity": l.severity,
+            "flag_id": l.flag_id,
+            "timestamp": l.timestamp_utc.isoformat(),
+            "model": l.model_identifier,
+            "provider": l.api_provider,
+            "prompt_version": l.prompt_version,
+            "payload": payload
+        })
+        
+    return JSONResponse(content={"task_id": task_id, "events": events})
+
+@app.get("/api/observability/stats")
+async def get_observability_stats(db: Session = Depends(get_db)):
+    """
+    Aggregates metrics and flags across the workspace for the landing dashboard.
+    """
+    from models import BatchJob, InvoiceTask
+    
+    total_batches = db.query(BatchJob).count()
+    total_files = db.query(InvoiceTask).count()
+    
+    # Query all quality scores
+    score_logs = db.query(ObservabilityLog).filter(
+        ObservabilityLog.event_type == "extraction_quality_score"
+    ).all()
+    
+    scores_by_file = {}
+    scores = []
+    for log in score_logs:
+        if log.file_id:
+            try:
+                payload = json.loads(log.payload_json)
+                val = payload.get("composite_score")
+                if val is not None:
+                    scores_by_file[log.file_id] = float(val)
+                    scores.append(float(val))
+            except:
+                pass
+            
+    avg_score = round(sum(scores) / len(scores), 3) if scores else 1.0
+    
+    # Query total cost from file metrics
+    metric_logs = db.query(ObservabilityLog).filter(
+        ObservabilityLog.event_type == "file_metrics"
+    ).all()
+    
+    total_cost = 0.0
+    for log in metric_logs:
+        try:
+            payload = json.loads(log.payload_json)
+            total_cost += float(payload.get("model_cost", {}).get("total_cost_inr", 0.0))
+        except:
+            pass
+            
+    # Query system flags
+    flag_logs = db.query(ObservabilityLog).filter(
+        ObservabilityLog.event_type == "system_flag"
+    ).order_by(ObservabilityLog.timestamp_utc.desc()).all()
+    
+    flags = []
+    for log in flag_logs:
+        try:
+            payload = json.loads(log.payload_json)
+            flags.append({
+                "batch_id": log.batch_id,
+                "file_id": log.file_id,
+                "filename": payload.get("filename", "batch-level"),
+                "flag_id": log.flag_id,
+                "severity": log.severity,
+                "detail": payload.get("trigger_detail", ""),
+                "timestamp": log.timestamp_utc.isoformat()
+            })
+        except:
+            pass
+            
+    # Query recent jobs
+    batches = db.query(BatchJob).order_by(BatchJob.created_at.desc()).limit(10).all()
+    
+    recent_jobs = []
+    for b in batches:
+        tasks_cnt = db.query(InvoiceTask).filter(InvoiceTask.batch_id == b.id).count()
+        
+        # Calculate batch average score
+        b_scores = [scores_by_file.get(log.file_id) for log in score_logs if log.batch_id == b.id and log.file_id]
+        b_scores_clean = [s for s in b_scores if s is not None]
+        b_avg = round(sum(b_scores_clean) / len(b_scores_clean), 3) if b_scores_clean else None
+        
+        # Batch flags count
+        b_flags_count = sum(1 for log in flag_logs if log.batch_id == b.id)
+        
+        recent_jobs.append({
+            "id": b.id,
+            "created_at": b.created_at.isoformat(),
+            "total_files": b.total_files,
+            "status": b.status.value,
+            "average_quality_score": b_avg,
+            "flags_count": b_flags_count
+        })
+        
+    return JSONResponse(content={
+        "total_batches": total_batches,
+        "total_files": total_files,
+        "average_quality_score": avg_score,
+        "total_cost_inr": round(total_cost, 2),
+        "recent_flags": flags[:10],
+        "total_flags": len(flags),
+        "recent_jobs": recent_jobs
+    })
+
 
 @app.websocket("/api/ws/jobs/{batch_id}")
 async def websocket_endpoint(websocket: WebSocket, batch_id: str):
@@ -373,7 +643,7 @@ class MSMEVerifyRequest(BaseModel):
     udyam_number: str
 
 @app.post("/api/verify-msme")
-async def verify_msme_status(req: MSMEVerifyRequest):
+async def verify_msme_status(req: MSMEVerifyRequest, current_user: User = Depends(RoleChecker(["owner", "hr"]))):
     """
     Authorized integration point for MSME status verification.
     This simulates a query to the Ministry of MSME database or an authorized API provider.
@@ -415,7 +685,7 @@ async def verify_msme_status(req: MSMEVerifyRequest):
     })
 
 @app.post("/api/tax/parse-udyam")
-async def upload_udyam_certificate(file: UploadFile = File(...)):
+async def upload_udyam_certificate(file: UploadFile = File(...), current_user: User = Depends(RoleChecker(["owner", "hr"]))):
     """
     Ingests a vendor's Udyam Registration Certificate PDF, extracts metadata
     and normalizes the enterprise classification status.
@@ -442,7 +712,7 @@ class MSMEComplianceRequest(BaseModel):
     amount: float
 
 @app.post("/api/tax/compliance")
-async def calculate_compliance_metrics(req: MSMEComplianceRequest):
+async def calculate_compliance_metrics(req: MSMEComplianceRequest, current_user: User = Depends(RoleChecker(["owner", "hr"]))):
     """
     Computes statutory MSME 43B(h) compliance metrics.
     """
@@ -566,10 +836,11 @@ async def update_item(item_id: int, type: str, req: ItemUpdateRequest, db: Sessi
     if not hasattr(item, req.field):
         raise HTTPException(status_code=400, detail="Invalid field")
         
+    old_value = getattr(item, req.field)
+    
     # Attempt to cast float if the original column is float
-    col_type = type(getattr(item.__table__.columns, req.field).type)
     from sqlalchemy import Float
-    if col_type == Float:
+    if isinstance(getattr(item.__table__.columns, req.field).type, Float):
         try:
             val = float(req.value) if req.value else 0.0
             setattr(item, req.field, val)
@@ -579,6 +850,44 @@ async def update_item(item_id: int, type: str, req: ItemUpdateRequest, db: Sessi
         setattr(item, req.field, req.value)
         
     db.commit()
+    
+    # Emit CA reviewer correction flag if value has changed
+    if old_value != req.value:
+        from services.observability import ObsLogger
+        from models import ObservabilityLog
+        import json
+        
+        task_id = item.task_id
+        task = item.task
+        batch_id = task.batch_id if task else "unknown"
+        
+        # Query composite score from observability logs
+        log = db.query(ObservabilityLog).filter(
+            ObservabilityLog.file_id == task_id,
+            ObservabilityLog.event_type == "extraction_quality_score"
+        ).first()
+        
+        composite_score = 0.85
+        if log:
+            try:
+                payload = json.loads(log.payload_json)
+                composite_score = payload.get("composite_score", 0.85)
+            except:
+                pass
+                
+        try:
+            ObsLogger.emit_ca_flag(
+                batch_id=batch_id,
+                file_id=task_id,
+                rejected_field=req.field,
+                extracted_value=old_value,
+                ca_corrected_value=req.value,
+                composite_score=composite_score,
+                db_session=db
+            )
+        except Exception as e:
+            print(f"Error logging CA flag: {e}")
+            
     return {"status": "success"}
 
 @app.post("/api/invoice-metadata")

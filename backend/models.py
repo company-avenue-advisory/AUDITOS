@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, DateTime, Integer, Enum, Float, ForeignKey
+from sqlalchemy import Column, String, DateTime, Integer, Enum, Float, ForeignKey, Text, Boolean
 from sqlalchemy.orm import relationship
 import enum
 from datetime import datetime
@@ -88,3 +88,54 @@ class PurchaseLineItem(Base):
     narration = Column(String, nullable=True)
     
     task = relationship("InvoiceTask", back_populates="purchase_items")
+
+
+# ── Observability Layer ────────────────────────────────────────────────────────
+
+class ObservabilityLog(Base):
+    """
+    Append-only audit log for every pipeline event in the observability layer.
+    Never updated — corrections are new rows referencing original_file_id.
+    Retained for 7 years per CGST Act Section 36.
+    """
+    __tablename__ = "observability_logs"
+
+    id               = Column(Integer, primary_key=True, autoincrement=True)
+    # Correlation IDs — mandatory on every row
+    batch_id         = Column(String, index=True, nullable=False)
+    file_id          = Column(String, index=True, nullable=True)   # null for batch-level events
+    # Event classification
+    event_type       = Column(String, index=True, nullable=False)  # e.g. batch_received, system_flag, extraction_quality_score
+    stage            = Column(String, nullable=True)               # e.g. file_intake, llm_extraction
+    severity         = Column(String, nullable=True)               # CRITICAL | HIGH | MEDIUM | LOW | null
+    flag_id          = Column(String, nullable=True, index=True)   # e.g. NUMBER_HALLUCINATION_SUSPECTED
+    # Payload
+    payload_json     = Column(Text, nullable=False)                # Full structured JSON blob
+    # Context
+    prompt_version   = Column(String, nullable=True)
+    model_identifier = Column(String, nullable=True)
+    api_provider     = Column(String, nullable=True)
+    # Timestamps
+    timestamp_utc    = Column(DateTime, default=datetime.utcnow, index=True, nullable=False)
+    # Replay / fix linkage
+    original_file_id = Column(String, nullable=True)  # set on replay rows
+    fix_id           = Column(String, nullable=True)
+    is_replay        = Column(Boolean, default=False)
+
+
+# ── Role-Based User Model ────────────────────────────────────────────────────────
+
+class User(Base):
+    """
+    User database model representing account credentials and access roles.
+    Supported roles: "owner", "hr", "auditor", "other"
+    """
+    __tablename__ = "users"
+
+    id              = Column(String, primary_key=True, index=True)
+    email           = Column(String, unique=True, index=True, nullable=False)
+    hashed_password = Column(String, nullable=False)
+    role            = Column(String, default="auditor", nullable=False)  # owner | hr | auditor | other
+    is_active       = Column(Boolean, default=True, nullable=False)
+    created_at      = Column(DateTime, default=datetime.utcnow, nullable=False)
+

@@ -12,6 +12,7 @@ import {
   Sun,
   Moon,
   FileText,
+  LogOut,
 } from "lucide-react";
 
 /* ─────────── Navigation Items ─────────── */
@@ -52,10 +53,14 @@ const NAV_ITEMS = [
 export default function Sidebar() {
   const pathname = usePathname();
   const [theme, setTheme] = useState("dark");
+  const [userEmail, setUserEmail] = useState("");
+  const [userRole, setUserRole] = useState("");
 
   useEffect(() => {
     const currentTheme = document.documentElement.getAttribute("data-theme") || "dark";
     setTheme(currentTheme);
+    setUserEmail(localStorage.getItem("user_email") || "");
+    setUserRole(localStorage.getItem("user_role") || "");
   }, []);
 
   const toggleTheme = () => {
@@ -240,6 +245,45 @@ export default function Sidebar() {
           gap: 12,
         }}
       >
+        {userEmail && (
+          <div
+            style={{
+              padding: "10px 12px",
+              borderRadius: "var(--radius-sm)",
+              background: "rgba(255,255,255,0.02)",
+              border: "1px solid var(--border)",
+              display: "flex",
+              flexDirection: "column",
+              gap: 2,
+            }}
+          >
+            <div
+              style={{
+                fontSize: 11,
+                fontWeight: 600,
+                color: "var(--text-primary)",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+              title={userEmail}
+            >
+              {userEmail}
+            </div>
+            <div
+              style={{
+                fontSize: 9,
+                fontWeight: 700,
+                color: "var(--accent)",
+                textTransform: "uppercase",
+                letterSpacing: "0.05em",
+              }}
+            >
+              Role: {userRole}
+            </div>
+          </div>
+        )}
+
         <button
           onClick={toggleTheme}
           style={{
@@ -268,6 +312,41 @@ export default function Sidebar() {
           {theme === "dark" ? <Sun size={14} /> : <Moon size={14} />}
           <span>{theme === "dark" ? "Light Mode" : "Dark Mode"}</span>
         </button>
+
+        {userEmail && (
+          <button
+            onClick={() => {
+              localStorage.removeItem("token");
+              localStorage.removeItem("user_email");
+              localStorage.removeItem("user_role");
+              window.location.href = "/login";
+            }}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 8,
+              background: "rgba(239,68,68,0.08)",
+              border: "1px solid rgba(239,68,68,0.2)",
+              borderRadius: "var(--radius-sm)",
+              padding: "8px 12px",
+              color: "#ef4444",
+              fontSize: 12,
+              fontWeight: 600,
+              cursor: "pointer",
+              transition: "all 0.2s ease",
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = "rgba(239,68,68,0.15)";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = "rgba(239,68,68,0.08)";
+            }}
+          >
+            <LogOut size={13} />
+            <span>Log Out</span>
+          </button>
+        )}
 
         <div
           style={{

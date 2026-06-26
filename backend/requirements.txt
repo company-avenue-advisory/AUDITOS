@@ -8,3 +8,9 @@ python-dotenv
 openai
 sqlalchemy
 tenacity
+google-cloud-storage
+psycopg2-binary
+celery
+redis
+pyjwt
+bcrypt

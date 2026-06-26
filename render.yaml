@@ -1,0 +1,52 @@
+services:
+  # 1. Web Service (FastAPI Backend API)
+  - type: web
+    name: auditos-backend
+    env: docker
+    dockerContext: backend
+    dockerfilePath: Dockerfile
+    plan: starter  # default starter tier (or standard depending on company choice)
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: CELERY_BROKER_URL
+        sync: false
+      - key: GCS_BUCKET_NAME
+        sync: false
+      - key: GCP_CREDS_JSON
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: OPENAI_API_BASE
+        sync: false
+      - key: MODEL_NAME
+        sync: false
+
+  # 2. Background Worker Service (Celery Worker Queue Processor)
+  - type: worker
+    name: auditos-worker
+    env: docker
+    dockerContext: backend
+    dockerfilePath: Dockerfile
+    plan: starter
+    startCommand: celery -A celery_app worker --loglevel=info
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: CELERY_BROKER_URL
+        sync: false
+      - key: GCS_BUCKET_NAME
+        sync: false
+      - key: GCP_CREDS_JSON
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: OPENAI_API_BASE
+        sync: false
+      - key: MODEL_NAME
+        sync: false

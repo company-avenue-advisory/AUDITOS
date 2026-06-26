@@ -28,12 +28,14 @@ interface DashboardStats {
 
 /* ─────────── Component ─────────── */
 export default function DashboardPage() {
-  const [stats, setStats] = useState<DashboardStats>({
-    totalInvoices: 0,
-    cleanInvoices: 0,
-    discrepancies: 0,
-    accuracy: 100,
-    urgentItems: [],
+  const [liveStats, setLiveStats] = useState({
+    totalBatches: 0,
+    totalFiles: 0,
+    averageQualityScore: 1.0,
+    totalCostInr: 0.0,
+    totalFlags: 0,
+    recentFlags: [] as any[],
+    recentJobs: [] as any[]
   });
   const [backendStatus, setBackendStatus] = useState<
     "checking" | "online" | "offline"
@@ -48,36 +50,24 @@ export default function DashboardPage() {
       })
       .catch(() => setBackendStatus("offline"));
 
-    // Load any cached items from sessionStorage
-    try {
-      const cached = sessionStorage.getItem("audit_os_items");
-      if (cached) {
-        const items: ValidatedItem[] = JSON.parse(cached);
-        const validated = items.map((item) => ({
-          ...item,
-          errors: validateGstItem(item),
-        }));
-        const discrepancies = validated.filter(
-          (i) => i.errors && i.errors.length > 0
-        );
-        setStats({
-          totalInvoices: validated.length,
-          cleanInvoices: validated.length - discrepancies.length,
-          discrepancies: discrepancies.length,
-          accuracy:
-            validated.length > 0
-              ? Math.round(
-                  ((validated.length - discrepancies.length) /
-                    validated.length) *
-                    100
-                )
-              : 100,
-          urgentItems: discrepancies.slice(0, 10),
+    // Fetch live observability stats
+    fetch(`${API_BASE_URL}/api/observability/stats`)
+      .then((res) => {
+        if (res.ok) return res.json();
+        throw new Error();
+      })
+      .then((data) => {
+        setLiveStats({
+          totalBatches: data.total_batches || 0,
+          totalFiles: data.total_files || 0,
+          averageQualityScore: data.average_quality_score !== undefined ? data.average_quality_score : 1.0,
+          totalCostInr: data.total_cost_inr || 0.0,
+          totalFlags: data.total_flags || 0,
+          recentFlags: data.recent_flags || [],
+          recentJobs: data.recent_jobs || []
         });
-      }
-    } catch {
-      // No cached data
-    }
+      })
+      .catch((err) => console.error("Failed to load live observability stats", err));
   }, []);
 
   const statusColor =
@@ -187,41 +177,31 @@ export default function DashboardPage() {
           {[
             {
               label: "Total Invoices",
-              value: stats.totalInvoices,
+              value: liveStats.totalFiles,
               icon: FileSpreadsheet,
               color: "var(--accent)",
               bg: "var(--accent-soft)",
             },
             {
-              label: "Clean (No Errors)",
-              value: stats.cleanInvoices,
+              label: "Avg Quality Score",
+              value: `${(liveStats.averageQualityScore * 100).toFixed(1)}%`,
               icon: CheckCircle,
-              color: "#22c55e",
-              bg: "var(--green-soft)",
+              color: liveStats.averageQualityScore >= 0.90 ? "#22c55e" : liveStats.averageQualityScore >= 0.75 ? "#f59e0b" : "#ef4444",
+              bg: liveStats.averageQualityScore >= 0.90 ? "var(--green-soft)" : liveStats.averageQualityScore >= 0.75 ? "var(--amber-soft)" : "var(--red-soft)",
             },
             {
-              label: "Active Discrepancies",
-              value: stats.discrepancies,
-              icon: AlertTriangle,
-              color: "#ef4444",
-              bg: "var(--red-soft)",
-            },
-            {
-              label: "Accuracy Rate",
-              value: `${stats.accuracy}%`,
+              label: "Total Cloud Cost",
+              value: `₹ ${liveStats.totalCostInr.toFixed(2)}`,
               icon: TrendingUp,
-              color:
-                stats.accuracy >= 90
-                  ? "#22c55e"
-                  : stats.accuracy >= 70
-                    ? "#f59e0b"
-                    : "#ef4444",
-              bg:
-                stats.accuracy >= 90
-                  ? "var(--green-soft)"
-                  : stats.accuracy >= 70
-                    ? "var(--amber-soft)"
-                    : "var(--red-soft)",
+              color: "#A78BFA",
+              bg: "rgba(167, 139, 250, 0.1)",
+            },
+            {
+              label: "Active System Flags",
+              value: liveStats.totalFlags,
+              icon: AlertTriangle,
+              color: liveStats.totalFlags > 0 ? "#ef4444" : "#22c55e",
+              bg: liveStats.totalFlags > 0 ? "var(--red-soft)" : "var(--green-soft)",
             },
           ].map((card) => {
             const Icon = card.icon;
@@ -436,158 +416,98 @@ export default function DashboardPage() {
           </Link>
         </div>
 
-        {/* ══ URGENT REVIEW GRID ══ */}
-        {stats.urgentItems.length > 0 && (
+        {/* ══ ACTIVE SYSTEM FLAGS / ALERTS ══ */}
+        {liveStats.recentFlags.length > 0 && (
           <section
             className="glass animate-fade-up"
             style={{
               borderRadius: "var(--radius-xl)",
               overflow: "hidden",
               animationDelay: "0.15s",
+              border: "1px solid rgba(239,68,68,0.2)"
             }}
           >
             <div
               style={{
-                padding: "24px 28px",
+                padding: "20px 24px",
                 borderBottom: "1px solid var(--border)",
                 display: "flex",
                 alignItems: "center",
                 gap: 10,
+                background: "rgba(239,68,68,0.02)"
               }}
             >
               <Shield
                 size={18}
-                style={{ color: "var(--red)" }}
+                style={{ color: "#ef4444" }}
               />
               <span
                 style={{
-                  fontSize: 16,
+                  fontSize: 15,
                   fontWeight: 700,
                   color: "var(--text-primary)",
                   letterSpacing: "-0.02em",
                 }}
               >
-                Urgent Review Required
+                Active System Flags & Alerts
               </span>
               <span
                 style={{
                   fontSize: 11,
                   fontWeight: 600,
                   color: "#fca5a5",
-                  background: "var(--red-soft)",
+                  background: "rgba(239,68,68,0.15)",
                   border: "1px solid rgba(239,68,68,0.25)",
                   borderRadius: 99,
                   padding: "2px 10px",
                 }}
               >
-                {stats.urgentItems.length} items
+                {liveStats.totalFlags} flags
               </span>
             </div>
             <div style={{ overflowX: "auto" }}>
-              <table
-                style={{
-                  width: "100%",
-                  borderCollapse: "collapse",
-                  fontSize: 12,
-                }}
-              >
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                 <thead>
-                  <tr
-                    style={{
-                      background: "rgba(239,68,68,0.04)",
-                      borderBottom: "1px solid var(--border)",
-                    }}
-                  >
-                    {["Invoice", "GSTIN", "Party", "Total", "Issues"].map(
-                      (h) => (
-                        <th
-                          key={h}
-                          style={{
-                            padding: "10px 12px",
-                            textAlign: "left",
-                            color: "var(--text-muted)",
-                            fontWeight: 600,
-                            fontSize: 10,
-                            textTransform: "uppercase",
-                            letterSpacing: "0.06em",
-                          }}
-                        >
-                          {h}
-                        </th>
-                      )
-                    )}
+                  <tr style={{ background: "rgba(0,0,0,0.02)", borderBottom: "1px solid var(--border)" }}>
+                    <th style={{ padding: "12px 16px", textAlign: "left", color: "var(--text-muted)", fontWeight: 600, fontSize: 10, textTransform: "uppercase", letterSpacing: "0.06em" }}>Severity</th>
+                    <th style={{ padding: "12px 16px", textAlign: "left", color: "var(--text-muted)", fontWeight: 600, fontSize: 10, textTransform: "uppercase", letterSpacing: "0.06em" }}>Flag ID</th>
+                    <th style={{ padding: "12px 16px", textAlign: "left", color: "var(--text-muted)", fontWeight: 600, fontSize: 10, textTransform: "uppercase", letterSpacing: "0.06em" }}>Source Document</th>
+                    <th style={{ padding: "12px 16px", textAlign: "left", color: "var(--text-muted)", fontWeight: 600, fontSize: 10, textTransform: "uppercase", letterSpacing: "0.06em" }}>Trigger Condition / Details</th>
+                    <th style={{ padding: "12px 16px", textAlign: "right", color: "var(--text-muted)", fontWeight: 600, fontSize: 10, textTransform: "uppercase", letterSpacing: "0.06em" }}>Timestamp</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {stats.urgentItems.map((item, idx) => (
+                  {liveStats.recentFlags.map((flag, idx) => (
                     <tr
                       key={idx}
                       style={{
                         borderBottom: "1px solid var(--border)",
-                        background: "rgba(239,68,68,0.02)",
+                        background: flag.severity === "CRITICAL" ? "rgba(239,68,68,0.015)" : "transparent",
                       }}
                     >
-                      <td
-                        style={{
-                          padding: "10px 12px",
-                          color: "var(--text-primary)",
-                          fontWeight: 500,
-                        }}
-                      >
-                        {item.supplier_inv || "—"}
+                      <td style={{ padding: "12px 16px" }}>
+                        <span style={{
+                          padding: "2px 8px",
+                          borderRadius: 4,
+                          fontSize: 10,
+                          fontWeight: 700,
+                          background: flag.severity === "CRITICAL" ? "rgba(239,68,68,0.15)" : flag.severity === "HIGH" ? "rgba(245,158,11,0.15)" : "rgba(59,130,246,0.15)",
+                          color: flag.severity === "CRITICAL" ? "#ef4444" : flag.severity === "HIGH" ? "#f59e0b" : "#3b82f6"
+                        }}>
+                          {flag.severity}
+                        </span>
                       </td>
-                      <td
-                        style={{
-                          padding: "10px 12px",
-                          fontFamily: "monospace",
-                          color: "var(--text-secondary)",
-                          fontSize: 11,
-                        }}
-                      >
-                        {item.gst_no || "—"}
+                      <td style={{ padding: "12px 16px", fontFamily: "monospace", color: "var(--text-primary)", fontWeight: 500 }}>
+                        {flag.flag_id}
                       </td>
-                      <td
-                        style={{
-                          padding: "10px 12px",
-                          color: "var(--text-secondary)",
-                        }}
-                      >
-                        {item.party_ac_name || "—"}
+                      <td style={{ padding: "12px 16px", color: "var(--text-secondary)" }}>
+                        {flag.filename.length > 25 ? flag.filename.slice(0, 23) + "…" : flag.filename}
                       </td>
-                      <td
-                        style={{
-                          padding: "10px 12px",
-                          color: "var(--text-primary)",
-                          fontFamily: "monospace",
-                          textAlign: "right",
-                        }}
-                      >
-                        ₹{(item.total_amount || 0).toFixed(2)}
+                      <td style={{ padding: "12px 16px", color: "var(--text-muted)" }}>
+                        {flag.detail}
                       </td>
-                      <td style={{ padding: "10px 12px" }}>
-                        {item.errors?.map((err, i) => (
-                          <div
-                            key={i}
-                            style={{
-                              fontSize: 11,
-                              color: "#fca5a5",
-                              marginBottom: 2,
-                              display: "flex",
-                              gap: 4,
-                              alignItems: "flex-start",
-                            }}
-                          >
-                            <span
-                              style={{
-                                color: "var(--red)",
-                                flexShrink: 0,
-                              }}
-                            >
-                              ·
-                            </span>
-                            {err}
-                          </div>
-                        ))}
+                      <td style={{ padding: "12px 16px", textAlign: "right", color: "var(--text-muted)", fontSize: 11 }}>
+                        {new Date(flag.timestamp).toLocaleString()}
                       </td>
                     </tr>
                   ))}
@@ -597,60 +517,153 @@ export default function DashboardPage() {
           </section>
         )}
 
-        {/* ══ EMPTY STATE ══ */}
-        {stats.totalInvoices === 0 && (
+        {/* ══ RECENT UPLOAD RUNS ══ */}
+        <section
+          className="glass animate-fade-up"
+          style={{
+            borderRadius: "var(--radius-xl)",
+            overflow: "hidden",
+            animationDelay: "0.2s"
+          }}
+        >
           <div
-            className="glass animate-fade-up"
             style={{
-              borderRadius: "var(--radius-xl)",
-              padding: "48px 32px",
-              textAlign: "center",
-              animationDelay: "0.15s",
+              padding: "20px 24px",
+              borderBottom: "1px solid var(--border)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between"
             }}
           >
-            <FileSpreadsheet
-              size={40}
-              style={{
-                color: "var(--text-muted)",
-                margin: "0 auto 16px",
-                display: "block",
-                opacity: 0.5,
-              }}
-            />
-            <div
-              style={{
-                fontSize: 16,
-                fontWeight: 600,
-                color: "var(--text-secondary)",
-                marginBottom: 8,
-              }}
-            >
-              No invoices processed yet
-            </div>
-            <div
-              style={{
-                fontSize: 13,
-                color: "var(--text-muted)",
-                maxWidth: 400,
-                margin: "0 auto",
-                lineHeight: 1.6,
-              }}
-            >
-              Navigate to the{" "}
-              <Link
-                href="/invoice-extractor"
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <FileSpreadsheet
+                size={18}
+                style={{ color: "var(--accent)" }}
+              />
+              <span
                 style={{
-                  color: "var(--accent)",
-                  textDecoration: "none",
-                  fontWeight: 600,
+                  fontSize: 15,
+                  fontWeight: 700,
+                  color: "var(--text-primary)",
+                  letterSpacing: "-0.02em",
                 }}
               >
-                Invoice Extractor
-              </Link>{" "}
-              to upload PDFs and start the audit pipeline.
+                Recent Audit Pipeline Batches
+              </span>
             </div>
+            <Link href="/invoice-extractor" style={{ fontSize: 12, color: "var(--accent)", textDecoration: "none", fontWeight: 500 }}>
+              Upload New Batch →
+            </Link>
           </div>
-        )}
+          
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, textAlign: "left" }}>
+              <thead>
+                <tr style={{ background: "rgba(0,0,0,0.02)", borderBottom: "1px solid var(--border)" }}>
+                  <th style={{ padding: "14px 20px", color: "var(--text-secondary)", fontWeight: 500 }}>Date Started</th>
+                  <th style={{ padding: "14px 20px", color: "var(--text-secondary)", fontWeight: 500 }}>Batch ID</th>
+                  <th style={{ padding: "14px 20px", color: "var(--text-secondary)", fontWeight: 500 }}>Invoices</th>
+                  <th style={{ padding: "14px 20px", color: "var(--text-secondary)", fontWeight: 500 }}>Status</th>
+                  <th style={{ padding: "14px 20px", color: "var(--text-secondary)", fontWeight: 500 }}>Avg Quality Score</th>
+                  <th style={{ padding: "14px 20px", color: "var(--text-secondary)", fontWeight: 500 }}>Flags raised</th>
+                  <th style={{ padding: "14px 20px", color: "var(--text-secondary)", fontWeight: 500, textAlign: "right" }}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {liveStats.recentJobs.map((b) => (
+                  <tr
+                    key={b.id}
+                    style={{ borderBottom: "1px solid var(--border)", transition: "background .15s" }}
+                    onMouseEnter={e => e.currentTarget.style.background = "rgba(255,255,255,0.01)"}
+                    onMouseLeave={e => e.currentTarget.style.background = "transparent"}
+                  >
+                    <td style={{ padding: "14px 20px", color: "var(--text-primary)" }}>
+                      {new Date(b.created_at).toLocaleString()}
+                    </td>
+                    <td style={{ padding: "14px 20px", color: "var(--text-secondary)", fontFamily: "monospace", fontSize: 11 }}>
+                      {b.id}
+                    </td>
+                    <td style={{ padding: "14px 20px", color: "var(--text-primary)", fontWeight: 600 }}>
+                      {b.total_files} docs
+                    </td>
+                    <td style={{ padding: "14px 20px" }}>
+                      <span style={{
+                        padding: "4px 10px",
+                        borderRadius: 20,
+                        fontSize: 11,
+                        fontWeight: 500,
+                        background: b.status === "COMPLETED" ? "var(--green-soft)" : (b.status === "FAILED" ? "var(--red-soft)" : "var(--amber-soft)"),
+                        color: b.status === "COMPLETED" ? "#34D399" : (b.status === "FAILED" ? "#EF4444" : "#D4A017")
+                      }}>
+                        {b.status}
+                      </span>
+                    </td>
+                    <td style={{ padding: "14px 20px" }}>
+                      {b.average_quality_score !== null && b.average_quality_score !== undefined ? (
+                        <span style={{
+                          padding: "2px 8px",
+                          borderRadius: 4,
+                          fontSize: 11,
+                          fontWeight: 600,
+                          background: b.average_quality_score >= 0.90 ? "rgba(16,185,129,0.12)" : b.average_quality_score >= 0.75 ? "rgba(234,179,8,0.12)" : "rgba(239,68,68,0.12)",
+                          color: b.average_quality_score >= 0.90 ? "#34D399" : b.average_quality_score >= 0.75 ? "#D4A017" : "#EF4444"
+                        }}>
+                          {(b.average_quality_score * 100).toFixed(1)}%
+                        </span>
+                      ) : (
+                        <span style={{ color: "var(--text-muted)" }}>—</span>
+                      )}
+                    </td>
+                    <td style={{ padding: "14px 20px" }}>
+                      {b.flags_count > 0 ? (
+                        <span style={{
+                          color: "#ef4444",
+                          fontWeight: 600,
+                          background: "var(--red-soft)",
+                          padding: "2px 8px",
+                          borderRadius: 12
+                        }}>
+                          ⚠️ {b.flags_count} flags
+                        </span>
+                      ) : (
+                        <span style={{ color: "#22c55e" }}>✓ Clean</span>
+                      )}
+                    </td>
+                    <td style={{ padding: "14px 20px", textAlign: "right" }}>
+                      <Link
+                        href={`/invoice-extractor?batchId=${b.id}`}
+                        style={{
+                          textDecoration: "none"
+                        }}
+                      >
+                        <button
+                          className="nav-pill"
+                          style={{
+                            borderColor: "var(--accent)",
+                            color: "var(--accent)",
+                            background: "rgba(26,107,255,0.05)",
+                            fontSize: 12,
+                            padding: "6px 14px",
+                            borderRadius: 6
+                          }}
+                        >
+                          View Ledger →
+                        </button>
+                      </Link>
+                    </td>
+                  </tr>
+                ))}
+                {liveStats.recentJobs.length === 0 && (
+                  <tr>
+                    <td colSpan={7} style={{ padding: "60px 20px", textAlign: "center", color: "var(--text-secondary)" }}>
+                      No extraction history found.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </section>
       </div>
     </main>
   );

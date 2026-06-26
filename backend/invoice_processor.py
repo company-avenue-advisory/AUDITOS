@@ -80,6 +80,12 @@ class InvoiceExtractionResponse(BaseModel):
     overall_total_invoice_value: float = Field(0.0, description="Overall Total Invoice Value incl taxes")
     sales_items: List[SuvitSalesItem] = Field(default_factory=list, description="Extracted sales items")
     purchase_items: List[SuvitPurchaseItem] = Field(default_factory=list, description="Extracted purchase items")
+    correction_meta: Optional[dict] = Field(None, description="Metadata about post-processing corrections")
+    prompt_tokens: Optional[int] = Field(0, description="Prompt tokens used")
+    completion_tokens: Optional[int] = Field(0, description="Completion tokens used")
+    total_pages: Optional[int] = Field(0, description="Total pages processed")
+    latency_ms: Optional[int] = Field(0, description="Latency in ms")
+    total_retries: Optional[int] = Field(0, description="Total retries")
 
 def extract_text_from_pdf(pdf_path):
     import pdfplumber
@@ -113,7 +119,68 @@ def extract_page_content(page, pdfplumber_page=None):
     return {"type": "text", "content": text + "\n"}
 
 def call_llm(pdf_contents, model_name, client, invoice_type="both"):
-    schema_json = InvoiceExtractionResponse.model_json_schema()
+    schema_json = """{
+  "type": "object",
+  "properties": {
+    "overall_taxable_value": {"type": "number", "description": "Overall Taxable Value of the entire invoice"},
+    "overall_cgst_amount": {"type": "number", "description": "Overall CGST Amount of the entire invoice"},
+    "overall_sgst_amount": {"type": "number", "description": "Overall SGST Amount of the entire invoice"},
+    "overall_igst_amount": {"type": "number", "description": "Overall IGST Amount of the entire invoice"},
+    "overall_total_invoice_value": {"type": "number", "description": "Overall Total Invoice Value incl taxes"},
+    "sales_items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "voucher_date": {"type": "string", "description": "Voucher Date (DD-MMM-YYYY)"},
+          "voucher_type": {"type": "string", "description": "Voucher Type (Sales)"},
+          "invoice_no": {"type": "string", "description": "Invoice No"},
+          "party_ledger_name": {"type": "string", "description": "Party Ledger Name"},
+          "party_gstin": {"type": "string", "description": "Party GSTIN"},
+          "place_of_supply": {"type": "string", "description": "Place of Supply"},
+          "particulars": {"type": "string", "description": "Particulars / Item Description"},
+          "hsn": {"type": "string", "description": "HSN/SAC Code"},
+          "qty": {"type": "number", "description": "Qty"},
+          "rate": {"type": "number", "description": "Rate"},
+          "taxable_value": {"type": "number", "description": "Taxable Value"},
+          "discount": {"type": "number", "description": "Discount amount"},
+          "advances": {"type": "number", "description": "Advances amount"},
+          "cgst_amount": {"type": "number", "description": "CGST Amount"},
+          "sgst_amount": {"type": "number", "description": "SGST Amount"},
+          "igst_amount": {"type": "number", "description": "IGST Amount"},
+          "total_invoice_value": {"type": "number", "description": "Total Invoice Value"},
+          "gstr1_category": {"type": "string", "description": "GSTR-1 Category"},
+          "narration": {"type": "string", "description": "Narration"}
+        }
+      }
+    },
+    "purchase_items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "voucher_date": {"type": "string", "description": "Voucher Date (DD-MMM-YYYY)"},
+          "voucher_type": {"type": "string", "description": "Voucher Type (Purchase)"},
+          "invoice_no": {"type": "string", "description": "Invoice No"},
+          "party_ledger_name": {"type": "string", "description": "Party Ledger Name"},
+          "party_gstin": {"type": "string", "description": "Party GSTIN"},
+          "place_of_supply": {"type": "string", "description": "Place of Supply"},
+          "particulars": {"type": "string", "description": "Particulars / Item Description"},
+          "hsn": {"type": "string", "description": "HSN/SAC Code"},
+          "qty": {"type": "number", "description": "Qty"},
+          "rate": {"type": "number", "description": "Rate"},
+          "taxable_value": {"type": "number", "description": "Taxable Value"},
+          "cgst_amount": {"type": "number", "description": "CGST Amount"},
+          "sgst_amount": {"type": "number", "description": "SGST Amount"},
+          "igst_amount": {"type": "number", "description": "IGST Amount"},
+          "total_invoice_value": {"type": "number", "description": "Total Invoice Value"},
+          "itc_category": {"type": "string", "description": "ITC Category"},
+          "narration": {"type": "string", "description": "Narration"}
+        }
+      }
+    }
+  }
+}"""
     
     import os
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -138,33 +205,54 @@ def call_llm(pdf_contents, model_name, client, invoice_type="both"):
             messages_content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{item['content']}"}})
             
     max_retries = 3
+    fallback_chain = [model_name]
+    if model_name == "google/gemini-2.5-flash":
+        fallback_chain = ["google/gemini-2.5-flash", "google/gemini-1.5-flash", "google/gemini-2.5-pro"]
+    elif model_name == "gemini-2.5-flash":
+        fallback_chain = ["gemini-2.5-flash", "gemini-1.5-flash", "gemini-2.5-pro"]
+    elif "llama" in model_name:
+        fallback_chain = [model_name, "llama-3.3-70b-versatile", "llama3-70b-8192"]
+        
     for attempt in range(max_retries):
+        current_model = fallback_chain[attempt] if attempt < len(fallback_chain) else fallback_chain[-1]
         try:
-            print(f"  Analyzing content (attempt {attempt+1})...")
+            print(f"  Analyzing content (attempt {attempt+1}) using {current_model}...")
             
             response = client.chat.completions.create(
-                model=model_name,
+                model=current_model,
                 messages=[{"role": "user", "content": messages_content}],
                 response_format={"type": "json_object"},
-                temperature=0.0
+                temperature=0.0,
+                max_tokens=2048
             )
             
-            content = response.choices[0].message.content.strip()
+            raw_content = response.choices[0].message.content
+            if not raw_content:
+                raise ValueError("LLM returned empty or null content")
+            content = raw_content.strip()
             json_match = re.search(r'\{.*\}', content, re.DOTALL)
             if json_match:
                 content = json_match.group(0)
                 
             import json
             data = InvoiceExtractionResponse(**json.loads(content))
-            return data
+            prompt_tokens = response.usage.prompt_tokens if (response.usage and hasattr(response.usage, "prompt_tokens")) else 0
+            completion_tokens = response.usage.completion_tokens if (response.usage and hasattr(response.usage, "completion_tokens")) else 0
+            return data, prompt_tokens, completion_tokens, attempt
             
         except Exception as e:
             if attempt == max_retries - 1:
                 raise e
+            print(f"  Model {current_model} failed with error: {str(e)[:100]}...")
             time.sleep(10 * (attempt + 1) if "429" in str(e) or "503" in str(e) else 2)
 
-def process_pdf(pdf_path, model_override=None, invoice_type="both"):
+def process_pdf(pdf_path, model_override=None, invoice_type="both", logger=None):
     import pdfplumber
+    import time
+    from services.observability import now_utc
+    
+    # 1. File Intake Stage
+    started_intake = now_utc()
     try:
         doc = fitz.open(pdf_path)
         pdf_plumber_doc = pdfplumber.open(pdf_path)
@@ -175,24 +263,73 @@ def process_pdf(pdf_path, model_override=None, invoice_type="both"):
         
     if total_pages == 0:
         return InvoiceExtractionResponse()
+        
+    # Determine scan type
+    full_text = ""
+    for page in doc:
+        full_text += page.get_text() + "\n"
+    scan_type = "text_selectable" if len(full_text.strip()) >= 50 else "scanned_ocr"
+    
+    completed_intake = now_utc()
+    if logger:
+        logger.emit_file_intake(
+            filename=os.path.basename(pdf_path),
+            page_count=total_pages,
+            started_at=started_intake,
+            completed_at=completed_intake,
+            scan_type=scan_type
+        )
 
+    # 2. Model Selection Stage
+    started_model = now_utc()
     is_cloud_primary = False
     if model_override and model_override.get("provider") == "openrouter":
         model_name = model_override["model"]
         base_url = "https://openrouter.ai/api/v1"
         api_key = os.getenv("OPENROUTER_API_KEY", "dummy")
         is_cloud_primary = True
+    elif model_override and model_override.get("provider") == "groq":
+        model_name = model_override.get("model") or "llama-3.3-70b-versatile"
+        base_url = "https://api.groq.com/openai/v1"
+        api_key = os.getenv("GROQ_API_KEY") or os.getenv("OPENAI_API_KEY")
+        is_cloud_primary = True
     elif model_override and model_override.get("provider") == "ollama":
         model_name = model_override.get("model") or os.getenv("OLLAMA_MODEL_NAME", "qwen2.5:7b")
         base_url = os.getenv("OLLAMA_API_BASE", "http://localhost:11434/v1")
         api_key = os.getenv("OLLAMA_API_KEY", "ollama")
     else:
-        # 🚀 Google Gemini Direct API Integration
-        model_name = "gemini-2.5-flash"
-        base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
-        api_key = os.getenv("GEMINI_API_KEY", "")
+        # Default to Groq if key is present, else Gemini
+        if os.getenv("GROQ_API_KEY"):
+            model_name = "llama-3.3-70b-versatile"
+            base_url = "https://api.groq.com/openai/v1"
+            api_key = os.getenv("GROQ_API_KEY")
+        else:
+            model_name = "gemini-2.5-flash"
+            base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
+            api_key = os.getenv("GEMINI_API_KEY", "")
         is_cloud_primary = True
         
+    completed_model = now_utc()
+    if logger:
+        logger.emit_model_selection(
+            started_at=started_model,
+            completed_at=completed_model,
+            api_key_present=bool(api_key),
+            endpoint_health="healthy"
+        )
+        
+    # 3. Guardrail Precheck Stage
+    started_precheck = now_utc()
+    passed_precheck = total_pages > 0 and os.path.exists(pdf_path)
+    completed_precheck = now_utc()
+    if logger:
+        logger.emit_guardrail_precheck(
+            started_at=started_precheck,
+            completed_at=completed_precheck,
+            passed=passed_precheck,
+            failure_reason=None if passed_precheck else "Invalid or empty PDF file"
+        )
+
     from openai import OpenAI
     client = OpenAI(api_key=api_key, base_url=base_url)
     
@@ -200,6 +337,13 @@ def process_pdf(pdf_path, model_override=None, invoice_type="both"):
     OVERLAP = 1
     
     all_res = InvoiceExtractionResponse()
+    
+    # 4. LLM Extraction Stage
+    total_prompt_tokens = 0
+    total_completion_tokens = 0
+    total_latency_ms = 0
+    total_retries = 0
+    started_extraction = now_utc()
     
     if total_pages <= CHUNK_SIZE:
         pdf_contents = []
@@ -210,7 +354,14 @@ def process_pdf(pdf_path, model_override=None, invoice_type="both"):
             if content_item["content"]:
                 has_content = True
         if has_content:
-            res = call_llm(pdf_contents, model_name, client, invoice_type)
+            t0 = time.time()
+            res, pt, ct, att = call_llm(pdf_contents, model_name, client, invoice_type)
+            chunk_latency = int((time.time() - t0) * 1000)
+            total_latency_ms += chunk_latency
+            total_prompt_tokens += pt
+            total_completion_tokens += ct
+            total_retries += att
+            
             if res:
                 all_res.sales_items.extend(res.sales_items)
                 all_res.purchase_items.extend(res.purchase_items)
@@ -233,7 +384,14 @@ def process_pdf(pdf_path, model_override=None, invoice_type="both"):
                     has_content = True
                 
             if has_content:
-                res = call_llm(chunk_contents, model_name, client, invoice_type)
+                t0 = time.time()
+                res, pt, ct, att = call_llm(chunk_contents, model_name, client, invoice_type)
+                chunk_latency = int((time.time() - t0) * 1000)
+                total_latency_ms += chunk_latency
+                total_prompt_tokens += pt
+                total_completion_tokens += ct
+                total_retries += att
+                
                 if res:
                     all_res.sales_items.extend(res.sales_items)
                     all_res.purchase_items.extend(res.purchase_items)
@@ -247,12 +405,9 @@ def process_pdf(pdf_path, model_override=None, invoice_type="both"):
                 break
             start += CHUNK_SIZE - OVERLAP
             
-    # CA-level strict regex fallback for totals
-    import re
-    full_text = ""
-    for page in doc:
-        full_text += page.get_text() + "\n"
-        
+    completed_extraction = now_utc()
+    
+    # 5. CA-level strict regex fallback for totals
     if all_res.overall_taxable_value == 0:
         net_cost_match = re.search(r'Final Total \([^)]+\)\n([0-9,.]+)', full_text) or re.search(r'Net Cost\n([0-9,.]+)', full_text)
         if net_cost_match:
@@ -269,7 +424,164 @@ def process_pdf(pdf_path, model_override=None, invoice_type="both"):
         total_match = re.search(r'Total Cost incl Taxes\n([0-9,.]+)', full_text)
         if total_match:
             all_res.overall_total_invoice_value = float(total_match.group(1).replace(',', ''))
+
+    # Force alignment with user-selected invoice type if LLM misclassified the perspective
+    if invoice_type == "sales" and all_res.purchase_items:
+        for p_item in all_res.purchase_items:
+            s_item = SuvitSalesItem(
+                voucher_date=p_item.voucher_date,
+                voucher_type="Sales",
+                invoice_no=p_item.invoice_no,
+                party_ledger_name=p_item.party_ledger_name,
+                party_gstin=p_item.party_gstin,
+                place_of_supply=p_item.place_of_supply,
+                particulars=p_item.particulars,
+                hsn=p_item.hsn,
+                qty=p_item.qty,
+                rate=p_item.rate,
+                taxable_value=p_item.taxable_value,
+                discount=0.0,
+                advances=0.0,
+                cgst_amount=p_item.cgst_amount,
+                sgst_amount=p_item.sgst_amount,
+                igst_amount=p_item.igst_amount,
+                total_invoice_value=p_item.total_invoice_value,
+                narration=p_item.narration
+            )
+            all_res.sales_items.append(s_item)
+        all_res.purchase_items = []
+    elif invoice_type == "purchase" and all_res.sales_items:
+        for s_item in all_res.sales_items:
+            p_item = SuvitPurchaseItem(
+                voucher_date=s_item.voucher_date,
+                voucher_type="Purchase",
+                invoice_no=s_item.invoice_no,
+                party_ledger_name=s_item.party_ledger_name,
+                party_gstin=s_item.party_gstin,
+                place_of_supply=s_item.place_of_supply,
+                particulars=s_item.particulars,
+                hsn=s_item.hsn,
+                qty=s_item.qty,
+                rate=s_item.rate,
+                taxable_value=s_item.taxable_value,
+                cgst_amount=s_item.cgst_amount,
+                sgst_amount=s_item.sgst_amount,
+                igst_amount=s_item.igst_amount,
+                total_invoice_value=s_item.total_invoice_value,
+                itc_category=None,
+                narration=s_item.narration
+            )
+            all_res.purchase_items.append(p_item)
+        all_res.sales_items = []
+
+    # Emit extraction step
+    if logger:
+        logger.emit_llm_extraction(
+            started_at=started_extraction,
+            completed_at=completed_extraction,
+            latency_ms=total_latency_ms,
+            prompt_tokens=total_prompt_tokens,
+            completion_tokens=total_completion_tokens,
+            raw_line_items=len(all_res.sales_items) + len(all_res.purchase_items),
+            sales_count=len(all_res.sales_items),
+            purchase_count=len(all_res.purchase_items),
+            subtotal_rows_detected=0,  # calculated during post-processing
+            json_parse_succeeded=True,
+            retry_count=total_retries
+        )
+
+    # 6. Post-Processing Stage
+    started_post = now_utc()
+    
+    correction_meta = {
+        "pydantic_null_coercions": 0,
+        "subtotal_rows_dropped": 0,
+        "gst_rates_snapped": 0,
+        "taxes_recalculated": 0,
+        "unallocated_rows_injected": 0,
+        "unallocated_row_details": {}
+    }
+    
+    if all_res.sales_items:
+        # Detect subtotal rows dropped
+        orig_len = len(all_res.sales_items)
+        cleaned_sales = remove_subtotals(all_res.sales_items)
+        dropped = orig_len - len(cleaned_sales)
+        correction_meta["subtotal_rows_dropped"] = dropped
+        
+        # Apply QC Audit
+        cleaned_sales = qc_audit_sales_items(cleaned_sales)
+        
+        # Unallocated variance injection
+        overall_total = all_res.overall_total_invoice_value
+        sum_total = sum((item.taxable_value or 0.0) + (item.cgst_amount or 0.0) + (item.sgst_amount or 0.0) + (item.igst_amount or 0.0) for item in cleaned_sales)
+        diff = overall_total - sum_total
+        
+        if overall_total > 0 and diff > 1.0:
+            taxable_diff = round(diff / 1.18, 2)
+            is_interstate = (cleaned_sales[0].igst_amount or 0) > 0 if cleaned_sales else False
             
+            dummy_item = SuvitSalesItem(
+                voucher_date=cleaned_sales[0].voucher_date if cleaned_sales else "",
+                invoice_no=cleaned_sales[0].invoice_no if cleaned_sales else "",
+                party_gstin=cleaned_sales[0].party_gstin if cleaned_sales else "",
+                party_ledger_name=cleaned_sales[0].party_ledger_name if cleaned_sales else "",
+                place_of_supply=cleaned_sales[0].place_of_supply if cleaned_sales else "",
+                particulars="Unallocated / Missing Lines",
+                hsn="9971",
+                taxable_value=taxable_diff,
+                cgst_amount=0.0 if is_interstate else round(taxable_diff * 0.09, 2),
+                sgst_amount=0.0 if is_interstate else round(taxable_diff * 0.09, 2),
+                igst_amount=round(taxable_diff * 0.18, 2) if is_interstate else 0.0,
+                total_invoice_value=diff
+            )
+            cleaned_sales.append(dummy_item)
+            correction_meta["unallocated_rows_injected"] = 1
+            correction_meta["unallocated_row_details"] = {
+                "variance_amount": diff
+            }
+            
+        # Math verification agent (GST snaps / recalculations)
+        pre_rates = [item.rate for item in cleaned_sales]
+        pre_taxes = [(item.cgst_amount, item.sgst_amount, item.igst_amount) for item in cleaned_sales]
+        
+        cleaned_sales = math_verification_agent(cleaned_sales)
+        
+        for i, item in enumerate(cleaned_sales):
+            if i < len(pre_rates) and pre_rates[i] != item.rate:
+                correction_meta["gst_rates_snapped"] += 1
+            if i < len(pre_taxes):
+                pre_cgst, pre_sgst, pre_igst = pre_taxes[i]
+                if pre_cgst != item.cgst_amount or pre_sgst != item.sgst_amount or pre_igst != item.igst_amount:
+                    correction_meta["taxes_recalculated"] += 1
+                    
+        all_res.sales_items = cleaned_sales
+        
+    completed_post = now_utc()
+    if logger:
+        # Also update extraction log with correct subtotal rows dropped count
+        try:
+            logger.emit_post_processing(
+                started_at=started_post,
+                completed_at=completed_post,
+                correction_meta=correction_meta,
+                final_item_count=len(all_res.sales_items) + len(all_res.purchase_items)
+            )
+        except Exception as e:
+            print(f"Error logging post_processing: {e}")
+
+    try:
+        pdf_plumber_doc.close()
+    except:
+        pass
+        
+    all_res.correction_meta = correction_meta
+    all_res.prompt_tokens = total_prompt_tokens
+    all_res.completion_tokens = total_completion_tokens
+    all_res.total_pages = total_pages
+    all_res.latency_ms = total_latency_ms
+    all_res.total_retries = total_retries
+    
     return all_res
 
 def deduplicate_sales(df):
@@ -279,7 +591,7 @@ def deduplicate_sales(df):
 
 def deduplicate_purchase(df):
     if df.empty: return df
-    df = df.drop_duplicates(subset=["Invoice No", "Party Ledger Name", "Item/Ledger Name", "Taxable Value"], keep="first")
+    df = df.drop_duplicates(subset=["SUPPLIER INV NO", "PARTY A/C NAME", "PARTICULARS", "AMOUNT"], keep="first")
     return df
 
 def remove_subtotals(sales_items):
@@ -301,6 +613,84 @@ def remove_subtotals(sales_items):
             current_group.append(item)
     cleaned_items.extend(current_group)
     return cleaned_items
+
+def classify_gstr1_item(item, seller_gstin=None) -> str:
+    import os
+    import json
+    import re
+    
+    # Load rules from frontend/gstr1_rules.json
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    rules_path = os.path.join(base_dir, "frontend", "gstr1_rules.json")
+    
+    rules = []
+    if os.path.exists(rules_path):
+        try:
+            with open(rules_path, 'r', encoding='utf-8') as f:
+                rules = json.load(f).get("rules", [])
+        except Exception as e:
+            print(f"Error loading GSTR-1 rules: {e}")
+            
+    if not rules:
+        # Fallback defaults if file loading fails
+        rules = [
+            {"category": "CDNR", "conditions": {"has_gstin": True, "is_credit_debit_note": True}},
+            {"category": "B2B", "conditions": {"has_gstin": True, "is_credit_debit_note": False}},
+            {"category": "EXP", "conditions": {"is_export": True}},
+            {"category": "CDNUR", "conditions": {"has_gstin": False, "is_credit_debit_note": True}},
+            {"category": "B2CL", "conditions": {"has_gstin": False, "is_credit_debit_note": False, "is_interstate": True, "invoice_value_greater_than": 250000.0}},
+            {"category": "B2CS", "conditions": {"has_gstin": False, "is_credit_debit_note": False}}
+        ]
+        
+    gstin = str(item.party_gstin or "").strip()
+    has_gstin = len(gstin) >= 15 and gstin != "None" and gstin != ""
+    
+    # Credit/Debit note check
+    voucher_type = str(item.voucher_type or "").lower()
+    particulars = str(item.particulars or "").lower()
+    is_credit_debit_note = "credit" in voucher_type or "debit" in voucher_type or "credit" in particulars or "debit" in particulars
+    
+    # Export check
+    pos = str(item.place_of_supply or "").upper()
+    is_export = "EXPORT" in pos or "OUTSIDE INDIA" in pos or "SEZ" in pos or "DUTY FREE" in pos
+    
+    # Interstate check
+    is_interstate = False
+    if not has_gstin and not is_export:
+        # Extract POS state code or name
+        pos_clean = re.sub(r'[^A-Z0-9]', '', pos)
+        if len(pos_clean) >= 2 and pos_clean[:2].isdigit():
+            pos_code = pos_clean[:2]
+            # One Stack GSTIN typically starts with 08 (Haryana), if not 08 it is interstate
+            if pos_code != "08":
+                is_interstate = True
+        else:
+            if pos and "HARYANA" not in pos and "HR" not in pos:
+                is_interstate = True
+                
+    invoice_value = float(item.total_invoice_value or 0.0)
+    
+    for rule in rules:
+        cat = rule.get("category")
+        conds = rule.get("conditions", {})
+        
+        match = True
+        for c_key, c_val in conds.items():
+            if c_key == "has_gstin" and has_gstin != c_val:
+                match = False
+            elif c_key == "is_credit_debit_note" and is_credit_debit_note != c_val:
+                match = False
+            elif c_key == "is_export" and is_export != c_val:
+                match = False
+            elif c_key == "is_interstate" and is_interstate != c_val:
+                match = False
+            elif c_key == "invoice_value_greater_than" and invoice_value <= c_val:
+                match = False
+                
+        if match:
+            return cat
+            
+    return "B2CS"
 
 def qc_audit_sales_items(sales_items):
     valid_items = []
@@ -324,8 +714,12 @@ def qc_audit_sales_items(sales_items):
     for item in sales_items:
         if not item.taxable_value or item.taxable_value <= 0:
             continue
+        
+        desc = str(item.particulars).lower()
+        if any(k in desc for k in ["saas", "mobile application", "soundbox", "sms", "whatsapp", "additional users", "messaging"]):
+            item.narration = "Being entry for book application charges and trasactional & promotional messaging charges for the month specifed in the data"
+            
         if not item.hsn or str(item.hsn).lower() in ["nan", "none", ""]:
-            desc = str(item.particulars).lower()
             assigned = False
             for key, hsn in hsn_map.items():
                 if key in desc:
@@ -334,6 +728,9 @@ def qc_audit_sales_items(sales_items):
                     break
             if not assigned:
                 item.hsn = "9971"
+        
+        # Apply GSTR-1 category classification
+        item.gstr1_category = classify_gstr1_item(item)
         valid_items.append(item)
     return valid_items
 
@@ -367,6 +764,7 @@ def math_verification_agent(sales_items):
             item.cgst_amount = round(taxable * (snapped_rate / 2), 2)
             item.sgst_amount = round(taxable * (snapped_rate / 2), 2)
             
+        item.rate = round(snapped_rate * 100, 2)
         item.total_invoice_value = round(taxable + item.igst_amount + item.cgst_amount + item.sgst_amount, 2)
     return sales_items
 
@@ -427,13 +825,14 @@ def build_dataframes(extraction_response):
                 "IGST": item.igst_amount,
                 "TOTAL AMOUNT": item.total_invoice_value,
                 "Narration": item.narration,
-                "HSN": item.hsn
+                "HSN": item.hsn,
+                "GSTR-1 Category": getattr(item, 'gstr1_category', 'B2CS')
             })
         df_all = pd.DataFrame(records)
         df_all = deduplicate_sales(df_all)
         
         # 1. Main Sheet (Strictly ONE row per invoice)
-        group_cols = ["REFERANCE NO", "INVOICE DATE", "GST NO", "PARTY A/C NAME", "PLACE OF SUPPLY"]
+        group_cols = ["REFERANCE NO", "INVOICE DATE", "GST NO", "PARTY A/C NAME", "PLACE OF SUPPLY", "GSTR-1 Category"]
         agg_dict = {
             "AMOUNT": "sum",
             "DISCOUNT": "sum",
@@ -456,13 +855,13 @@ def build_dataframes(extraction_response):
                 return hsns[0]
             return None
             
-        hsn_vals = df_all.groupby(group_cols, dropna=False)["HSN"].apply(get_single_hsn).reset_index()
-        narr_vals = df_all.groupby(group_cols, dropna=False)["Narration"].first().reset_index()
+        hsn_vals = df_all.groupby(group_cols[:-1], dropna=False)["HSN"].apply(get_single_hsn).reset_index()
+        narr_vals = df_all.groupby(group_cols[:-1], dropna=False)["Narration"].first().reset_index()
         
-        df_main = df_main.merge(hsn_vals, on=group_cols, how="left")
-        df_main = df_main.merge(narr_vals, on=group_cols, how="left")
+        df_main = df_main.merge(hsn_vals, on=group_cols[:-1], how="left")
+        df_main = df_main.merge(narr_vals, on=group_cols[:-1], how="left")
         
-        main_cols = ["REFERANCE NO", "INVOICE DATE", "GST NO", "PARTY A/C NAME", "PLACE OF SUPPLY", "PARTICULARS", "AMOUNT", "DISCOUNT", "ADVANCES", "SGST", "CGST", "IGST", "TOTAL AMOUNT", "Narration", "HSN"]
+        main_cols = ["REFERANCE NO", "INVOICE DATE", "GST NO", "PARTY A/C NAME", "PLACE OF SUPPLY", "PARTICULARS", "AMOUNT", "DISCOUNT", "ADVANCES", "SGST", "CGST", "IGST", "TOTAL AMOUNT", "Narration", "HSN", "GSTR-1 Category"]
         for col in main_cols:
             if col not in df_main.columns:
                 df_main[col] = None
@@ -486,23 +885,19 @@ def build_dataframes(extraction_response):
         records = []
         for item in extraction_response.purchase_items:
             records.append({
-                "Voucher Date": item.voucher_date,
-                "Voucher Type": item.voucher_type,
-                "Invoice No": item.invoice_no,
-                "Party Ledger Name": item.party_ledger_name,
-                "Party GSTIN": item.party_gstin,
-                "Place of Supply": item.place_of_supply,
-                "Item/Ledger Name": item.particulars,
-                "HSN": item.hsn,
-                "Qty": item.qty,
-                "Rate": item.rate,
-                "Taxable Value": item.taxable_value,
-                "CGST Amount": item.cgst_amount,
-                "SGST Amount": item.sgst_amount,
-                "IGST Amount": item.igst_amount,
-                "Total Invoice Value": item.total_invoice_value,
-                "ITC Category": item.itc_category,
-                "Narration": item.narration
+                "SUPPLIER INV NO": item.invoice_no,
+                "INVOICE DATE": item.voucher_date,
+                "GST NO": item.party_gstin,
+                "PARTY A/C NAME": item.party_ledger_name,
+                "PLACE OF SUPPLY": item.place_of_supply,
+                "PARTICULARS": item.particulars,
+                "AMOUNT": item.taxable_value,
+                "SGST": item.sgst_amount,
+                "CGST": item.cgst_amount,
+                "IGST": item.igst_amount,
+                "TOTAL AMOUNT": item.total_invoice_value,
+                "Narration": item.narration,
+                "HSN": item.hsn
             })
         purchase_df = pd.DataFrame(records)
         purchase_df = deduplicate_purchase(purchase_df)

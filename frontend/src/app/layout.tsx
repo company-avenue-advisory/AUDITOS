@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
-import Sidebar from "../components/Sidebar";
+import AuthGuard from "../components/AuthGuard";
 
 const inter = Inter({
   subsets: ["latin"],
@@ -45,19 +45,9 @@ export default function RootLayout({
         />
       </head>
       <body className="min-h-full flex">
-        <Sidebar />
-        <div
-          id="main-content-area"
-          style={{
-            marginLeft: 240,
-            flex: 1,
-            minHeight: "100vh",
-            display: "flex",
-            flexDirection: "column",
-          }}
-        >
+        <AuthGuard>
           {children}
-        </div>
+        </AuthGuard>
       </body>
     </html>
   );

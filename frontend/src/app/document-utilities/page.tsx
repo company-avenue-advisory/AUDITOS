@@ -587,7 +587,7 @@ export default function DocumentUtilitiesPage() {
                       </thead>
                       <tbody>
                         {transactions.map((tx, idx) => (
-                          <tr key={idx} style={{ borderBottom: "1px solid var(--border)", hover: { background: "rgba(255,255,255,0.01)" } }}>
+                          <tr key={idx} style={{ borderBottom: "1px solid var(--border)" }}>
                             <td style={{ padding: "10px 12px", whiteSpace: "nowrap" }}>{tx.date}</td>
                             <td style={{ padding: "10px 12px" }}>{tx.narration}</td>
                             <td style={{ padding: "10px 12px", textAlign: "right", color: "var(--red)", fontFamily: "monospace" }}>{tx.debit || "—"}</td>
