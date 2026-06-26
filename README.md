@@ -16,6 +16,7 @@ AuditOS is an enterprise-grade, high-accuracy AI pipeline designed to extract, m
 - **Side-by-Side Verification Interface:** Next.js frontend with dual-pane layout showing the source invoice PDF alongside an interactive editing grid.
 - **Full-Screen Workspace Mode:** A dedicated high-productivity mode rendering 20+ GST fields simultaneously across a full-viewport, layout-optimized grid to allow audit team reviews.
 - **Asynchronous Batch Processing:** A zero-infra queueing backend powered by SQLite, background task threading, client-side WebSocket progress notifications, and Semaphore throttling to prevent LLM rate limiting.
+- **Enterprise Security & Auth:** Secure role-based access control (RBAC), JWT authentication with password hashing, and protected routes via Next.js `AuthGuard`.
 
 ---
 
@@ -62,7 +63,7 @@ graph TD
    ```
 4. Start the backend dev server:
    ```bash
-   uvicorn main:app --reload --port 8080
+   uvicorn main:app --reload --port 8000
    ```
 
 ### 2. Frontend Setup
@@ -76,11 +77,11 @@ graph TD
    ```
 3. Configure environment variables in `.env.local`:
    ```env
-   NEXT_PUBLIC_API_URL="http://localhost:8080"
+   NEXT_PUBLIC_API_URL="http://localhost:8000"
    ```
 4. Start the frontend dev server:
    ```bash
-   npm run dev -- -p 3001
+   npm run dev
    ```
 
 ---
