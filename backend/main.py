@@ -161,7 +161,7 @@ async def upload_batch(background_tasks: BackgroundTasks, files: List[UploadFile
     batch_id = str(uuid.uuid4())
     total_files = len(files)
     
-    batch_job = BatchJob(id=batch_id, total_files=total_files, status=TaskStatus.PENDING)
+    batch_job = BatchJob(id=batch_id, total_files=total_files, status=TaskStatus.PENDING, user_id=current_user.id)
     db.add(batch_job)
     db.commit()
 
@@ -253,7 +253,10 @@ async def upload_batch(background_tasks: BackgroundTasks, files: List[UploadFile
     })
 @app.get("/api/jobs")
 async def get_all_jobs(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    batches = db.query(BatchJob).order_by(BatchJob.created_at.desc()).all()
+    if current_user.role in ["developer", "owner"]:
+        batches = db.query(BatchJob).order_by(BatchJob.created_at.desc()).all()
+    else:
+        batches = db.query(BatchJob).filter(BatchJob.user_id == current_user.id).order_by(BatchJob.created_at.desc()).all()
     return [{
         "id": b.id,
         "created_at": b.created_at.isoformat(),

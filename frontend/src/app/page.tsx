@@ -28,6 +28,7 @@ interface DashboardStats {
 
 /* ─────────── Component ─────────── */
 export default function DashboardPage() {
+  const [userRole, setUserRole] = useState("");
   const [liveStats, setLiveStats] = useState({
     totalBatches: 0,
     totalFiles: 0,
@@ -42,6 +43,7 @@ export default function DashboardPage() {
   >("checking");
 
   useEffect(() => {
+    setUserRole(localStorage.getItem("user_role") || "");
     // Check backend health
     fetch(`${API_BASE_URL}/api/models`)
       .then((r) => {
@@ -195,6 +197,7 @@ export default function DashboardPage() {
               icon: TrendingUp,
               color: "#A78BFA",
               bg: "rgba(167, 139, 250, 0.1)",
+              hidden: !(userRole.toLowerCase() === "developer" || userRole.toLowerCase() === "owner")
             },
             {
               label: "Active System Flags",
@@ -202,8 +205,9 @@ export default function DashboardPage() {
               icon: AlertTriangle,
               color: liveStats.totalFlags > 0 ? "#ef4444" : "#22c55e",
               bg: liveStats.totalFlags > 0 ? "var(--red-soft)" : "var(--green-soft)",
+              hidden: !(userRole.toLowerCase() === "developer" || userRole.toLowerCase() === "owner")
             },
-          ].map((card) => {
+          ].filter(card => !card.hidden).map((card) => {
             const Icon = card.icon;
             return (
               <div
@@ -417,7 +421,7 @@ export default function DashboardPage() {
         </div>
 
         {/* ══ ACTIVE SYSTEM FLAGS / ALERTS ══ */}
-        {liveStats.recentFlags.length > 0 && (
+        {liveStats.recentFlags.length > 0 && (userRole.toLowerCase() === "developer" || userRole.toLowerCase() === "owner") && (
           <section
             className="glass animate-fade-up"
             style={{

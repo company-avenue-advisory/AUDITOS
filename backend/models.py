@@ -17,6 +17,7 @@ class BatchJob(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     total_files = Column(Integer, default=0)
     status = Column(Enum(TaskStatus), default=TaskStatus.PENDING)
+    user_id = Column(String, ForeignKey("users.id"), nullable=True)
     
     tasks = relationship("InvoiceTask", back_populates="batch", cascade="all, delete-orphan")
 
