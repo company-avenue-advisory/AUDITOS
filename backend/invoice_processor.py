@@ -1,4 +1,5 @@
 import os
+import sys
 import argparse
 import fitz  # PyMuPDF
 import pandas as pd
@@ -9,6 +10,11 @@ import re
 import tempfile
 import time
 import base64
+
+# Ensure 'from backend.core...' imports resolve when running from inside backend/
+_project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
 
 # Ensure it explicitly loads from backend directory
 env_path = os.path.join(os.path.dirname(__file__), ".env")
