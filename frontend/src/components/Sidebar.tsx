@@ -159,7 +159,20 @@ export default function Sidebar() {
         >
           Modules
         </div>
-        {NAV_ITEMS.map((item) => {
+        {NAV_ITEMS.filter((item) => {
+          const role = userRole.toLowerCase();
+          if (role === "developer") return true; // Developers see all modules
+          if (role === "ca" || role === "auditor" || role === "owner") {
+            return item.href !== "/document-utilities"; // CAs do not need utilities
+          }
+          if (role === "accountant") {
+            return item.href !== "/document-utilities" && item.href !== "/tax-audit/msme";
+          }
+          if (role === "client") {
+            return item.href === "/" || item.href === "/invoice-extractor"; // Clients only see basic dashboard/uploads
+          }
+          return true; // Default fallback
+        }).map((item) => {
           const isActive =
             pathname === item.href ||
             (item.href !== "/" && pathname.startsWith(item.href));
