@@ -293,6 +293,11 @@ def process_pdf(pdf_path, model_override=None, invoice_type="both", logger=None)
         base_url = "https://api.groq.com/openai/v1"
         api_key = os.getenv("GROQ_API_KEY") or os.getenv("OPENAI_API_KEY")
         is_cloud_primary = True
+    elif model_override and model_override.get("provider") == "gemini":
+        model_name = model_override.get("model") or "gemini-2.5-flash"
+        base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
+        api_key = os.getenv("GEMINI_API_KEY", "")
+        is_cloud_primary = True
     elif model_override and model_override.get("provider") == "ollama":
         model_name = model_override.get("model") or os.getenv("OLLAMA_MODEL_NAME", "qwen2.5:7b")
         base_url = os.getenv("OLLAMA_API_BASE", "http://localhost:11434/v1")
@@ -338,143 +343,76 @@ def process_pdf(pdf_path, model_override=None, invoice_type="both", logger=None)
     
     all_res = InvoiceExtractionResponse()
     
-    # 4. LLM Extraction Stage
+    # 4. Modular Pipeline Extraction Stage
+    from backend.core.schema.processing import ProcessingContext
+    from backend.core.extraction.pipeline import process_document
+    import uuid
+    
+    started_extraction = now_utc()
+    run_id = str(uuid.uuid4())
+    
+    context = ProcessingContext(
+        run_id=run_id,
+        batch_id="batch_compat",
+        task_id=run_id,
+        tenant_id="tenant_default",
+        firm_id="firm_default",
+        provider=model_override.get("provider") if model_override else ("groq" if os.getenv("GROQ_API_KEY") else "google_native"),
+        model=model_name,
+        temperature=0.0,
+        prompt_version="1.0.0",
+        feature_flags={},
+        configuration={"invoice_type": invoice_type}
+    )
+    
+    t0 = time.time()
+    bundle = process_document(pdf_path, context)
+    total_latency_ms = int((time.time() - t0) * 1000)
+    
+    raw_extracted = bundle.__dict__.get("_raw_extracted") or {}
+    
+    all_res = InvoiceExtractionResponse()
+    all_res.overall_taxable_value = raw_extracted.get("overall_taxable_value") or 0.0
+    all_res.overall_cgst_amount = raw_extracted.get("overall_cgst_amount") or 0.0
+    all_res.overall_sgst_amount = raw_extracted.get("overall_sgst_amount") or 0.0
+    all_res.overall_igst_amount = raw_extracted.get("overall_igst_amount") or 0.0
+    all_res.overall_total_invoice_value = raw_extracted.get("overall_total_invoice_value") or 0.0
+    
+    for item in raw_extracted.get("sales_items", []):
+        all_res.sales_items.append(SuvitSalesItem(**item))
+    for item in raw_extracted.get("purchase_items", []):
+        all_res.purchase_items.append(SuvitPurchaseItem(**item))
+        
+    # ── Ground-truth auto-corrections from Reconciliation Engine ────────────
+    recon_report = bundle.__dict__.get("reconciliation")
+    ground_truth_correction = {"applied": False}
+    
+    if recon_report:
+        taxable_evidence = recon_report.field_evidence.get("taxable_value")
+        if taxable_evidence and taxable_evidence.suggested_correction:
+            suggested = taxable_evidence.suggested_correction.suggested_value
+            ground_truth_correction["overall_taxable_value"] = {
+                "llm_value": all_res.overall_taxable_value,
+                "document_value": suggested
+            }
+            all_res.overall_taxable_value = suggested
+            ground_truth_correction["applied"] = True
+            
+        total_evidence = recon_report.field_evidence.get("grand_total")
+        if total_evidence and total_evidence.suggested_correction:
+            suggested = total_evidence.suggested_correction.suggested_value
+            ground_truth_correction["overall_total_invoice_value"] = {
+                "llm_value": all_res.overall_total_invoice_value,
+                "document_value": suggested
+            }
+            all_res.overall_total_invoice_value = suggested
+            ground_truth_correction["applied"] = True
+
     total_prompt_tokens = 0
     total_completion_tokens = 0
-    total_latency_ms = 0
     total_retries = 0
-    started_extraction = now_utc()
-    
-    if total_pages <= CHUNK_SIZE:
-        pdf_contents = []
-        has_content = False
-        for page in doc:
-            content_item = extract_page_content(page, pdf_plumber_doc.pages[page.number])
-            pdf_contents.append(content_item)
-            if content_item["content"]:
-                has_content = True
-        if has_content:
-            t0 = time.time()
-            res, pt, ct, att = call_llm(pdf_contents, model_name, client, invoice_type)
-            chunk_latency = int((time.time() - t0) * 1000)
-            total_latency_ms += chunk_latency
-            total_prompt_tokens += pt
-            total_completion_tokens += ct
-            total_retries += att
-            
-            if res:
-                all_res.sales_items.extend(res.sales_items)
-                all_res.purchase_items.extend(res.purchase_items)
-                if res.overall_taxable_value > 0:
-                    all_res.overall_taxable_value = res.overall_taxable_value
-                    all_res.overall_cgst_amount = res.overall_cgst_amount
-                    all_res.overall_sgst_amount = res.overall_sgst_amount
-                    all_res.overall_igst_amount = res.overall_igst_amount
-                    all_res.overall_total_invoice_value = res.overall_total_invoice_value
-    else:
-        start = 0
-        while start < total_pages:
-            end = min(start + CHUNK_SIZE, total_pages)
-            chunk_contents = []
-            has_content = False
-            for p_num in range(start, end):
-                content_item = extract_page_content(doc[p_num], pdf_plumber_doc.pages[p_num])
-                chunk_contents.append(content_item)
-                if content_item["content"]:
-                    has_content = True
-                
-            if has_content:
-                t0 = time.time()
-                res, pt, ct, att = call_llm(chunk_contents, model_name, client, invoice_type)
-                chunk_latency = int((time.time() - t0) * 1000)
-                total_latency_ms += chunk_latency
-                total_prompt_tokens += pt
-                total_completion_tokens += ct
-                total_retries += att
-                
-                if res:
-                    all_res.sales_items.extend(res.sales_items)
-                    all_res.purchase_items.extend(res.purchase_items)
-                    if res.overall_taxable_value > 0:
-                        all_res.overall_taxable_value = res.overall_taxable_value
-                        all_res.overall_cgst_amount = res.overall_cgst_amount
-                        all_res.overall_sgst_amount = res.overall_sgst_amount
-                        all_res.overall_igst_amount = res.overall_igst_amount
-                        all_res.overall_total_invoice_value = res.overall_total_invoice_value
-            if end == total_pages:
-                break
-            start += CHUNK_SIZE - OVERLAP
-            
     completed_extraction = now_utc()
     
-    # 5. CA-level strict regex fallback for totals
-    if all_res.overall_taxable_value == 0:
-        net_cost_match = re.search(r'Final Total \([^)]+\)\n([0-9,.]+)', full_text) or re.search(r'Net Cost\n([0-9,.]+)', full_text)
-        if net_cost_match:
-            all_res.overall_taxable_value = float(net_cost_match.group(1).replace(',', ''))
-            
-        cgst_match = re.search(r'CGST @[0-9.%]*\n([0-9,.]+)', full_text)
-        if cgst_match:
-            all_res.overall_cgst_amount = float(cgst_match.group(1).replace(',', ''))
-            
-        sgst_match = re.search(r'SGST @[0-9.%]*\n([0-9,.]+)', full_text)
-        if sgst_match:
-            all_res.overall_sgst_amount = float(sgst_match.group(1).replace(',', ''))
-            
-        total_match = re.search(r'Total Cost incl Taxes\n([0-9,.]+)', full_text)
-        if total_match:
-            all_res.overall_total_invoice_value = float(total_match.group(1).replace(',', ''))
-
-    # Force alignment with user-selected invoice type if LLM misclassified the perspective
-    if invoice_type == "sales" and all_res.purchase_items:
-        for p_item in all_res.purchase_items:
-            s_item = SuvitSalesItem(
-                voucher_date=p_item.voucher_date,
-                voucher_type="Sales",
-                invoice_no=p_item.invoice_no,
-                party_ledger_name=p_item.party_ledger_name,
-                party_gstin=p_item.party_gstin,
-                place_of_supply=p_item.place_of_supply,
-                particulars=p_item.particulars,
-                hsn=p_item.hsn,
-                qty=p_item.qty,
-                rate=p_item.rate,
-                taxable_value=p_item.taxable_value,
-                discount=0.0,
-                advances=0.0,
-                cgst_amount=p_item.cgst_amount,
-                sgst_amount=p_item.sgst_amount,
-                igst_amount=p_item.igst_amount,
-                total_invoice_value=p_item.total_invoice_value,
-                narration=p_item.narration
-            )
-            all_res.sales_items.append(s_item)
-        all_res.purchase_items = []
-    elif invoice_type == "purchase" and all_res.sales_items:
-        for s_item in all_res.sales_items:
-            p_item = SuvitPurchaseItem(
-                voucher_date=s_item.voucher_date,
-                voucher_type="Purchase",
-                invoice_no=s_item.invoice_no,
-                party_ledger_name=s_item.party_ledger_name,
-                party_gstin=s_item.party_gstin,
-                place_of_supply=s_item.place_of_supply,
-                particulars=s_item.particulars,
-                hsn=s_item.hsn,
-                qty=s_item.qty,
-                rate=s_item.rate,
-                taxable_value=s_item.taxable_value,
-                cgst_amount=s_item.cgst_amount,
-                sgst_amount=s_item.sgst_amount,
-                igst_amount=s_item.igst_amount,
-                total_invoice_value=s_item.total_invoice_value,
-                itc_category=None,
-                narration=s_item.narration
-            )
-            all_res.purchase_items.append(p_item)
-        all_res.sales_items = []
-
-    # Emit extraction step
     if logger:
         logger.emit_llm_extraction(
             started_at=started_extraction,
@@ -485,7 +423,7 @@ def process_pdf(pdf_path, model_override=None, invoice_type="both", logger=None)
             raw_line_items=len(all_res.sales_items) + len(all_res.purchase_items),
             sales_count=len(all_res.sales_items),
             purchase_count=len(all_res.purchase_items),
-            subtotal_rows_detected=0,  # calculated during post-processing
+            subtotal_rows_detected=0,
             json_parse_succeeded=True,
             retry_count=total_retries
         )

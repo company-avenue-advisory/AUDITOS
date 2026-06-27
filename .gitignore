@@ -82,3 +82,12 @@ append_rules.py
 test_accuracy.py
 test_pydantic.py
 frontend/gstr1_rules.json
+
+# Credentials & Temp Zips
+audit-os-production-*.json
+.kiro/
+*.zip
+backend/benchmark/
+backend/services/test_api.py
+
+

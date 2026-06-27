@@ -380,6 +380,7 @@ async def get_job_status(batch_id: str, db: Session = Depends(get_db), current_u
             "error_message": t.error_message,
             "composite_score": scores_by_file.get(t.id, None),
             "flags": flags_by_file.get(t.id, []),
+            "recon_status": getattr(t, 'recon_status', None),
         }
         
         sales = []
@@ -420,6 +421,45 @@ async def get_job_status(batch_id: str, db: Session = Depends(get_db), current_u
         "batch_metrics": batch_metrics,
         "batch_flags": batch_flags
     })
+
+@app.get("/api/tasks/{task_id}/review")
+async def get_task_review(task_id: str, db: Session = Depends(get_db)):
+    """
+    Phase 4A: Returns the full deterministic reconciliation audit report for a specific invoice task.
+    Used to power the Review Panel UI with correction proposals, variance breakdowns, and status.
+    """
+    from models import InvoiceTask
+    task = db.query(InvoiceTask).filter(InvoiceTask.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    recon_data = None
+    if task.recon_report_json:
+        try:
+            recon_data = json.loads(task.recon_report_json)
+        except Exception:
+            recon_data = None
+
+    return JSONResponse(content={
+        "task_id": task_id,
+        "filename": task.file_name,
+        "recon_status": task.recon_status,
+        "recon_report": recon_data,
+    })
+
+@app.patch("/api/tasks/{task_id}/accept-correction")
+async def accept_correction(task_id: str, db: Session = Depends(get_db), current_user: User = Depends(RoleChecker(["owner", "auditor"]))):
+    """
+    Phase 4A: CA reviewer accepts auto-correction proposal.
+    Marks the task recon_status as HUMAN_CORRECTED.
+    """
+    from models import InvoiceTask
+    task = db.query(InvoiceTask).filter(InvoiceTask.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    task.recon_status = "HUMAN_CORRECTED"
+    db.commit()
+    return JSONResponse(content={"task_id": task_id, "recon_status": "HUMAN_CORRECTED", "accepted_by": current_user.email})
 
 @app.get("/api/tasks/{task_id}/observability")
 async def get_task_observability(task_id: str, db: Session = Depends(get_db)):
@@ -563,7 +603,7 @@ async def websocket_endpoint(websocket: WebSocket, batch_id: str):
 
 
 @app.get("/api/export/{batch_id}")
-async def export_to_excel(batch_id: str, type: str, db: Session = Depends(get_db)):
+async def export_to_excel(batch_id: str, type: str, schema: str = "suvit", db: Session = Depends(get_db)):
     batch = db.query(BatchJob).filter(BatchJob.id == batch_id).first()
     if not batch:
         raise HTTPException(status_code=404, detail="Batch not found")
@@ -596,6 +636,23 @@ async def export_to_excel(batch_id: str, type: str, db: Session = Depends(get_db
         raise HTTPException(status_code=400, detail="No items to export")
         
     sales_df, purchase_df = build_dataframes(extraction_response)
+    
+    def apply_schema(df, schema_name):
+        if isinstance(df, pd.DataFrame) and not df.empty and schema_name != "suvit":
+            sap_map = {"party_ac_name": "VendorCode", "invoice_no": "Reference", "voucher_date": "DocumentDate", "taxable_value": "AmountLC", "igst_amount": "TaxAmountIGST", "cgst_amount": "TaxAmountCGST", "sgst_amount": "TaxAmountSGST", "total_invoice_value": "TotalAmountLC", "hsn": "HSNSAC", "VOUCHER NO": "DocumentNumber", "PARTY GSTIN": "TaxNumber3", "DATE": "PostingDate"}
+            netsuite_map = {"invoice_no": "InternalID", "voucher_date": "TranDate", "party_ac_name": "Entity", "taxable_value": "GrossAmt", "total_invoice_value": "Amount", "VOUCHER NO": "TranId", "DATE": "Date", "PARTY GSTIN": "VATRegNumber"}
+            dynamics_map = {"invoice_no": "InvoiceId", "voucher_date": "TransDate", "party_ac_name": "AccountNum", "total_invoice_value": "InvoiceAmount", "taxable_value": "LineAmount", "VOUCHER NO": "InvoiceRegister", "DATE": "DocumentDate"}
+            mapping = sap_map if schema_name == "sap" else (netsuite_map if schema_name == "netsuite" else dynamics_map)
+            return df.rename(columns=lambda c: mapping.get(c, c))
+        return df
+
+    if isinstance(sales_df, dict):
+        for k in sales_df:
+            sales_df[k] = apply_schema(sales_df[k], schema)
+    else:
+        sales_df = apply_schema(sales_df, schema)
+        
+    purchase_df = apply_schema(purchase_df, schema)
     
     has_sales = isinstance(sales_df, dict) and any(not df.empty for df in sales_df.values())
     has_purchase = not purchase_df.empty

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, DateTime, Integer, Enum, Float, ForeignKey, Text, Boolean
+from sqlalchemy import Column, String, DateTime, Integer, Enum, Float, ForeignKey, Text, Boolean, JSON
 from sqlalchemy.orm import relationship
 import enum
 from datetime import datetime
@@ -30,6 +30,9 @@ class InvoiceTask(Base):
     error_message = Column(String, nullable=True)
     invoice_type = Column(String) # "Sales", "Purchase", or "both"
     created_at = Column(DateTime, default=datetime.utcnow)
+    # Phase 4A: Reconciliation audit fields
+    recon_status = Column(String, nullable=True)         # ERP_READY | NEEDS_REVIEW | BLOCKED
+    recon_report_json = Column(Text, nullable=True)      # Full ReconciliationReport as JSON
     
     batch = relationship("BatchJob", back_populates="tasks")
     sales_items = relationship("SalesLineItem", back_populates="task", cascade="all, delete-orphan")

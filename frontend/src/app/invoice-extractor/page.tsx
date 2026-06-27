@@ -2,6 +2,7 @@
 
 import React, { useState, useRef, useEffect } from "react";
 import { ChevronLeft } from "lucide-react";
+import ReviewPanel from "@/components/ReviewPanel";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -23,6 +24,7 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
   const [isFullScreen, setIsFullScreen] = useState(false);
   const [selectedPdf, setSelectedPdf] = useState<string | null>(null);
   const [batchId, setBatchId] = useState<string | null>(null);
+  const [exportSchema, setExportSchema] = useState<string>("suvit");
   const [showHistory, setShowHistory] = useState(false);
   const [historyData, setHistoryData] = useState<any[]>([]);
 
@@ -33,6 +35,8 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
   const [traceTaskId, setTraceTaskId] = useState<string | null>(null);
   const [traceEvents, setTraceEvents] = useState<any[]>([]);
   const [isTraceLoading, setIsTraceLoading] = useState(false);
+  // Phase 4A: Review Panel state
+  const [reviewTask, setReviewTask] = useState<{ taskId: string; filename: string } | null>(null);
 
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -351,6 +355,21 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
     return totalRows > 0 ? Math.round((validRows / totalRows) * 100) : 0;
   };
 
+  const handlePdfClick = async (url: string) => {
+    if (selectedPdf && selectedPdf.startsWith("blob:")) {
+      URL.revokeObjectURL(selectedPdf);
+    }
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error("Failed to load PDF");
+      const blob = await res.blob();
+      const objUrl = URL.createObjectURL(blob);
+      setSelectedPdf(objUrl);
+    } catch (error) {
+      console.error("Failed to fetch PDF", error);
+    }
+  };
+
   const handleDownload = async (downloadType: "sales" | "purchase" | "both") => {
     if (!batchId) {
       alert("No active batch to download.");
@@ -358,7 +377,7 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
     }
     
     try {
-      const res = await fetch(`${API_BASE_URL}/api/export/${batchId}?type=${downloadType}`);
+      const res = await fetch(`${API_BASE_URL}/api/export/${batchId}?type=${downloadType}&schema=${exportSchema}`);
 
       if (!res.ok) throw new Error("Export failed");
 
@@ -1053,7 +1072,7 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
                             };
 
                             return (
-                              <tr key={idx} style={{ transition: "background 0.2s", cursor: "pointer" }} onMouseEnter={(e) => e.currentTarget.style.background = "rgba(0,0,0,0.02)"} onMouseLeave={(e) => e.currentTarget.style.background = "transparent"} onClick={(e) => { if ((e.target as HTMLElement).tagName !== "INPUT" && (e.target as HTMLElement).tagName !== "SELECT" && (e.target as HTMLElement).tagName !== "OPTION") setSelectedPdf(`${API_BASE_URL}/api/jobs/${batchId}/files/${encodeURIComponent(row.filename)}`); }}>
+                              <tr key={idx} style={{ transition: "background 0.2s", cursor: "pointer" }} onMouseEnter={(e) => e.currentTarget.style.background = "rgba(0,0,0,0.02)"} onMouseLeave={(e) => e.currentTarget.style.background = "transparent"} onClick={(e) => { if ((e.target as HTMLElement).tagName !== "INPUT" && (e.target as HTMLElement).tagName !== "SELECT" && (e.target as HTMLElement).tagName !== "OPTION") handlePdfClick(`${API_BASE_URL}/api/jobs/${batchId}/files/${encodeURIComponent(row.filename)}`); }}>
                                 {renderCell("party_gstin", row.party_gstin)}
                                 {isFullScreen && renderCell("party_ac_name", row.party_ac_name)}
                                 {renderCell("invoice_no", row.invoice_no)}
@@ -1096,7 +1115,7 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
                         <div style={{ flex: "0 0 48%", height: "600px", borderRadius: "8px", overflow: "hidden", border: "1px solid var(--border)", display: "flex", flexDirection: "column" }}>
                           <div style={{ padding: "8px 12px", background: "var(--bg-card)", borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                               <span style={{ fontSize: 13, fontWeight: 500 }}>Source Document</span>
-                              <button onClick={() => setSelectedPdf(null)} style={{ background: "transparent", border: "none", color: "var(--text-secondary)", cursor: "pointer", fontSize: 16 }}>✕</button>
+                              <button onClick={() => { if (selectedPdf && selectedPdf.startsWith("blob:")) URL.revokeObjectURL(selectedPdf); setSelectedPdf(null); }} style={{ background: "transparent", border: "none", color: "var(--text-secondary)", cursor: "pointer", fontSize: 16 }}>✕</button>
                           </div>
                           <iframe src={selectedPdf} width="100%" height="100%" style={{ border: "none", flex: 1 }} />
                         </div>
@@ -1128,6 +1147,27 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
                   </div>
 
                   <div className="download-btns">
+                    <div style={{ display: "flex", justifyContent: "center", marginBottom: "16px", gap: "12px", alignItems: "center" }}>
+                      <label style={{ fontSize: "14px", color: "var(--text-secondary)", fontWeight: 500 }}>Export Schema:</label>
+                      <select 
+                        value={exportSchema} 
+                        onChange={(e) => setExportSchema(e.target.value)}
+                        style={{
+                          background: "#0c0c14",
+                          border: "1px solid var(--border)",
+                          borderRadius: "6px",
+                          padding: "8px 12px",
+                          color: "var(--text-primary)",
+                          fontSize: "14px",
+                          cursor: "pointer"
+                        }}
+                      >
+                        <option value="suvit">Suvit (Tally)</option>
+                        <option value="sap">SAP (BAPI/IDoc)</option>
+                        <option value="netsuite">Oracle NetSuite</option>
+                        <option value="dynamics">Microsoft Dynamics 365</option>
+                      </select>
+                    </div>
                     {type === "both" && salesItems.length > 0 && purchaseItems.length > 0 && (
                       <button className="dl-btn primary" onClick={() => handleDownload("both")}>
                         <div className="dl-btn-left">
@@ -1281,6 +1321,18 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
                                   </span>
                                 </td>
                                 <td className="obs-td">
+                                  {/* Phase 4A: Recon Status Badge */}
+                                  {task.recon_status ? (
+                                    <span style={{
+                                      padding: "2px 8px", borderRadius: 12, fontSize: 10, fontWeight: 600,
+                                      background: task.recon_status === "ERP_READY" ? "rgba(34,197,94,0.12)" : task.recon_status === "HUMAN_CORRECTED" ? "rgba(167,139,250,0.12)" : task.recon_status === "BLOCKED" ? "rgba(239,68,68,0.12)" : "rgba(245,158,11,0.12)",
+                                      color: task.recon_status === "ERP_READY" ? "#22c55e" : task.recon_status === "HUMAN_CORRECTED" ? "#a78bfa" : task.recon_status === "BLOCKED" ? "#ef4444" : "#f59e0b",
+                                    }}>
+                                      {task.recon_status === "ERP_READY" ? "✓ ERP Ready" : task.recon_status === "HUMAN_CORRECTED" ? "✦ Corrected" : task.recon_status === "BLOCKED" ? "✗ Blocked" : "⚠ Review"}
+                                    </span>
+                                  ) : <span style={{ color: "var(--text-muted)", fontSize: 11 }}>—</span>}
+                                </td>
+                                <td className="obs-td">
                                   {score !== null && score !== undefined ? (
                                     <span className={`obs-badge ${score >= 0.90 ? "success" : score >= 0.75 ? "warning" : "danger"}`}>
                                       {(score * 100).toFixed(1)}%
@@ -1309,7 +1361,18 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
                                     <span style={{ color: "#34D399", fontSize: 11 }}>✓ Clean pass</span>
                                   )}
                                 </td>
-                                <td className="obs-td" style={{ textAlign: "right" }}>
+                                <td className="obs-td" style={{ textAlign: "right", display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                                  {/* Phase 4A: Review Audit button */}
+                                  {task.task_id && task.status === "COMPLETED" && (
+                                    <button
+                                      id={`review-audit-${task.task_id}`}
+                                      className="nav-pill"
+                                      style={{ borderColor: "#8b5cf6", color: "#a78bfa", background: "rgba(139,92,246,0.08)", fontSize: 12, cursor: "pointer", padding: "6px 12px", borderRadius: 4 }}
+                                      onClick={() => setReviewTask({ taskId: task.task_id, filename: task.filename })}
+                                    >
+                                      🔎 Audit Review
+                                    </button>
+                                  )}
                                   <button
                                     className="nav-pill"
                                     style={{ borderColor: "#1A6BFF", color: "#1A6BFF", background: "rgba(26,107,255,0.02)", fontSize: 12, cursor: "pointer", padding: "6px 12px", borderRadius: 4 }}
@@ -1523,6 +1586,25 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
             </div>
           </div>
         </div>
+      )}
+
+      {/* Phase 4A: Audit Review Panel */}
+      {reviewTask && (
+        <ReviewPanel
+          taskId={reviewTask.taskId}
+          filename={reviewTask.filename}
+          onClose={() => setReviewTask(null)}
+          onAccepted={() => {
+            // Refresh tasks meta to update recon badge
+            setTasksMeta((prev: any[]) =>
+              prev.map((t) =>
+                t.task_id === reviewTask.taskId
+                  ? { ...t, recon_status: "HUMAN_CORRECTED" }
+                  : t
+              )
+            );
+          }}
+        />
       )}
     </>
   );
