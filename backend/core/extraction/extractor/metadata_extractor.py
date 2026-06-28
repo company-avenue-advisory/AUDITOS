@@ -46,6 +46,7 @@ Here are the deterministically detected candidates:
 
 Resolve any conflicts and return the correct values in JSON matching the schema.
 """
+    res_text = ""
     try:
         response = client.chat.completions.create(
             model=model_name,
@@ -57,5 +58,6 @@ Resolve any conflicts and return the correct values in JSON matching the schema.
         return safe_json_loads(res_text)
     except Exception as e:
         print(f"Error in metadata extraction: {e}")
-        print(f"Raw res_text on failure: {repr(res_text)}")
+        if res_text:
+            print(f"Raw res_text on failure: {repr(res_text)}")
         return {}
