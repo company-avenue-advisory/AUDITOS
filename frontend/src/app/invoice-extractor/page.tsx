@@ -11,7 +11,7 @@ type InvoiceType = "sales" | "purchase" | "both" | null;
 export default function AuditOSInvoiceExtractor() {
   const [type, setType] = useState<InvoiceType>(null);
   const [files, setFiles] = useState<File[]>([]);
-  const [model, setModel] = useState("auto");
+  const [model, setModel] = useState("anthropic");
   const [step, setStep] = useState(1);
   const [dragActive, setDragActive] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -461,6 +461,7 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
         .model-dot.auto { background: rgba(234,179,8,0.15); }
         .model-dot.groq { background: rgba(239,68,68,0.12); }
         .model-dot.ollama { background: rgba(16,185,129,0.12); }
+        .model-dot.claude { background: rgba(214,132,79,0.18); }
         .model-info { flex: 1; }
         .model-name { font-size: 13px; font-weight: 500; color: var(--text-primary); }
         .model-desc { font-size: 11px; color: var(--text-secondary); margin-top: 2px; }
@@ -840,6 +841,28 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
                     GSTR-2B & Rule 36(4) cap checks active for ITC limits.
                   </div>
                 )}
+              </div>
+
+              {/* AI Model Picker */}
+              <div className="model-section" style={{ marginTop: 24 }}>
+                <div className="model-section-label">AI Extraction Engine</div>
+                <div className="model-rows">
+                  {[
+                    { id: "anthropic", label: "Claude Haiku", desc: "Best accuracy · GST-aware structured extraction", icon: "◆", dot: "auto", badge: "Recommended", badgeCls: "badge-rec" },
+                    { id: "auto",      label: "Auto (Groq / Gemini)", desc: "Free tier · Llama 3.3 70B or Gemini 2.5 Flash", icon: "⚡", dot: "groq", badge: "Free", badgeCls: "badge-fast" },
+                    { id: "ollama",    label: "Ollama (Local)", desc: "100% private · No data leaves your machine", icon: "🔒", dot: "ollama", badge: "Private", badgeCls: "badge-priv" },
+                  ].map((m) => (
+                    <div key={m.id} className={`model-row ${model === m.id ? "selected" : ""}`} onClick={() => setModel(m.id)}>
+                      <div className={`model-dot ${m.dot}`}>{m.icon}</div>
+                      <div className="model-info">
+                        <div className="model-name">{m.label}</div>
+                        <div className="model-desc">{m.desc}</div>
+                      </div>
+                      <span className={`model-badge ${m.badgeCls}`}>{m.badge}</span>
+                      <div className="model-radio" />
+                    </div>
+                  ))}
+                </div>
               </div>
 
               <button className="cta-btn" style={{ marginTop: 20 }} onClick={startProcessing}>

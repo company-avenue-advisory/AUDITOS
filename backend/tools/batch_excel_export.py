@@ -38,10 +38,11 @@ INVOICE_DIR  = None
 OUTPUT_EXCEL = None
 FAILED_LOG   = None
 
-# Groq free — 1 tiny call per invoice (~1K tokens).
-# SEMAPHORE=5 is safe: 5 x 1K = 5K TPM vs 20K TPM limit.
-SEMAPHORE  = 5
-GROQ_MODEL = "llama-3.1-8b-instant"
+# LLM config — prefers Claude Haiku if ANTHROPIC_API_KEY is set, else Groq free.
+# Claude Haiku: ~$0.0004/invoice (160 output tokens). Groq: free but rate-limited.
+SEMAPHORE      = 5
+GROQ_MODEL     = "llama-3.1-8b-instant"
+CLAUDE_MODEL   = "claude-haiku-4-5-20251001"
 
 
 # ── Deterministic extractors ────────────────────────────────────────────────
@@ -435,7 +436,8 @@ def write_excel(rows, path):
         ("Accuracy", f"{n_pass/len(rows)*100:.1f}%" if rows else "0%"),
         ("Total Taxable Value", sum(r["Taxable Value"] for r in rows)),
         ("Total Invoice Value", sum(r["Total Invoice Value"] for r in rows)),
-        ("Approx LLM Cost", "Rs.0 (Groq free tier)"),
+        ("LLM Provider", CLAUDE_MODEL if os.getenv("ANTHROPIC_API_KEY") else GROQ_MODEL),
+        ("Approx LLM Cost", f"~Rs.{len(rows)*0.035:.2f} (Claude Haiku)" if os.getenv("ANTHROPIC_API_KEY") else "Rs.0 (Groq free)"),
     ], 1):
         ws4.cell(row=ri, column=1, value=k).font = Font(bold=True)
         c = ws4.cell(row=ri, column=2, value=v)
@@ -461,10 +463,19 @@ async def main():
     failed_log   = output_excel.replace(".xlsx", "_failed.json")
 
     from openai import OpenAI
-    groq_key = os.getenv("GROQ_API_KEY")
-    if not groq_key:
-        print("ERROR: GROQ_API_KEY not set"); return
-    client = OpenAI(api_key=groq_key, base_url="https://api.groq.com/openai/v1")
+    anthropic_key = os.getenv("ANTHROPIC_API_KEY")
+    groq_key      = os.getenv("GROQ_API_KEY")
+    if anthropic_key:
+        client = OpenAI(api_key=anthropic_key, base_url="https://api.anthropic.com/v1")
+        GROQ_MODEL_ACTIVE = CLAUDE_MODEL
+        print(f"Provider: Claude Haiku ({CLAUDE_MODEL}) via Anthropic API")
+    elif groq_key:
+        client = OpenAI(api_key=groq_key, base_url="https://api.groq.com/openai/v1")
+        GROQ_MODEL_ACTIVE = GROQ_MODEL
+        print(f"Provider: Groq free ({GROQ_MODEL})")
+    else:
+        print("ERROR: Set ANTHROPIC_API_KEY (Claude) or GROQ_API_KEY (Groq free) in .env"); return
+    globals()["GROQ_MODEL"] = GROQ_MODEL_ACTIVE  # patch module-level var used in _llm_party_pos
 
     if args.retry and os.path.exists(failed_log):
         with open(failed_log) as f:

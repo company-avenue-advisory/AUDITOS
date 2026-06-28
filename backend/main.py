@@ -38,7 +38,9 @@ from models import User
 from services.auth import hash_password, verify_password, create_access_token, get_current_user, RoleChecker
 
 MODEL_OPTIONS = {
-    "auto": None,  # Smart routing (default)
+    "auto": None,  # Smart routing (Claude > Groq > Gemini based on keys present)
+    "anthropic": {"provider": "anthropic", "model": "claude-haiku-4-5-20251001"},
+    "anthropic-sonnet": {"provider": "anthropic", "model": "claude-sonnet-4-6"},
     "openrouter-llama-3.3-70b": {"provider": "openrouter", "model": "meta-llama/llama-3.3-70b-instruct"},
     "openrouter-gemini-flash": {"provider": "openrouter", "model": "google/gemini-2.5-flash"},
     "ollama": {"provider": "ollama", "model": None},  # Uses OLLAMA_MODEL_NAME env var

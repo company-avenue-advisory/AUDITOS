@@ -373,7 +373,13 @@ def process_pdf(pdf_path, model_override=None, invoice_type="both", logger=None)
     # 2. Model Selection Stage
     started_model = now_utc()
     is_cloud_primary = False
-    if model_override and model_override.get("provider") == "openrouter":
+    if model_override and model_override.get("provider") == "anthropic":
+        # Claude via Anthropic SDK — best accuracy for structured extraction
+        model_name = model_override.get("model") or "claude-haiku-4-5-20251001"
+        base_url = "https://api.anthropic.com/v1"
+        api_key = os.getenv("ANTHROPIC_API_KEY", "")
+        is_cloud_primary = True
+    elif model_override and model_override.get("provider") == "openrouter":
         model_name = model_override["model"]
         base_url = "https://openrouter.ai/api/v1"
         api_key = os.getenv("OPENROUTER_API_KEY", "dummy")
@@ -393,8 +399,12 @@ def process_pdf(pdf_path, model_override=None, invoice_type="both", logger=None)
         base_url = os.getenv("OLLAMA_API_BASE", "http://localhost:11434/v1")
         api_key = os.getenv("OLLAMA_API_KEY", "ollama")
     else:
-        # Default to Groq if key is present, else Gemini
-        if os.getenv("GROQ_API_KEY"):
+        # Default: Claude if key present, else Groq, else Gemini
+        if os.getenv("ANTHROPIC_API_KEY"):
+            model_name = "claude-haiku-4-5-20251001"
+            base_url = "https://api.anthropic.com/v1"
+            api_key = os.getenv("ANTHROPIC_API_KEY")
+        elif os.getenv("GROQ_API_KEY"):
             model_name = "llama-3.3-70b-versatile"
             base_url = "https://api.groq.com/openai/v1"
             api_key = os.getenv("GROQ_API_KEY")
