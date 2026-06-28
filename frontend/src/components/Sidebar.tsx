@@ -27,7 +27,7 @@ const NAV_ITEMS = [
     href: "/invoice-extractor",
     label: "Extractor",
     icon: FileSpreadsheet,
-    description: "PDF → Line items",
+    description: "PDF → GST Ledger",
   },
   {
     href: "/reconciliation",

@@ -538,6 +538,7 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
         @keyframes spin { to { transform: rotate(360deg); } }
         .spinner { width: 36px; height: 36px; border-radius: 50%; border: 2px solid rgba(26,107,255,0.2); border-top-color: #1A6BFF; animation: spin 0.8s linear infinite; margin: 0 auto 20px; }
         .prog-bar { height: 2px; background: rgba(255,255,255,0.06); border-radius: 2px; margin-bottom: 28px; overflow: hidden; }
+        .prog-fill { height: 100%; background: #1A6BFF; border-radius: 2px; transition: width 0.4s ease; }
         .obs-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px; text-align: left; }
         .obs-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; transition: border-color 0.15s; }
         .obs-card:hover { border-color: rgba(255,255,255,0.15); }
@@ -964,6 +965,35 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
                       </div>
                     )}
                     
+                    {/* Batch summary stats */}
+                    {(() => {
+                      const items = (activeTab === "sales" || type === "sales") ? salesItems : purchaseItems;
+                      const totalTaxable = items.reduce((s: number, r: any) => s + (parseFloat(r.taxable_value) || 0), 0);
+                      const totalTax = items.reduce((s: number, r: any) => s + (parseFloat(r.igst_amount) || 0) + (parseFloat(r.cgst_amount) || 0) + (parseFloat(r.sgst_amount) || 0), 0);
+                      const totalVal = items.reduce((s: number, r: any) => s + (parseFloat(r.total_invoice_value) || 0), 0);
+                      const exportLUT = items.filter((r: any) => parseFloat(r.igst_amount) === 0 && parseFloat(r.cgst_amount) === 0 && parseFloat(r.taxable_value) > 0).length;
+                      const fmt = (n: number) => n.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                      return items.length > 0 ? (
+                        <div style={{ display: "flex", gap: 12, padding: "10px 14px", background: "rgba(26,107,255,0.04)", borderBottom: "1px solid var(--border)", fontSize: 12, flexWrap: "wrap" }}>
+                          <span style={{ color: "var(--text-secondary)" }}><strong style={{ color: "var(--text-primary)" }}>{items.length}</strong> invoices</span>
+                          <span style={{ color: "rgba(255,255,255,0.15)" }}>·</span>
+                          <span style={{ color: "var(--text-secondary)" }}>Taxable: <strong style={{ color: "#6BA6FF" }}>₹ {fmt(totalTaxable)}</strong></span>
+                          <span style={{ color: "rgba(255,255,255,0.15)" }}>·</span>
+                          <span style={{ color: "var(--text-secondary)" }}>Tax: <strong style={{ color: "#6BA6FF" }}>₹ {fmt(totalTax)}</strong></span>
+                          <span style={{ color: "rgba(255,255,255,0.15)" }}>·</span>
+                          <span style={{ color: "var(--text-secondary)" }}>Total: <strong style={{ color: "#34D399" }}>₹ {fmt(totalVal)}</strong></span>
+                          {exportLUT > 0 && (
+                            <>
+                              <span style={{ color: "rgba(255,255,255,0.15)" }}>·</span>
+                              <span style={{ padding: "2px 8px", borderRadius: 10, fontSize: 10, fontWeight: 600, background: "rgba(234,179,8,0.12)", color: "#D4A017" }}>
+                                {exportLUT} Export LUT
+                              </span>
+                            </>
+                          )}
+                        </div>
+                      ) : null;
+                    })()}
+
                     <div style={{ display: "flex", gap: "20px", alignItems: "flex-start" }}>
                       <div style={{ flex: selectedPdf ? "0 0 50%" : "1", maxHeight: isFullScreen ? "calc(100vh - 140px)" : (selectedPdf ? 600 : 340), overflowY: "auto", overflowX: "auto", transition: "all 0.3s" }}>
                       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, textAlign: "left" }}>
@@ -983,6 +1013,7 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
                                     <th style={{ padding: "10px 12px", color: "var(--text-secondary)", fontWeight: 500, minWidth: 80 }}>CGST</th>
                                     <th style={{ padding: "10px 12px", color: "var(--text-secondary)", fontWeight: 500, minWidth: 80 }}>SGST</th>
                                     <th style={{ padding: "10px 12px", color: "var(--text-secondary)", fontWeight: 500, minWidth: 100 }}>Total Value</th>
+                                    <th style={{ padding: "10px 12px", color: "var(--text-secondary)", fontWeight: 500, minWidth: 100 }}>Advance Ded.</th>
                                     <th style={{ padding: "10px 12px", color: "var(--text-secondary)", fontWeight: 500, minWidth: 180 }}>Particulars</th>
                                     <th style={{ padding: "10px 12px", color: "var(--text-secondary)", fontWeight: 500, minWidth: 80 }}>HSN</th>
                                     <th style={{ padding: "10px 12px", color: "var(--text-secondary)", fontWeight: 500, minWidth: 130 }}>GSTR-1 Category</th>
@@ -1086,6 +1117,7 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
                                     {renderCell("cgst_amount", row.cgst_amount ? `₹ ${row.cgst_amount}` : "-")}
                                     {renderCell("sgst_amount", row.sgst_amount ? `₹ ${row.sgst_amount}` : "-")}
                                     {renderCell("total_invoice_value", row.total_invoice_value ? `₹ ${row.total_invoice_value}` : "-")}
+                                    {renderCell("overall_advance_amount", row.overall_advance_amount ? `₹ ${row.overall_advance_amount}` : "-")}
                                     {renderCell("particulars", row.particulars)}
                                     {renderCell("hsn", row.hsn)}
                                     {renderGSTR1CategoryCell(row, idx)}
@@ -1294,6 +1326,7 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
                           <tr style={{ background: "rgba(0,0,0,0.02)", borderBottom: "1px solid var(--border)" }}>
                             <th style={{ padding: "12px 16px", color: "var(--text-secondary)", fontWeight: 600 }}>Filename</th>
                             <th style={{ padding: "12px 16px", color: "var(--text-secondary)", fontWeight: 600 }}>Pipeline Status</th>
+                            <th style={{ padding: "12px 16px", color: "var(--text-secondary)", fontWeight: 600 }}>Recon Status</th>
                             <th style={{ padding: "12px 16px", color: "var(--text-secondary)", fontWeight: 600 }}>Quality Score</th>
                             <th style={{ padding: "12px 16px", color: "var(--text-secondary)", fontWeight: 600 }}>Anomaly Flags</th>
                             <th style={{ padding: "12px 16px", color: "var(--text-secondary)", fontWeight: 600, textAlign: "right" }}>Execution Trace</th>
@@ -1386,7 +1419,7 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
                           })}
                           {tasksMeta.length === 0 && (
                             <tr>
-                              <td colSpan={5} style={{ padding: 40, textAlign: "center", color: "var(--text-muted)" }}>
+                              <td colSpan={6} style={{ padding: 40, textAlign: "center", color: "var(--text-muted)" }}>
                                 No task telemetry available for this batch.
                               </td>
                             </tr>
