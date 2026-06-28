@@ -436,8 +436,8 @@ def write_excel(rows, path):
         ("Accuracy", f"{n_pass/len(rows)*100:.1f}%" if rows else "0%"),
         ("Total Taxable Value", sum(r["Taxable Value"] for r in rows)),
         ("Total Invoice Value", sum(r["Total Invoice Value"] for r in rows)),
-        ("LLM Provider", CLAUDE_MODEL if os.getenv("ANTHROPIC_API_KEY") else GROQ_MODEL),
-        ("Approx LLM Cost", f"~Rs.{len(rows)*0.035:.2f} (Claude Haiku)" if os.getenv("ANTHROPIC_API_KEY") else "Rs.0 (Groq free)"),
+        ("LLM Provider", "gemini-2.5-flash" if os.getenv("GEMINI_API_KEY") else (CLAUDE_MODEL if os.getenv("ANTHROPIC_API_KEY") else GROQ_MODEL)),
+        ("Approx LLM Cost", "Free (Gemini)" if os.getenv("GEMINI_API_KEY") else ("Rs.0 (Groq free)" if os.getenv("GROQ_API_KEY") else f"~Rs.{len(rows)*0.035:.2f} (Claude)")),
     ], 1):
         ws4.cell(row=ri, column=1, value=k).font = Font(bold=True)
         c = ws4.cell(row=ri, column=2, value=v)
@@ -463,18 +463,23 @@ async def main():
     failed_log   = output_excel.replace(".xlsx", "_failed.json")
 
     from openai import OpenAI
-    anthropic_key = os.getenv("ANTHROPIC_API_KEY")
+    gemini_key    = os.getenv("GEMINI_API_KEY")
     groq_key      = os.getenv("GROQ_API_KEY")
-    if anthropic_key:
-        client = OpenAI(api_key=anthropic_key, base_url="https://api.anthropic.com/v1")
-        GROQ_MODEL_ACTIVE = CLAUDE_MODEL
-        print(f"Provider: Claude Haiku ({CLAUDE_MODEL}) via Anthropic API")
+    anthropic_key = os.getenv("ANTHROPIC_API_KEY")
+    if gemini_key:
+        client = OpenAI(api_key=gemini_key, base_url="https://generativelanguage.googleapis.com/v1beta/openai/")
+        GROQ_MODEL_ACTIVE = "gemini-2.5-flash"
+        print(f"Provider: Gemini 2.5 Flash")
     elif groq_key:
         client = OpenAI(api_key=groq_key, base_url="https://api.groq.com/openai/v1")
         GROQ_MODEL_ACTIVE = GROQ_MODEL
         print(f"Provider: Groq free ({GROQ_MODEL})")
+    elif anthropic_key:
+        client = OpenAI(api_key=anthropic_key, base_url="https://api.anthropic.com/v1")
+        GROQ_MODEL_ACTIVE = CLAUDE_MODEL
+        print(f"Provider: Claude Haiku ({CLAUDE_MODEL})")
     else:
-        print("ERROR: Set ANTHROPIC_API_KEY (Claude) or GROQ_API_KEY (Groq free) in .env"); return
+        print("ERROR: Set GEMINI_API_KEY, GROQ_API_KEY, or ANTHROPIC_API_KEY in .env"); return
     globals()["GROQ_MODEL"] = GROQ_MODEL_ACTIVE  # patch module-level var used in _llm_party_pos
 
     if args.retry and os.path.exists(failed_log):

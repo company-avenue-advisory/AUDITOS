@@ -11,7 +11,7 @@ type InvoiceType = "sales" | "purchase" | "both" | null;
 export default function AuditOSInvoiceExtractor() {
   const [type, setType] = useState<InvoiceType>(null);
   const [files, setFiles] = useState<File[]>([]);
-  const [model, setModel] = useState("anthropic");
+  const [model, setModel] = useState("auto");
   const [step, setStep] = useState(1);
   const [dragActive, setDragActive] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -848,8 +848,8 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
                 <div className="model-section-label">AI Extraction Engine</div>
                 <div className="model-rows">
                   {[
-                    { id: "anthropic", label: "Claude Haiku", desc: "Best accuracy · GST-aware structured extraction", icon: "◆", dot: "auto", badge: "Recommended", badgeCls: "badge-rec" },
-                    { id: "auto",      label: "Auto (Groq / Gemini)", desc: "Free tier · Llama 3.3 70B or Gemini 2.5 Flash", icon: "⚡", dot: "groq", badge: "Free", badgeCls: "badge-fast" },
+                    { id: "auto",      label: "Auto (Gemini 2.5 Flash)", desc: "Gemini 2.5 Flash · Free tier fallback to Groq", icon: "⚡", dot: "auto", badge: "Recommended", badgeCls: "badge-rec" },
+                    { id: "anthropic", label: "Claude Haiku", desc: "Best accuracy · Requires ANTHROPIC_API_KEY", icon: "◆", dot: "claude", badge: "Paid", badgeCls: "badge-fast" },
                     { id: "ollama",    label: "Ollama (Local)", desc: "100% private · No data leaves your machine", icon: "🔒", dot: "ollama", badge: "Private", badgeCls: "badge-priv" },
                   ].map((m) => (
                     <div key={m.id} className={`model-row ${model === m.id ? "selected" : ""}`} onClick={() => setModel(m.id)}>
