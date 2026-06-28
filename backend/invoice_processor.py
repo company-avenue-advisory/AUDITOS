@@ -859,7 +859,7 @@ def _correct_taxable_values(items):
 
 
 def build_dataframes(extraction_response):
-    sales_dfs = {"Main": pd.DataFrame(), "Narration": pd.DataFrame(), "LineItems": pd.DataFrame()}
+    sales_dfs = {"Sales Register": pd.DataFrame(), "Tax & TDS Workings": pd.DataFrame(), "Matching Sheet": pd.DataFrame()}
     if extraction_response.sales_items:
         # Prevent double counting by removing sub-totals
         extraction_response.sales_items = remove_subtotals(extraction_response.sales_items)
@@ -961,24 +961,145 @@ def build_dataframes(extraction_response):
         # Inject invoice-level round-off (single value for the whole invoice, not a line-item sum)
         df_main["ROUND OFF"] = extraction_response.overall_round_off or 0.0
 
-        main_cols = ["REFERANCE NO", "INVOICE DATE", "GST NO", "PARTY A/C NAME", "PLACE OF SUPPLY", "PARTICULARS", "AMOUNT", "DISCOUNT", "ADVANCES", "SGST", "CGST", "IGST", "ROUND OFF", "TOTAL AMOUNT", "Narration", "HSN", "GSTR-1 Category"]
+        # Rename Narration -> Nature (CA requirement: Nature = transaction description/narration)
+        main_cols = ["REFERANCE NO", "INVOICE DATE", "GST NO", "PARTY A/C NAME", "PLACE OF SUPPLY", "PARTICULARS", "NATURE", "AMOUNT", "DISCOUNT", "ADVANCES", "SGST", "CGST", "IGST", "ROUND OFF", "TOTAL AMOUNT", "HSN", "GSTR-1 Category"]
+        df_main.rename(columns={"Narration": "NATURE"}, inplace=True)
         for col in main_cols:
             if col not in df_main.columns:
                 df_main[col] = None
         df_main = df_main[main_cols]
-        
-        # 2. Narration Sheet
-        df_narration = df_all.groupby("REFERANCE NO", dropna=False).agg({"TOTAL AMOUNT": "sum", "Narration": "first"}).reset_index()
-        df_narration.rename(columns={"TOTAL AMOUNT": "Final Total"}, inplace=True)
-        df_narration = df_narration[["Narration", "Final Total"]]
-        
-        # 3. Line Items Sheet
-        df_line = df_all.copy()
-        df_line.rename(columns={"RAW_PARTICULARS": "Particulars / Item Description"}, inplace=True)
-        
-        sales_dfs["Main"] = df_main
-        sales_dfs["Narration"] = df_narration
-        sales_dfs["LineItems"] = df_line
+
+        # ── Sheet 2: Tax & TDS Workings ────────────────────────────────────────
+        # Shows GST type decision (CGST+SGST vs IGST), TDS section/rate/amount,
+        # and the routing rule applied. Kept separate from main sheet per CA guidance.
+        def _gst_type(row):
+            igst = row.get("IGST", 0) or 0
+            cgst = row.get("CGST", 0) or 0
+            sgst = row.get("SGST", 0) or 0
+            taxable = row.get("AMOUNT", 0) or 0
+            total_tax = igst + cgst + sgst
+            if total_tax == 0 and taxable > 0:
+                return "Export LUT"
+            if igst > 0:
+                return "Interstate"
+            if cgst > 0 or sgst > 0:
+                return "Intrastate"
+            return "Exempt/Zero-rated"
+
+        def _routing_rule(row):
+            gst_type = row.get("GST Type", "")
+            cat = row.get("GSTR-1 Category", "") or ""
+            if gst_type == "Export LUT":
+                return "IGST = 0 (Export LUT – Letter of Undertaking). Zero-rated under IGST Act Sec 16(3)(b)."
+            elif gst_type == "Interstate":
+                return f"Interstate supply → IGST only (CGST+SGST = 0). Category: {cat}."
+            elif gst_type == "Intrastate":
+                return f"Intrastate supply → CGST + SGST (equal halves). IGST = 0. Category: {cat}."
+            return f"Zero-rated / Exempt supply. Category: {cat}."
+
+        TDS_THRESHOLD = 30000  # Sec 194C threshold
+
+        def _tds_section(row):
+            taxable = row.get("AMOUNT", 0) or 0
+            cat = (row.get("GSTR-1 Category", "") or "").upper()
+            nat = (row.get("NATURE", "") or "").lower()
+            if cat in ("EXP", "B2CS") or taxable < TDS_THRESHOLD:
+                return ("No", "–", 0.0, 0.0, taxable, "Below threshold / not applicable")
+            # 194J: professional / technical services
+            prof_keywords = ["professional", "technical", "consulting", "audit", "legal", "management"]
+            if any(k in nat for k in prof_keywords):
+                rate = 10.0
+                tds_amt = round(taxable * rate / 100, 2)
+                return ("Yes", "194J – Prof/Tech Services", rate, tds_amt, round(taxable - tds_amt, 2), f"10% TDS on professional services (Sec 194J)")
+            # 194C: contractor payments (default for B2B above threshold)
+            rate = 2.0
+            tds_amt = round(taxable * rate / 100, 2)
+            return ("Yes", "194C – Contractor/Sub-contractor", rate, tds_amt, round(taxable - tds_amt, 2), "2% TDS on contract payments (Sec 194C, company deductee)")
+
+        workings_records = []
+        for _, row in df_main.iterrows():
+            row_d = row.to_dict()
+            gst_type = _gst_type(row_d)
+            row_d["GST Type"] = gst_type
+            routing = _routing_rule(row_d)
+            tds_applicable, tds_section, tds_rate, tds_deducted, net_receivable, tds_note = _tds_section(row_d)
+            workings_records.append({
+                "Invoice No": row_d.get("REFERANCE NO"),
+                "Invoice Date": row_d.get("INVOICE DATE"),
+                "Party Name": row_d.get("PARTY A/C NAME"),
+                "Party GSTIN": row_d.get("GST NO"),
+                "Place of Supply": row_d.get("PLACE OF SUPPLY"),
+                "Taxable Value (₹)": row_d.get("AMOUNT", 0),
+                "GST Type": gst_type,
+                "CGST Rate %": 9.0 if gst_type == "Intrastate" else 0.0,
+                "CGST Amount (₹)": row_d.get("CGST", 0),
+                "SGST Rate %": 9.0 if gst_type == "Intrastate" else 0.0,
+                "SGST Amount (₹)": row_d.get("SGST", 0),
+                "IGST Rate %": 18.0 if gst_type == "Interstate" else 0.0,
+                "IGST Amount (₹)": row_d.get("IGST", 0),
+                "Total Tax (₹)": (row_d.get("CGST", 0) or 0) + (row_d.get("SGST", 0) or 0) + (row_d.get("IGST", 0) or 0),
+                "Total Invoice Value (₹)": row_d.get("TOTAL AMOUNT", 0),
+                "GSTR-1 Category": row_d.get("GSTR-1 Category"),
+                "GST Routing Rule Applied": routing,
+                "TDS Applicable": tds_applicable,
+                "TDS Section": tds_section,
+                "TDS Rate %": tds_rate,
+                "TDS Deducted (Est.) (₹)": tds_deducted,
+                "Net Receivable After TDS (₹)": net_receivable,
+                "TDS Note": tds_note,
+                "Nature": row_d.get("NATURE"),
+            })
+        df_workings = pd.DataFrame(workings_records)
+
+        # ── Sheet 3: Matching Sheet ─────────────────────────────────────────────
+        # Cross-checks extracted invoice totals against math (taxable+tax ≈ total).
+        # Shows final values with Nature column and PASS/FAIL status.
+        matching_records = []
+        for _, row in df_main.iterrows():
+            taxable = float(row.get("AMOUNT") or 0)
+            cgst = float(row.get("CGST") or 0)
+            sgst = float(row.get("SGST") or 0)
+            igst = float(row.get("IGST") or 0)
+            round_off = float(row.get("ROUND OFF") or 0)
+            total = float(row.get("TOTAL AMOUNT") or 0)
+            total_tax = cgst + sgst + igst
+            computed_total = taxable + total_tax + round_off
+            variance = round(abs(total - computed_total), 2)
+            # Export LUT: skip math check (total is in foreign currency)
+            is_export_lut = total_tax == 0 and taxable > 0
+            if is_export_lut:
+                match_status = "PASS – Export LUT"
+                variance = 0.0
+            elif variance <= 2.50:
+                match_status = "PASS"
+            else:
+                match_status = f"REVIEW – Variance ₹{variance}"
+            matching_records.append({
+                "Invoice No": row.get("REFERANCE NO"),
+                "Invoice Date": row.get("INVOICE DATE"),
+                "Party Name": row.get("PARTY A/C NAME"),
+                "Party GSTIN": row.get("GST NO"),
+                "Taxable Value (₹)": taxable,
+                "CGST (₹)": cgst,
+                "SGST (₹)": sgst,
+                "IGST (₹)": igst,
+                "Total Tax (₹)": total_tax,
+                "Round Off (₹)": round_off,
+                "Total Invoice Value (₹)": total,
+                "Computed Total (₹)": round(computed_total, 2),
+                "Variance (₹)": variance,
+                "Match Status": match_status,
+                "GSTR-1 Category": row.get("GSTR-1 Category"),
+                "Nature": row.get("NATURE"),
+            })
+        df_matching = pd.DataFrame(matching_records)
+
+        sales_dfs["Sales Register"] = df_main
+        sales_dfs["Tax & TDS Workings"] = df_workings
+        sales_dfs["Matching Sheet"] = df_matching
+        # Remove old unused keys
+        for k in ["Main", "Narration", "LineItems"]:
+            sales_dfs.pop(k, None)
         
     purchase_df = pd.DataFrame()
     if extraction_response.purchase_items:

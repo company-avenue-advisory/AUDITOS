@@ -213,7 +213,7 @@ async def process_one(sem, pdf_path, client):
                 "Total Invoice Value": tot,
                 "GSTR-1 Category": gstr1,
                 "Tax Type": "IGST" if igst > (cgst + sgst) else "CGST+SGST",
-                "Narration": "",
+                "Nature": "",
                 "Status": status,
                 "Note": f"{elapsed}s",
                 "_path": pdf_path,
@@ -229,7 +229,7 @@ async def process_one(sem, pdf_path, client):
                 "CGST Amount": 0.0, "SGST Rate (%)": 0.0, "SGST Amount": 0.0,
                 "IGST Rate (%)": 0.0, "IGST Amount": 0.0, "Total Tax": 0.0,
                 "Round Off": 0.0, "Advance Deducted": 0.0, "Total Invoice Value": 0.0,
-                "GSTR-1 Category": "", "Tax Type": "", "Narration": "",
+                "GSTR-1 Category": "", "Tax Type": "", "Nature": "",
                 "Status": "ERR", "Note": str(e)[:120], "_path": pdf_path,
             }
 
@@ -242,7 +242,7 @@ COLUMNS = [
     "Taxable Value", "CGST Rate (%)", "CGST Amount",
     "SGST Rate (%)", "SGST Amount", "IGST Rate (%)", "IGST Amount",
     "Total Tax", "Round Off", "Advance Deducted", "Total Invoice Value",
-    "GSTR-1 Category", "Tax Type", "Narration", "Status", "Note",
+    "GSTR-1 Category", "Tax Type", "Nature", "Status", "Note",
 ]
 COL_WIDTHS = [5, 35, 18, 14, 38, 18, 18, 10,
               14, 11, 12, 11, 12, 11, 12,
@@ -260,7 +260,7 @@ BORDER      = Border(left=Side(style="thin"), right=Side(style="thin"),
 def write_excel(rows, path):
     wb = openpyxl.Workbook()
     ws = wb.active
-    ws.title = "May 2026 Sales"
+    ws.title = "Sales Register"
 
     for ci, col in enumerate(COLUMNS, 1):
         c = ws.cell(row=1, column=ci, value=col)
@@ -277,7 +277,7 @@ def write_excel(rows, path):
                 row["Taxable Value"], row["CGST Rate (%)"], row["CGST Amount"],
                 row["SGST Rate (%)"], row["SGST Amount"], row["IGST Rate (%)"], row["IGST Amount"],
                 row["Total Tax"], row["Round Off"], row["Advance Deducted"], row["Total Invoice Value"],
-                row["GSTR-1 Category"], row["Tax Type"], row["Narration"], row["Status"], row["Note"]]
+                row["GSTR-1 Category"], row["Tax Type"], row["Nature"], row["Status"], row["Note"]]
         for ci, v in enumerate(vals, 1):
             c = ws.cell(row=r, column=ci, value=v)
             c.fill = fill; c.border = BORDER
@@ -301,26 +301,144 @@ def write_excel(rows, path):
     ws.freeze_panes = "A2"
     ws.auto_filter.ref = f"A1:{get_column_letter(len(COLUMNS))}1"
 
-    # Summary sheet
-    ws2 = wb.create_sheet("Summary")
-    n_pass = sum(1 for r in rows if r["Status"]=="PASS")
-    n_warn = sum(1 for r in rows if r["Status"]=="WARN")
-    n_err  = sum(1 for r in rows if r["Status"]=="ERR")
+    # ── Sheet 2: Tax & TDS Workings ─────────────────────────────────────────
+    TDS_THRESHOLD = 30000
+    ws2 = wb.create_sheet("Tax & TDS Workings")
+    tds_cols = [
+        "Invoice No", "Invoice Date", "Party Name", "Party GSTIN", "Place of Supply",
+        "Taxable Value (Rs.)", "GST Type",
+        "CGST Rate %", "CGST Amount (Rs.)", "SGST Rate %", "SGST Amount (Rs.)",
+        "IGST Rate %", "IGST Amount (Rs.)", "Total Tax (Rs.)", "Total Invoice Value (Rs.)",
+        "GSTR-1 Category", "GST Routing Rule Applied",
+        "TDS Applicable", "TDS Section", "TDS Rate %",
+        "TDS Deducted (Est.) (Rs.)", "Net Receivable After TDS (Rs.)", "TDS Note", "Nature",
+    ]
+    for ci, col in enumerate(tds_cols, 1):
+        c = ws2.cell(row=1, column=ci, value=col)
+        c.font = HEADER_FONT; c.fill = PatternFill("solid", fgColor="375623")
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        c.border = BORDER
+    ws2.row_dimensions[1].height = 28
+
+    def _gst_type_b(r):
+        igst = r.get("IGST Amount", 0) or 0
+        cgst = r.get("CGST Amount", 0) or 0
+        sgst = r.get("SGST Amount", 0) or 0
+        taxable = r.get("Taxable Value", 0) or 0
+        if (igst + cgst + sgst) == 0 and taxable > 0:
+            return "Export LUT"
+        return "Interstate" if igst > 0 else ("Intrastate" if cgst > 0 or sgst > 0 else "Exempt")
+
+    def _tds_b(r, gst_type):
+        taxable = r.get("Taxable Value", 0) or 0
+        cat = (r.get("GSTR-1 Category", "") or "").upper()
+        nature = (r.get("Nature", "") or "").lower()
+        if cat in ("EXP", "B2CS") or taxable < TDS_THRESHOLD:
+            return "No", "-", 0.0, 0.0, taxable, "Below threshold / not applicable"
+        prof_kw = ["professional", "technical", "consulting", "audit", "legal", "management"]
+        if any(k in nature for k in prof_kw):
+            tds_amt = round(taxable * 0.10, 2)
+            return "Yes", "194J - Prof/Tech Services", 10.0, tds_amt, round(taxable - tds_amt, 2), "10% TDS (Sec 194J)"
+        tds_amt = round(taxable * 0.02, 2)
+        return "Yes", "194C - Contractor", 2.0, tds_amt, round(taxable - tds_amt, 2), "2% TDS (Sec 194C, company deductee)"
+
+    for ri, r in enumerate(rows, 2):
+        gst_type = _gst_type_b(r)
+        if gst_type == "Export LUT":
+            routing = "IGST = 0 (Export LUT). Zero-rated under IGST Act Sec 16(3)(b)."
+        elif gst_type == "Interstate":
+            routing = f"Interstate -> IGST only. Category: {r.get('GSTR-1 Category', '')}."
+        else:
+            routing = f"Intrastate -> CGST + SGST (equal halves). Category: {r.get('GSTR-1 Category', '')}."
+        tds_app, tds_sec, tds_rate, tds_ded, net_recv, tds_note = _tds_b(r, gst_type)
+        vals2 = [
+            r.get("Invoice No"), r.get("Invoice Date"), r.get("Party Name"), r.get("Party GSTIN"),
+            r.get("Place of Supply"), r.get("Taxable Value", 0), gst_type,
+            r.get("CGST Rate (%)", 0), r.get("CGST Amount", 0),
+            r.get("SGST Rate (%)", 0), r.get("SGST Amount", 0),
+            r.get("IGST Rate (%)", 0), r.get("IGST Amount", 0),
+            r.get("Total Tax", 0), r.get("Total Invoice Value", 0),
+            r.get("GSTR-1 Category"), routing,
+            tds_app, tds_sec, tds_rate, tds_ded, net_recv, tds_note, r.get("Nature", ""),
+        ]
+        for ci, v in enumerate(vals2, 1):
+            c = ws2.cell(row=ri, column=ci, value=v)
+            c.border = BORDER
+            c.alignment = Alignment(vertical="center", wrap_text=(ci == 17 or ci == 23))
+            if isinstance(v, float): c.number_format = '#,##0.00'
+    for ci, w in enumerate([12,12,30,16,16, 14,12, 9,12,9,12,9,12,12,14, 12,40, 9,24,9,14,16,35,25], 1):
+        ws2.column_dimensions[get_column_letter(ci)].width = w
+    ws2.freeze_panes = "A2"
+
+    # ── Sheet 3: Matching Sheet ──────────────────────────────────────────────
+    ws3 = wb.create_sheet("Matching Sheet")
+    match_cols = [
+        "Invoice No", "Invoice Date", "Party Name", "Party GSTIN",
+        "Taxable Value (Rs.)", "CGST (Rs.)", "SGST (Rs.)", "IGST (Rs.)",
+        "Total Tax (Rs.)", "Round Off (Rs.)", "Total Invoice Value (Rs.)",
+        "Computed Total (Rs.)", "Variance (Rs.)", "Match Status",
+        "GSTR-1 Category", "Nature",
+    ]
+    for ci, col in enumerate(match_cols, 1):
+        c = ws3.cell(row=1, column=ci, value=col)
+        c.font = HEADER_FONT; c.fill = PatternFill("solid", fgColor="4B1D6B")
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        c.border = BORDER
+    ws3.row_dimensions[1].height = 28
+
+    for ri, r in enumerate(rows, 2):
+        taxable = r.get("Taxable Value", 0) or 0
+        cgst = r.get("CGST Amount", 0) or 0
+        sgst = r.get("SGST Amount", 0) or 0
+        igst = r.get("IGST Amount", 0) or 0
+        round_off = r.get("Round Off", 0) or 0
+        total = r.get("Total Invoice Value", 0) or 0
+        total_tax = cgst + sgst + igst
+        computed = round(taxable + total_tax + round_off, 2)
+        variance = round(abs(total - computed), 2)
+        is_export = total_tax == 0 and taxable > 0
+        if is_export:
+            match_status = "PASS - Export LUT"
+            variance = 0.0
+        elif variance <= 2.50:
+            match_status = "PASS"
+        else:
+            match_status = f"REVIEW - Variance Rs.{variance}"
+        mfill = PASS_FILL if "PASS" in match_status else WARN_FILL
+        vals3 = [
+            r.get("Invoice No"), r.get("Invoice Date"), r.get("Party Name"), r.get("Party GSTIN"),
+            taxable, cgst, sgst, igst, total_tax, round_off, total, computed, variance,
+            match_status, r.get("GSTR-1 Category"), r.get("Nature", ""),
+        ]
+        for ci, v in enumerate(vals3, 1):
+            c = ws3.cell(row=ri, column=ci, value=v)
+            c.border = BORDER
+            c.alignment = Alignment(vertical="center")
+            if isinstance(v, float): c.number_format = '#,##0.00'
+            if ci == 14:  # Match Status column — colour by result
+                c.fill = mfill
+    for ci, w in enumerate([12,12,30,16, 14,11,11,11,11,10,14, 13,11,22, 12,25], 1):
+        ws3.column_dimensions[get_column_letter(ci)].width = w
+    ws3.freeze_panes = "A2"
+
+    # ── Sheet 4: Batch Summary ───────────────────────────────────────────────
+    ws4 = wb.create_sheet("Batch Summary")
+    n_pass = sum(1 for r in rows if r["Status"] == "PASS")
+    n_warn = sum(1 for r in rows if r["Status"] == "WARN")
+    n_err  = sum(1 for r in rows if r["Status"] == "ERR")
     for ri, (k, v) in enumerate([
-        ("Period", "May 2026"),
         ("Total Invoices", len(rows)),
         ("PASS", n_pass), ("WARN", n_warn), ("ERR", n_err),
         ("Accuracy", f"{n_pass/len(rows)*100:.1f}%" if rows else "0%"),
         ("Total Taxable Value", sum(r["Taxable Value"] for r in rows)),
         ("Total Invoice Value", sum(r["Total Invoice Value"] for r in rows)),
-        ("LLM Calls", len(rows)),
-        ("Approx Cost (Groq free)", "Rs.0"),
+        ("Approx LLM Cost", "Rs.0 (Groq free tier)"),
     ], 1):
-        ws2.cell(row=ri, column=1, value=k).font = Font(bold=True)
-        c = ws2.cell(row=ri, column=2, value=v)
+        ws4.cell(row=ri, column=1, value=k).font = Font(bold=True)
+        c = ws4.cell(row=ri, column=2, value=v)
         if isinstance(v, float): c.number_format = '#,##0.00'
-    ws2.column_dimensions["A"].width = 22
-    ws2.column_dimensions["B"].width = 22
+    ws4.column_dimensions["A"].width = 22
+    ws4.column_dimensions["B"].width = 22
 
     wb.save(path)
     print(f"\nExcel saved -> {path}")
