@@ -121,14 +121,15 @@ def extract_header_fields(text: str) -> dict:
 # ── Minimal LLM call for party name + place of supply ──────────────────────
 
 def _llm_party_pos(header_text: str, client, model: str) -> dict:
-    """One tiny call, ~500 input tokens, to get party name and place of supply."""
+    """One tiny call, ~500 input tokens, to get party name, place of supply, and particulars."""
     from openai import OpenAI
-    prompt = f"""From this invoice header extract ONLY:
+    prompt = f"""From this invoice extract ONLY these 3 fields:
 - party_name: the customer/buyer company name (NOT the seller)
 - place_of_supply: state name or state code shown on invoice
+- particulars: brief description of what was sold/billed (e.g. "Mobile Charges", "Cloud Hosting", "Professional Fees"). Use the service/product description line if visible. Max 80 chars.
 
 Return JSON only, no explanation.
-Example: {{"party_name": "ABC Bank Ltd.", "place_of_supply": "Karnataka"}}
+Example: {{"party_name": "ABC Bank Ltd.", "place_of_supply": "Karnataka", "particulars": "Internet Bandwidth Charges"}}
 
 Invoice header:
 {header_text[:800]}
@@ -139,16 +140,17 @@ Invoice header:
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"},
             temperature=0.0,
-            max_tokens=120,
+            max_tokens=160,
         )
         raw = resp.choices[0].message.content.strip()
         data = json.loads(raw)
         return {
             "party_ledger_name": data.get("party_name", ""),
             "place_of_supply":   data.get("place_of_supply", ""),
+            "particulars":       data.get("particulars", ""),
         }
     except Exception as e:
-        return {"party_ledger_name": "", "place_of_supply": ""}
+        return {"party_ledger_name": "", "place_of_supply": "", "particulars": ""}
 
 
 # ── Per-invoice processor ───────────────────────────────────────────────────
@@ -199,6 +201,7 @@ async def process_one(sem, pdf_path, client):
                 "Party Name": llm.get('party_ledger_name', ''),
                 "Party GSTIN": gstin,
                 "Place of Supply": pos,
+                "Particulars": llm.get('particulars', ''),
                 "HSN/SAC": "",
                 "Taxable Value": tv,
                 "CGST Rate (%)": fin.get('cgst_rate', 0.0),
@@ -225,7 +228,7 @@ async def process_one(sem, pdf_path, client):
             return {
                 "File Name": fname, "Invoice No": "", "Invoice Date": "",
                 "Party Name": "", "Party GSTIN": "", "Place of Supply": "",
-                "HSN/SAC": "", "Taxable Value": 0.0, "CGST Rate (%)": 0.0,
+                "Particulars": "", "HSN/SAC": "", "Taxable Value": 0.0, "CGST Rate (%)": 0.0,
                 "CGST Amount": 0.0, "SGST Rate (%)": 0.0, "SGST Amount": 0.0,
                 "IGST Rate (%)": 0.0, "IGST Amount": 0.0, "Total Tax": 0.0,
                 "Round Off": 0.0, "Advance Deducted": 0.0, "Total Invoice Value": 0.0,
@@ -238,16 +241,16 @@ async def process_one(sem, pdf_path, client):
 
 COLUMNS = [
     "S.No", "File Name", "Invoice No", "Invoice Date",
-    "Party Name", "Party GSTIN", "Place of Supply", "HSN/SAC",
+    "Party Name", "Party GSTIN", "Place of Supply", "Particulars", "HSN/SAC",
     "Taxable Value", "CGST Rate (%)", "CGST Amount",
     "SGST Rate (%)", "SGST Amount", "IGST Rate (%)", "IGST Amount",
     "Total Tax", "Round Off", "Advance Deducted", "Total Invoice Value",
     "GSTR-1 Category", "Tax Type", "Nature", "Status", "Note",
 ]
-COL_WIDTHS = [5, 35, 18, 14, 38, 18, 18, 10,
+COL_WIDTHS = [5, 35, 18, 14, 38, 18, 18, 30, 10,
               14, 11, 12, 11, 12, 11, 12,
               12, 10, 14, 16, 14, 12, 25, 8, 30]
-NUM_COLS = {9, 11, 13, 15, 16, 17, 18, 19}  # 1-indexed cols with numbers
+NUM_COLS = {10, 12, 14, 16, 17, 18, 19, 20}  # 1-indexed cols with numbers (shifted +1)
 
 HEADER_FILL = PatternFill("solid", fgColor="1F4E79")
 HEADER_FONT = Font(bold=True, color="FFFFFF", size=10)
@@ -273,7 +276,7 @@ def write_excel(rows, path):
         r    = sno + 1
         fill = PASS_FILL if row["Status"]=="PASS" else (WARN_FILL if row["Status"]=="WARN" else ERR_FILL)
         vals = [sno, row["File Name"], row["Invoice No"], row["Invoice Date"],
-                row["Party Name"], row["Party GSTIN"], row["Place of Supply"], row["HSN/SAC"],
+                row["Party Name"], row["Party GSTIN"], row["Place of Supply"], row.get("Particulars", ""), row["HSN/SAC"],
                 row["Taxable Value"], row["CGST Rate (%)"], row["CGST Amount"],
                 row["SGST Rate (%)"], row["SGST Amount"], row["IGST Rate (%)"], row["IGST Amount"],
                 row["Total Tax"], row["Round Off"], row["Advance Deducted"], row["Total Invoice Value"],

@@ -941,21 +941,26 @@ def build_dataframes(extraction_response):
         }
         df_main = df_all.groupby(group_cols, dropna=False).agg(agg_dict).reset_index()
         
-        def get_particulars(row):
-            return "Sales IGST 18" if row.get("IGST", 0) > 0 else "Sales GST 18"
-            
-        df_main["PARTICULARS"] = df_main.apply(get_particulars, axis=1)
-        
         def get_single_hsn(grp):
             hsns = grp.dropna().unique()
             if len(hsns) == 1:
                 return hsns[0]
             return None
-            
-        hsn_vals = df_all.groupby(group_cols[:-1], dropna=False)["HSN"].apply(get_single_hsn).reset_index()
+
+        # Use actual item descriptions from the invoice, not a generic label.
+        # Join multiple line descriptions with ' | ' for multi-line invoices.
+        def _join_particulars(grp):
+            parts = [str(v).strip() for v in grp.dropna().unique()
+                     if v and str(v).strip() and str(v).strip() != "Unallocated / Missing Lines"]
+            return " | ".join(parts) if parts else None
+
+        hsn_vals  = df_all.groupby(group_cols[:-1], dropna=False)["HSN"].apply(get_single_hsn).reset_index()
+        part_vals = df_all.groupby(group_cols[:-1], dropna=False)["RAW_PARTICULARS"].apply(_join_particulars).reset_index()
+        part_vals.rename(columns={"RAW_PARTICULARS": "PARTICULARS"}, inplace=True)
         narr_vals = df_all.groupby(group_cols[:-1], dropna=False)["Narration"].first().reset_index()
-        
-        df_main = df_main.merge(hsn_vals, on=group_cols[:-1], how="left")
+
+        df_main = df_main.merge(part_vals, on=group_cols[:-1], how="left")
+        df_main = df_main.merge(hsn_vals,  on=group_cols[:-1], how="left")
         df_main = df_main.merge(narr_vals, on=group_cols[:-1], how="left")
 
         # Inject invoice-level round-off (single value for the whole invoice, not a line-item sum)
