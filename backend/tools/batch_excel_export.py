@@ -1,41 +1,47 @@
 """
-batch_lean.py — Cost-optimised batch processor for sales invoices.
+batch_excel_export.py — Cost-optimised batch processor for sales invoices.
 
 COST STRATEGY:
-  Full pipeline (old): 3 LLM extractors × every chunk × full PDF text
-                       = ~400K tokens/invoice → ₹4/invoice → ₹700 for 177
+  Full pipeline: 3 LLM extractors x full PDF text x every chunk
+               = ~400K tokens/invoice (very expensive at scale)
 
   This script:
-    1. Deterministic regex  → all financial data (taxable, CGST, SGST, IGST,
+    1. Deterministic regex  -> all financial data (taxable, CGST, SGST, IGST,
                                total, advance, round_off, invoice_no, date, GSTIN)
-    2. ONE tiny LLM call    → only party name + place_of_supply
-                               (first 800 chars of invoice = header region)
-                             = ~1,000 tokens/invoice → ₹0.007/invoice → ₹1.2 for 177
+    2. ONE tiny LLM call    -> only party name + place_of_supply
+                               (first 800 chars of invoice = header region only)
+                             = ~1,000 tokens/invoice
 
-  Accuracy is identical: deterministic regex already achieves 100% on financials.
+  Accuracy is identical: deterministic regex achieves 100% on financials.
   LLM only fills party name which regex cannot reliably get.
+
+Usage:
+  python batch_excel_export.py --dir /path/to/invoices --out output.xlsx
+  python batch_excel_export.py --dir /path/to/invoices --out output.xlsx --retry
 """
-import asyncio, os, sys, time, glob as globmod, pathlib, json, re
+import asyncio, os, sys, time, glob as globmod, pathlib, json, re, argparse
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 from dotenv import load_dotenv
 
-ROOT    = r"C:\Users\yugvk\Downloads\antigravityaudit"
+# Resolve project root from this file's location: backend/tools/batch_excel_export.py
+ROOT    = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 BACKEND = os.path.join(ROOT, "backend")
 sys.path.insert(0, ROOT)
 sys.path.insert(0, BACKEND)
 os.chdir(ROOT)
 load_dotenv(os.path.join(BACKEND, ".env"))
 
-INVOICE_DIR  = os.path.join(ROOT, "may26_invoices")
-OUTPUT_EXCEL = os.path.join(ROOT, "May_2026_Sales_Invoices.xlsx")
-FAILED_LOG   = os.path.join(ROOT, "may26_failed.json")
+# Paths set from CLI args in main() — no hardcoded machine paths
+INVOICE_DIR  = None
+OUTPUT_EXCEL = None
+FAILED_LOG   = None
 
 # Groq free — 1 tiny call per invoice (~1K tokens).
-# SEMAPHORE=5 is safe: 5 × 1K = 5K TPM vs 20K TPM limit.
-SEMAPHORE    = 5
-GROQ_MODEL   = "llama-3.1-8b-instant"
+# SEMAPHORE=5 is safe: 5 x 1K = 5K TPM vs 20K TPM limit.
+SEMAPHORE  = 5
+GROQ_MODEL = "llama-3.1-8b-instant"
 
 
 # ── Deterministic extractors ────────────────────────────────────────────────
@@ -323,18 +329,31 @@ def write_excel(rows, path):
 # ── Main ────────────────────────────────────────────────────────────────────
 
 async def main():
+    parser = argparse.ArgumentParser(description="Batch invoice -> Excel exporter")
+    parser.add_argument("--dir",   required=True, help="Folder containing PDF invoices")
+    parser.add_argument("--out",   required=True, help="Output Excel file path")
+    parser.add_argument("--retry", action="store_true", help="Only reprocess failed invoices from last run")
+    args = parser.parse_args()
+
+    invoice_dir  = os.path.abspath(args.dir)
+    output_excel = os.path.abspath(args.out)
+    failed_log   = output_excel.replace(".xlsx", "_failed.json")
+
     from openai import OpenAI
     groq_key = os.getenv("GROQ_API_KEY")
     if not groq_key:
-        print("ERROR: GROQ_API_KEY not set in backend/.env"); return
+        print("ERROR: GROQ_API_KEY not set"); return
     client = OpenAI(api_key=groq_key, base_url="https://api.groq.com/openai/v1")
 
-    pdfs = sorted(globmod.glob(os.path.join(INVOICE_DIR, "**", "*.pdf"), recursive=True))
-    if not pdfs:
-        print("No PDFs found in", INVOICE_DIR); return
-
-    print(f"Processing {len(pdfs)} invoices — lean mode (1 LLM call/invoice, ~1K tokens each)")
-    print(f"Estimated cost: Rs.{len(pdfs)*0.007:.1f}  |  Groq free tier\n")
+    if args.retry and os.path.exists(failed_log):
+        with open(failed_log) as f:
+            pdfs = json.load(f)
+        print(f"Retrying {len(pdfs)} failed invoices\n")
+    else:
+        pdfs = sorted(globmod.glob(os.path.join(invoice_dir, "**", "*.pdf"), recursive=True))
+        if not pdfs:
+            print("No PDFs found in", invoice_dir); return
+        print(f"Processing {len(pdfs)} invoices (1 LLM call/invoice, ~1K tokens each)\n")
 
     sem     = asyncio.Semaphore(SEMAPHORE)
     t_start = time.time()
@@ -347,7 +366,7 @@ async def main():
 
     failed = [r["_path"] for r in results if r["Status"]=="ERR"]
     if failed:
-        with open(FAILED_LOG, "w") as f: json.dump(failed, f, indent=2)
+        with open(failed_log, "w") as f: json.dump(failed, f, indent=2)
 
     for r in results: r.pop("_path", None)
 
@@ -355,7 +374,7 @@ async def main():
     print(f"PASS={n_pass}  WARN={n_warn}  ERR={n_err}  Accuracy={n_pass/len(pdfs)*100:.1f}%")
     print(f"Wall time={wall:.1f}s  |  LLM calls={len(pdfs)}  |  ~{len(pdfs)*1000:,} tokens used")
 
-    write_excel(results, OUTPUT_EXCEL)
+    write_excel(results, output_excel)
 
 
 if __name__ == "__main__":

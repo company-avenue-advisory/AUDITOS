@@ -91,3 +91,4 @@ backend/benchmark/
 backend/services/test_api.py
 
 
+SCALABILITY_REPORT.md
