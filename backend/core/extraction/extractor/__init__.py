@@ -17,6 +17,8 @@ def run_ai_extraction(regions, candidates: List[Candidate], client, model_name: 
         "overall_cgst_amount": totals_res.get("overall_cgst_amount") or 0.0,
         "overall_sgst_amount": totals_res.get("overall_sgst_amount") or 0.0,
         "overall_igst_amount": totals_res.get("overall_igst_amount") or 0.0,
+        "overall_round_off": totals_res.get("overall_round_off") or 0.0,
+        "overall_advance_amount": totals_res.get("overall_advance_amount") or 0.0,
         "overall_total_invoice_value": totals_res.get("overall_total_invoice_value") or 0.0,
         "sales_items": [],
         "purchase_items": []

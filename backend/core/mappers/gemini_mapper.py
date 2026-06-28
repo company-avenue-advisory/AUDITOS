@@ -77,14 +77,29 @@ def map_gemini_to_canonical(extraction_response: Union[Dict[str, Any], Any]) -> 
     canonical_items = []
     source_items = sales_items if sales_items else purchase_items
     for s_item in source_items:
+        qty = float(s_item.get("qty") or 0.0)
+        rate = float(s_item.get("rate") or 0.0)
+        discount = float(s_item.get("discount") or 0.0)
+        gross = qty * rate
+        extracted_taxable = float(s_item.get("taxable_value") or 0.0)
+
+        # Correct taxable_value: GST must be applied on (gross - discount), not gross.
+        # If the LLM returned the gross amount when a discount exists, recalculate.
+        if discount > 0 and abs(extracted_taxable - gross) < 1.0:
+            corrected_taxable = round(gross - discount, 2)
+        elif extracted_taxable > 0:
+            corrected_taxable = extracted_taxable
+        else:
+            corrected_taxable = round(max(gross - discount, 0.0), 2)
+
         item = LineItem(
             description=ProvenancedValue(value=s_item.get("particulars"), confidence=default_confidence),
             hsn_sac=ProvenancedValue(value=s_item.get("hsn"), confidence=default_confidence),
-            quantity=ProvenancedValue(value=s_item.get("qty"), confidence=default_confidence),
-            rate=ProvenancedValue(value=s_item.get("rate"), confidence=default_confidence),
-            discount=ProvenancedValue(value=s_item.get("discount") or 0.0, confidence=default_confidence),
+            quantity=ProvenancedValue(value=qty, confidence=default_confidence),
+            rate=ProvenancedValue(value=rate, confidence=default_confidence),
+            discount=ProvenancedValue(value=discount, confidence=default_confidence),
             advances=ProvenancedValue(value=s_item.get("advances") or 0.0, confidence=default_confidence),
-            taxable_value=ProvenancedValue(value=s_item.get("taxable_value") or 0.0, confidence=default_confidence),
+            taxable_value=ProvenancedValue(value=corrected_taxable, confidence=default_confidence),
             cgst_amount=ProvenancedValue(value=s_item.get("cgst_amount") or 0.0, confidence=default_confidence),
             sgst_amount=ProvenancedValue(value=s_item.get("sgst_amount") or 0.0, confidence=default_confidence),
             igst_amount=ProvenancedValue(value=s_item.get("igst_amount") or 0.0, confidence=default_confidence),

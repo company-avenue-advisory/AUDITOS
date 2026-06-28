@@ -44,6 +44,8 @@ class SuvitSalesItem(BaseModel):
     @field_validator('qty', 'rate', 'taxable_value', 'discount', 'advances', 'cgst_amount', 'sgst_amount', 'igst_amount', 'total_invoice_value', mode='before')
     @classmethod
     def remove_commas(cls, v):
+        if v is None:
+            return 0.0
         if isinstance(v, str):
             v = v.replace(',', '').strip()
             if not v:
@@ -83,6 +85,8 @@ class InvoiceExtractionResponse(BaseModel):
     overall_cgst_amount: float = Field(0.0, description="Overall CGST Amount of the entire invoice")
     overall_sgst_amount: float = Field(0.0, description="Overall SGST Amount of the entire invoice")
     overall_igst_amount: float = Field(0.0, description="Overall IGST Amount of the entire invoice")
+    overall_round_off: float = Field(0.0, description="Rounding off adjustment on the final invoice total")
+    overall_advance_amount: float = Field(0.0, description="Advance/previous payment deducted from the invoice total")
     overall_total_invoice_value: float = Field(0.0, description="Overall Total Invoice Value incl taxes")
     sales_items: List[SuvitSalesItem] = Field(default_factory=list, description="Extracted sales items")
     purchase_items: List[SuvitPurchaseItem] = Field(default_factory=list, description="Extracted purchase items")
@@ -132,7 +136,9 @@ def call_llm(pdf_contents, model_name, client, invoice_type="both"):
     "overall_cgst_amount": {"type": "number", "description": "Overall CGST Amount of the entire invoice"},
     "overall_sgst_amount": {"type": "number", "description": "Overall SGST Amount of the entire invoice"},
     "overall_igst_amount": {"type": "number", "description": "Overall IGST Amount of the entire invoice"},
-    "overall_total_invoice_value": {"type": "number", "description": "Overall Total Invoice Value incl taxes"},
+    "overall_round_off": {"type": "number", "description": "Rounding off / rounding adjustment on the final invoice total (e.g. 0.13 or -0.05)"},
+    "overall_advance_amount": {"type": "number", "description": "Advance payment or previous payment deducted from the invoice. Positive number. 0 if absent. Look for 'Less: Advance', 'Advance received', 'Previous payment', 'Adjustment'."},
+    "overall_total_invoice_value": {"type": "number", "description": "Net amount payable AFTER deducting advance. Overall Total Invoice Value incl taxes minus advance."},
     "sales_items": {
       "type": "array",
       "items": {
@@ -382,6 +388,8 @@ def process_pdf(pdf_path, model_override=None, invoice_type="both", logger=None)
     all_res.overall_cgst_amount = raw_extracted.get("overall_cgst_amount") or 0.0
     all_res.overall_sgst_amount = raw_extracted.get("overall_sgst_amount") or 0.0
     all_res.overall_igst_amount = raw_extracted.get("overall_igst_amount") or 0.0
+    all_res.overall_round_off = raw_extracted.get("overall_round_off") or 0.0
+    all_res.overall_advance_amount = raw_extracted.get("overall_advance_amount") or 0.0
     all_res.overall_total_invoice_value = raw_extracted.get("overall_total_invoice_value") or 0.0
     
     for item in raw_extracted.get("sales_items", []):
@@ -453,9 +461,12 @@ def process_pdf(pdf_path, model_override=None, invoice_type="both", logger=None)
         dropped = orig_len - len(cleaned_sales)
         correction_meta["subtotal_rows_dropped"] = dropped
         
+        # Ensure taxable_value reflects post-discount net
+        cleaned_sales = _correct_taxable_values(cleaned_sales)
+
         # Apply QC Audit
         cleaned_sales = qc_audit_sales_items(cleaned_sales)
-        
+
         # Unallocated variance injection
         overall_total = all_res.overall_total_invoice_value
         sum_total = sum((item.taxable_value or 0.0) + (item.cgst_amount or 0.0) + (item.sgst_amount or 0.0) + (item.igst_amount or 0.0) for item in cleaned_sales)
@@ -486,10 +497,15 @@ def process_pdf(pdf_path, model_override=None, invoice_type="both", logger=None)
             }
             
         # Math verification agent (GST snaps / recalculations)
+        # Determine interstate from invoice-level totals — per-item detection fails when
+        # line items carry 0 tax (e.g. advance-deducted invoices like Digitap/OneStack).
+        overall_is_interstate = (all_res.overall_igst_amount or 0.0) > (
+            (all_res.overall_cgst_amount or 0.0) + (all_res.overall_sgst_amount or 0.0)
+        )
         pre_rates = [item.rate for item in cleaned_sales]
         pre_taxes = [(item.cgst_amount, item.sgst_amount, item.igst_amount) for item in cleaned_sales]
-        
-        cleaned_sales = math_verification_agent(cleaned_sales)
+
+        cleaned_sales = math_verification_agent(cleaned_sales, is_interstate=overall_is_interstate)
         
         for i, item in enumerate(cleaned_sales):
             if i < len(pre_rates) and pre_rates[i] != item.rate:
@@ -678,28 +694,38 @@ def qc_audit_sales_items(sales_items):
         valid_items.append(item)
     return valid_items
 
-def math_verification_agent(sales_items):
+def math_verification_agent(sales_items, is_interstate: bool = None):
+    """
+    Snaps per-item GST rates to valid slabs and recomputes tax amounts.
+    is_interstate: determined at the invoice level (overall IGST vs CGST+SGST).
+                   Do NOT derive this per line item — individual items may have
+                   zero tax which makes per-item detection unreliable.
+    """
     valid_rates = [0.0, 0.05, 0.12, 0.18, 0.28]
     for item in sales_items:
         taxable = item.taxable_value or 0.0
         if taxable <= 0:
             continue
-            
+
         cgst_extracted = item.cgst_amount or 0.0
         sgst_extracted = item.sgst_amount or 0.0
         igst_extracted = item.igst_amount or 0.0
-        
+
         total_tax_extracted = cgst_extracted + sgst_extracted + igst_extracted
         raw_rate = total_tax_extracted / taxable if taxable > 0 else 0.0
         snapped_rate = min(valid_rates, key=lambda x: abs(x - raw_rate))
-        
-        # If the LLM completely hallucinated 0 tax but the HSN is a services HSN (99xx), force 18%
+
+        # If the LLM hallucinated 0 tax but the HSN is a services HSN (99xx), force 18%
         if snapped_rate == 0.0 and str(item.hsn).startswith("99"):
             snapped_rate = 0.18
-            
-        is_interstate = igst_extracted > (cgst_extracted + sgst_extracted)
-        
-        if is_interstate:
+
+        # Use invoice-level interstate flag if provided; fall back to item-level only
+        # when the caller couldn't determine it (legacy path).
+        item_is_interstate = is_interstate if is_interstate is not None else (
+            igst_extracted > (cgst_extracted + sgst_extracted)
+        )
+
+        if item_is_interstate:
             item.igst_amount = round(taxable * snapped_rate, 2)
             item.cgst_amount = 0.0
             item.sgst_amount = 0.0
@@ -707,17 +733,40 @@ def math_verification_agent(sales_items):
             item.igst_amount = 0.0
             item.cgst_amount = round(taxable * (snapped_rate / 2), 2)
             item.sgst_amount = round(taxable * (snapped_rate / 2), 2)
-            
+
         item.rate = round(snapped_rate * 100, 2)
         item.total_invoice_value = round(taxable + item.igst_amount + item.cgst_amount + item.sgst_amount, 2)
     return sales_items
+
+def _correct_taxable_values(items):
+    """
+    Per GST law, taxable_value = (qty × rate) − discount.
+    If the LLM returned the gross amount when a discount exists, fix it here
+    so that CGST/SGST/IGST are applied on the correct net value.
+    """
+    for item in items:
+        discount = item.discount or 0.0
+        if discount <= 0:
+            continue
+        qty = item.qty or 0.0
+        rate = item.rate or 0.0
+        gross = qty * rate
+        taxable = item.taxable_value or 0.0
+        # If taxable_value looks like the gross (discount not yet deducted), correct it
+        if gross > 0 and abs(taxable - gross) < 1.0:
+            item.taxable_value = round(gross - discount, 2)
+    return items
+
 
 def build_dataframes(extraction_response):
     sales_dfs = {"Main": pd.DataFrame(), "Narration": pd.DataFrame(), "LineItems": pd.DataFrame()}
     if extraction_response.sales_items:
         # Prevent double counting by removing sub-totals
         extraction_response.sales_items = remove_subtotals(extraction_response.sales_items)
-        
+
+        # 0. Ensure taxable_value reflects post-discount net (GST must not apply on gross)
+        extraction_response.sales_items = _correct_taxable_values(extraction_response.sales_items)
+
         # 1. Apply QC Audit (Remove zeroes, map missing HSNs)
         extraction_response.sales_items = qc_audit_sales_items(extraction_response.sales_items)
         
@@ -749,9 +798,13 @@ def build_dataframes(extraction_response):
             extraction_response.sales_items.append(dummy_item)
             
         # 3. Apply strict Math Verification Agent across all items
-        extraction_response.sales_items = math_verification_agent(extraction_response.sales_items)
-        
-        
+        overall_is_interstate = (extraction_response.overall_igst_amount or 0.0) > (
+            (extraction_response.overall_cgst_amount or 0.0) + (extraction_response.overall_sgst_amount or 0.0)
+        )
+        extraction_response.sales_items = math_verification_agent(
+            extraction_response.sales_items, is_interstate=overall_is_interstate
+        )
+
         records = []
         for item in extraction_response.sales_items:
             records.append({
@@ -804,8 +857,11 @@ def build_dataframes(extraction_response):
         
         df_main = df_main.merge(hsn_vals, on=group_cols[:-1], how="left")
         df_main = df_main.merge(narr_vals, on=group_cols[:-1], how="left")
-        
-        main_cols = ["REFERANCE NO", "INVOICE DATE", "GST NO", "PARTY A/C NAME", "PLACE OF SUPPLY", "PARTICULARS", "AMOUNT", "DISCOUNT", "ADVANCES", "SGST", "CGST", "IGST", "TOTAL AMOUNT", "Narration", "HSN", "GSTR-1 Category"]
+
+        # Inject invoice-level round-off (single value for the whole invoice, not a line-item sum)
+        df_main["ROUND OFF"] = extraction_response.overall_round_off or 0.0
+
+        main_cols = ["REFERANCE NO", "INVOICE DATE", "GST NO", "PARTY A/C NAME", "PLACE OF SUPPLY", "PARTICULARS", "AMOUNT", "DISCOUNT", "ADVANCES", "SGST", "CGST", "IGST", "ROUND OFF", "TOTAL AMOUNT", "Narration", "HSN", "GSTR-1 Category"]
         for col in main_cols:
             if col not in df_main.columns:
                 df_main[col] = None

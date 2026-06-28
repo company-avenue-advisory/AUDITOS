@@ -49,10 +49,14 @@ app = modal.App("ai-invoice-extractor")
     secrets=[
         modal.Secret.from_name("openrouter-secrets"),
     ],
-    timeout=600,   # 10-min timeout for large multi-page PDFs
-    cpu=2.0,       # allocate 2 vCPUs for text-heavy extraction
+    timeout=600,    # 10-min timeout for large multi-page PDFs
+    cpu=4.0,        # 4 vCPUs — headroom for 50 asyncio threads doing PDF parsing
+    memory=2048,    # 2 GB RAM for concurrent pdfplumber + fitz page loads
+    # Modal auto-scales containers horizontally when demand exceeds max_inputs.
+    # Each container handles 50 concurrent requests; at 100-invoice batches
+    # a second container spins up automatically within ~5 s.
 )
-@modal.concurrent(max_inputs=10)   # serve up to 10 parallel requests per container
+@modal.concurrent(max_inputs=50)
 @modal.asgi_app()
 def fastapi_app():
     """Return the FastAPI app to Modal's ASGI server."""

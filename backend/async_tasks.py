@@ -1,4 +1,5 @@
 import asyncio
+import collections
 import os
 import time
 from database import SessionLocal
@@ -7,21 +8,86 @@ from invoice_processor import process_pdf, InvoiceExtractionResponse
 from services.observability import ObsLogger, now_utc, calc_cost_inr
 from services.gcs_storage import gcs_storage
 
-# 🛑 CRITICAL ARCHITECTURE PIVOT 🛑
-# Restrict concurrent LLM API calls to an absolute maximum of 20 at any given time.
-llm_semaphore = asyncio.Semaphore(20)
+# ---------------------------------------------------------------------------
+# Concurrency controls — tuned for 50-100 invoice batches on Gemini Flash paid.
+#
+# llm_semaphore   : max simultaneous LLM threads in-flight across all batches.
+#                   50 keeps Gemini Flash well below its 4000 RPM paid limit
+#                   while saturating the asyncio thread pool.
+#
+# RpmGuard        : sliding-window RPM limiter per model family.
+#                   Gemini Flash paid → 4000 RPM safe ceiling set to 3500.
+#                   Gemini Pro free   → 50 RPM ceiling.
+#                   Falls back to no-op when provider is unknown.
+# ---------------------------------------------------------------------------
+llm_semaphore = asyncio.Semaphore(50)
+
+
+class RpmGuard:
+    """
+    Token-bucket style RPM limiter using a sliding deque of call timestamps.
+    Thread-safe via asyncio lock — safe for concurrent coroutines.
+    """
+    def __init__(self, rpm: int):
+        self._rpm = rpm
+        self._window = 60.0
+        self._calls: collections.deque = collections.deque()
+        self._lock = asyncio.Lock()
+
+    async def acquire(self):
+        async with self._lock:
+            now = asyncio.get_event_loop().time()
+            # Drop timestamps older than 60 s
+            while self._calls and now - self._calls[0] >= self._window:
+                self._calls.popleft()
+            if len(self._calls) >= self._rpm:
+                # Wait until the oldest call falls out of the window
+                sleep_for = self._window - (now - self._calls[0]) + 0.05
+                await asyncio.sleep(sleep_for)
+                now = asyncio.get_event_loop().time()
+                while self._calls and now - self._calls[0] >= self._window:
+                    self._calls.popleft()
+            self._calls.append(asyncio.get_event_loop().time())
+
+
+# One guard per model family — shared across all concurrent coroutines.
+_rpm_guards: dict[str, RpmGuard] = {
+    "gemini-flash": RpmGuard(3500),   # Gemini 2.5 Flash paid: 4000 RPM; leave 500 headroom
+    "gemini-pro":   RpmGuard(45),     # Gemini 2.5 Pro free:   50 RPM
+    "groq":         RpmGuard(25),     # Groq free: ~30 RPM effective
+    "default":      RpmGuard(3500),
+}
+
+def _get_rpm_guard(model_config: dict) -> RpmGuard:
+    provider = (model_config or {}).get("provider", "")
+    model    = (model_config or {}).get("model", "")
+    if "groq" in provider:
+        return _rpm_guards["groq"]
+    if "pro" in model:
+        return _rpm_guards["gemini-pro"]
+    if "gemini" in provider or "gemini" in model or "google" in provider:
+        return _rpm_guards["gemini-flash"]
+    return _rpm_guards["default"]
+
 
 async def extract_invoice_async(file_path: str, model_config: dict, invoice_type: str, logger=None):
-    """Wraps the synchronous process_pdf in an async thread, guarded by the semaphore."""
+    """
+    Wraps the synchronous process_pdf in an async thread.
+    Guarded by:
+      1. llm_semaphore  — caps total concurrent threads (50)
+      2. RpmGuard       — sliding-window RPM limiter per model family
+    """
+    rpm_guard = _get_rpm_guard(model_config)
+    await rpm_guard.acquire()
     async with llm_semaphore:
-        # asyncio.to_thread runs the synchronous pdfplumber & LLM logic in a background thread
         res = await asyncio.to_thread(process_pdf, file_path, model_config, invoice_type, logger=logger)
         return res
 
 async def process_batch(batch_id: str, tasks: list, model_config: dict, type_val: str):
     """
     Background task that processes an entire batch of invoices concurrently.
-    The internal semaphore ensures no more than 20 hit the API at once.
+    Concurrency is governed by llm_semaphore (50 slots) + per-model RpmGuard.
+    Scales to 50-100 invoice batches without 429s on Gemini Flash paid tier.
     """
     from ws_manager import manager
     total = len(tasks)

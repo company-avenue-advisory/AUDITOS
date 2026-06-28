@@ -51,7 +51,8 @@ You are a CA audit assistant. Extract individual line item rows from the items t
 CRITICAL INSTRUCTIONS:
 1. Extract any 'Late Fee Charges' or 'Late Charges' as a distinct, individual line item if present.
 2. If there are line-item specific discounts or advances, you must extract them onto the exact line item ('particulars') row to which they apply. Do not sum them up globally if they belong to specific items.
-3. Ensure all values are mathematically consistent.
+3. taxable_value MUST equal (qty × rate) − discount. GST (CGST/SGST/IGST) is always applied on this net taxable_value, never on the gross amount before discount. If no discount is present, taxable_value = qty × rate.
+4. Ensure all values are mathematically consistent.
 
 Here is the table region:
 {text}

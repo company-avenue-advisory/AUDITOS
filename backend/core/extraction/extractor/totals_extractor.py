@@ -5,11 +5,13 @@ from backend.core.extraction.candidate_detector import Candidate
 TOTALS_SCHEMA = {
     "type": "object",
     "properties": {
-        "overall_taxable_value": {"type": "number"},
+        "overall_taxable_value": {"type": "number", "description": "Total taxable value BEFORE any advance/credit deduction. This is the gross GST base."},
         "overall_cgst_amount": {"type": "number"},
         "overall_sgst_amount": {"type": "number"},
         "overall_igst_amount": {"type": "number"},
-        "overall_total_invoice_value": {"type": "number"}
+        "overall_round_off": {"type": "number", "description": "Rounding off / rounding adjustment on final invoice total"},
+        "overall_advance_amount": {"type": "number", "description": "Advance payment / previous payment deducted from the invoice total. Extract from lines like 'Less: Advance', 'Advance received', 'Previous payment', 'Adjustment'. Positive number even though it is deducted."},
+        "overall_total_invoice_value": {"type": "number", "description": "Net amount payable AFTER deducting advance. This is what the customer actually pays."}
     }
 }
 
@@ -42,6 +44,12 @@ Here is the totals region:
 
 Here are the deterministically detected candidates:
 {candidates_summary}
+
+RULES:
+1. overall_taxable_value = gross taxable BEFORE any advance deduction. GST is computed on this.
+2. overall_advance_amount = the advance/previous payment deducted (positive number). 0 if absent.
+3. overall_total_invoice_value = net amount payable = taxable + tax + round_off - advance.
+4. If you see "Less: Advance", "Advance received", "Previous payment", or similar lines, extract that amount as overall_advance_amount.
 
 Resolve any conflicts and return the correct overall values in JSON matching the schema.
 """
