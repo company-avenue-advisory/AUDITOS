@@ -465,7 +465,6 @@ async def main():
     from openai import OpenAI
     gemini_key    = os.getenv("GEMINI_API_KEY")
     groq_key      = os.getenv("GROQ_API_KEY")
-    anthropic_key = os.getenv("ANTHROPIC_API_KEY")
     if gemini_key:
         client = OpenAI(api_key=gemini_key, base_url="https://generativelanguage.googleapis.com/v1beta/openai/")
         GROQ_MODEL_ACTIVE = "gemini-2.5-flash"
@@ -474,12 +473,8 @@ async def main():
         client = OpenAI(api_key=groq_key, base_url="https://api.groq.com/openai/v1")
         GROQ_MODEL_ACTIVE = GROQ_MODEL
         print(f"Provider: Groq free ({GROQ_MODEL})")
-    elif anthropic_key:
-        client = OpenAI(api_key=anthropic_key, base_url="https://api.anthropic.com/v1")
-        GROQ_MODEL_ACTIVE = CLAUDE_MODEL
-        print(f"Provider: Claude Haiku ({CLAUDE_MODEL})")
     else:
-        print("ERROR: Set GEMINI_API_KEY, GROQ_API_KEY, or ANTHROPIC_API_KEY in .env"); return
+        print("ERROR: Set GEMINI_API_KEY or GROQ_API_KEY in .env"); return
     globals()["GROQ_MODEL"] = GROQ_MODEL_ACTIVE  # patch module-level var used in _llm_party_pos
 
     if args.retry and os.path.exists(failed_log):

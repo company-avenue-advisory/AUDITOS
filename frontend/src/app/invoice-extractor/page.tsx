@@ -848,8 +848,8 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
                 <div className="model-section-label">AI Extraction Engine</div>
                 <div className="model-rows">
                   {[
-                    { id: "auto",      label: "Auto (Gemini 2.5 Flash)", desc: "Gemini 2.5 Flash · Free tier fallback to Groq", icon: "⚡", dot: "auto", badge: "Recommended", badgeCls: "badge-rec" },
-                    { id: "anthropic", label: "Claude Haiku", desc: "Best accuracy · Requires ANTHROPIC_API_KEY", icon: "◆", dot: "claude", badge: "Paid", badgeCls: "badge-fast" },
+                    { id: "auto",      label: "Auto (Gemini 2.5 Flash)", desc: "Gemini 2.5 Flash · Groq free fallback", icon: "⚡", dot: "auto", badge: "Recommended", badgeCls: "badge-rec" },
+                    { id: "anthropic", label: "Claude Haiku", desc: "Best accuracy · Requires ANTHROPIC_API_KEY", icon: "◆", dot: "claude", badge: "Future", badgeCls: "badge-fast" },
                     { id: "ollama",    label: "Ollama (Local)", desc: "100% private · No data leaves your machine", icon: "🔒", dot: "ollama", badge: "Private", badgeCls: "badge-priv" },
                   ].map((m) => (
                     <div key={m.id} className={`model-row ${model === m.id ? "selected" : ""}`} onClick={() => setModel(m.id)}>
