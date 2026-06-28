@@ -1,6 +1,7 @@
 import json
 from typing import Dict, Any, List
 from backend.core.extraction.candidate_detector import Candidate
+from backend.core.extraction.llm_call import llm_call, _truncate
 
 TOTALS_SCHEMA = {
     "type": "object",
@@ -40,7 +41,7 @@ Extract overall tax totals matching the schema:
 {json.dumps(TOTALS_SCHEMA)}
 
 Here is the totals region:
-{text}
+{_truncate(text, 2000)}
 
 Here are the deterministically detected candidates:
 {candidates_summary}
@@ -54,13 +55,7 @@ RULES:
 Resolve any conflicts and return the correct overall values in JSON matching the schema.
 """
     try:
-        response = client.chat.completions.create(
-            model=model_name,
-            messages=[{"role": "user", "content": [{"type": "text", "text": prompt}]}],
-            response_format={"type": "json_object"},
-            temperature=0.0
-        )
-        res_text = response.choices[0].message.content.strip()
+        res_text = llm_call(client, model_name, prompt)
         return safe_json_loads(res_text)
     except Exception as e:
         print(f"Error in totals extraction: {e}")

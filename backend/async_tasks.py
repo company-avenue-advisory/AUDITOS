@@ -9,18 +9,18 @@ from services.observability import ObsLogger, now_utc, calc_cost_inr
 from services.gcs_storage import gcs_storage
 
 # ---------------------------------------------------------------------------
-# Concurrency controls — tuned for 50-100 invoice batches on Gemini Flash paid.
+# Concurrency controls — tuned for Gemini 2.5 Flash FREE tier (15 RPM limit).
 #
 # llm_semaphore   : max simultaneous LLM threads in-flight across all batches.
-#                   50 keeps Gemini Flash well below its 4000 RPM paid limit
-#                   while saturating the asyncio thread pool.
+#                   3 concurrent threads × ~3s per call = ~60s per minute cap,
+#                   keeping us safely under 15 RPM with the RpmGuard below.
 #
 # RpmGuard        : sliding-window RPM limiter per model family.
 #                   Gemini Flash paid → 4000 RPM safe ceiling set to 3500.
 #                   Gemini Pro free   → 50 RPM ceiling.
 #                   Falls back to no-op when provider is unknown.
 # ---------------------------------------------------------------------------
-llm_semaphore = asyncio.Semaphore(50)
+llm_semaphore = asyncio.Semaphore(3)  # Free tier: 3 concurrent = safe under 15 RPM
 
 
 class RpmGuard:
@@ -52,10 +52,10 @@ class RpmGuard:
 
 # One guard per model family — shared across all concurrent coroutines.
 _rpm_guards: dict[str, RpmGuard] = {
-    "gemini-flash": RpmGuard(3500),   # Gemini 2.5 Flash paid: 4000 RPM; leave 500 headroom
-    "gemini-pro":   RpmGuard(45),     # Gemini 2.5 Pro free:   50 RPM
-    "groq":         RpmGuard(25),     # Groq free: ~30 RPM effective
-    "default":      RpmGuard(3500),
+    "gemini-flash": RpmGuard(10),    # Gemini 2.5 Flash FREE: 15 RPM limit; 10 = safe headroom
+    "gemini-pro":   RpmGuard(10),    # Gemini 2.5 Pro free:  15 RPM
+    "groq":         RpmGuard(18),    # Groq free: ~20 RPM effective
+    "default":      RpmGuard(10),
 }
 
 def _get_rpm_guard(model_config: dict) -> RpmGuard:
@@ -86,8 +86,8 @@ async def extract_invoice_async(file_path: str, model_config: dict, invoice_type
 async def process_batch(batch_id: str, tasks: list, model_config: dict, type_val: str):
     """
     Background task that processes an entire batch of invoices concurrently.
-    Concurrency is governed by llm_semaphore (50 slots) + per-model RpmGuard.
-    Scales to 50-100 invoice batches without 429s on Gemini Flash paid tier.
+    Concurrency is governed by llm_semaphore (3 slots) + per-model RpmGuard.
+    Stays safely under Gemini Flash free tier 15 RPM limit.
     """
     from ws_manager import manager
     total = len(tasks)

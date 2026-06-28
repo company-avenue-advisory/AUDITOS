@@ -1,5 +1,6 @@
 import json
 from typing import Dict, Any, List
+from backend.core.extraction.llm_call import llm_call, _truncate
 
 ITEMS_SCHEMA = {
     "type": "object",
@@ -55,18 +56,12 @@ CRITICAL INSTRUCTIONS:
 4. Ensure all values are mathematically consistent.
 
 Here is the table region:
-{text}
+{_truncate(text, 4000)}
 
 Return the correct lines list in JSON matching the schema.
 """
     try:
-        response = client.chat.completions.create(
-            model=model_name,
-            messages=[{"role": "user", "content": [{"type": "text", "text": prompt}]}],
-            response_format={"type": "json_object"},
-            temperature=0.0
-        )
-        res_text = response.choices[0].message.content.strip()
+        res_text = llm_call(client, model_name, prompt)
         data = safe_json_loads(res_text)
         return data.get("items", [])
     except Exception as e:
