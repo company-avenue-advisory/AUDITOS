@@ -258,6 +258,84 @@ def call_llm(pdf_contents, model_name, client, invoice_type="both"):
             print(f"  Model {current_model} failed with error: {str(e)[:100]}...")
             time.sleep(10 * (attempt + 1) if "429" in str(e) or "503" in str(e) else 2)
 
+def _extract_gst_summary_table(full_text: str) -> dict:
+    """
+    Deterministically parse the GST summary table that every invoice prints at
+    the bottom of page 2.  Format (all invoices use the same template):
+
+        Taxable Value  | Central Tax Rate | Central Tax | State Tax Rate | State Tax | Integrated Tax Rate | Integrated Tax
+        [amount]         [rate]%            [amount]      [rate]%          [amount]     [rate]%               [amount]
+
+    Also extracts:
+      - "Final Total (A+B+C+D+E+F+G)"  →  the true GST base (after advance)
+      - "Net Cost"                      →  gross before advance
+      - "Total Cost incl Taxes"         →  final payable
+      - "Rounding off"                  →  rounding adjustment
+
+    Returns a dict with any keys it could find; empty dict on complete failure.
+    """
+    import re
+
+    def _f(s: str) -> float:
+        return float(s.replace(',', ''))
+
+    text = re.sub(r'[ \t]+', ' ', full_text)
+
+    result = {}
+
+    # ── GST summary data row ─────────────────────────────────────────────────
+    # Anchor to AFTER the "Taxable Value...Central Tax" header row so we don't
+    # accidentally match line-item numbers that happen to fit the numeric pattern.
+    # Rate digits may be absent (shown as bare "%"), so the digit group is optional.
+    m = re.search(
+        r'Taxable Value.{0,300}?Central Tax.{0,600}?'   # anchor: must be in GST table
+        r'([\d,]+\.[\d]{2})\s+'    # taxable value
+        r'(\d*\.?\d*)\s*%\s+'      # CGST rate (may be blank → 0)
+        r'([\d,]+\.[\d]{2})\s+'    # CGST amount
+        r'(\d*\.?\d*)\s*%\s+'      # SGST rate
+        r'([\d,]+\.[\d]{2})\s+'    # SGST amount
+        r'(\d*\.?\d*)\s*%\s+'      # IGST rate
+        r'([\d,]+\.[\d]{2})',       # IGST amount
+        text, re.DOTALL
+    )
+    if m:
+        result['taxable_value']  = _f(m.group(1))
+        result['cgst_rate']      = float(m.group(2)) if m.group(2) else 0.0
+        result['cgst_amount']    = _f(m.group(3))
+        result['sgst_rate']      = float(m.group(4)) if m.group(4) else 0.0
+        result['sgst_amount']    = _f(m.group(5))
+        result['igst_rate']      = float(m.group(6)) if m.group(6) else 0.0
+        result['igst_amount']    = _f(m.group(7))
+
+    # ── Final Total — the post-advance GST base ───────────────────────────────
+    ft = re.search(r'Final Total\s*\([^)]*\)\s+([\d,]+\.[\d]{2})', text)
+    if ft:
+        result['final_total'] = _f(ft.group(1))
+
+    # ── Net Cost — gross before advance ──────────────────────────────────────
+    nc = re.search(r'Net Cost\s+([\d,]+\.[\d]{2})', text)
+    if nc:
+        result['net_cost'] = _f(nc.group(1))
+
+    # ── Total Cost incl Taxes — final payable ─────────────────────────────────
+    tc = re.search(r'Total Cost incl Taxes\s+([\d,]+\.[\d]{2})', text)
+    if tc:
+        result['total_invoice_value'] = _f(tc.group(1))
+
+    # ── Rounding off ─────────────────────────────────────────────────────────
+    ro = re.search(r'Rounding off\s+(-?[\d,]+\.[\d]{2})', text)
+    if ro:
+        result['round_off'] = _f(ro.group(1))
+
+    # ── Derive advance from Net Cost − Final Total ────────────────────────────
+    if 'net_cost' in result and 'final_total' in result:
+        adv = round(result['net_cost'] - result['final_total'], 2)
+        if adv > 0.50:
+            result['advance_amount'] = adv
+
+    return result
+
+
 def process_pdf(pdf_path, model_override=None, invoice_type="both", logger=None):
     import pdfplumber
     import time
@@ -391,7 +469,7 @@ def process_pdf(pdf_path, model_override=None, invoice_type="both", logger=None)
     all_res.overall_round_off = raw_extracted.get("overall_round_off") or 0.0
     all_res.overall_advance_amount = raw_extracted.get("overall_advance_amount") or 0.0
     all_res.overall_total_invoice_value = raw_extracted.get("overall_total_invoice_value") or 0.0
-    
+
     for item in raw_extracted.get("sales_items", []):
         all_res.sales_items.append(SuvitSalesItem(**item))
     for item in raw_extracted.get("purchase_items", []):
@@ -421,6 +499,28 @@ def process_pdf(pdf_path, model_override=None, invoice_type="both", logger=None)
             }
             all_res.overall_total_invoice_value = suggested
             ground_truth_correction["applied"] = True
+
+    # ── Deterministic override from GST summary table ────────────────────────
+    # Applied AFTER reconciliation so regex results win over both LLM and
+    # the reconciliation engine.  The GST-compliant summary table is the legal
+    # ground truth: taxable = Final Total (post-advance net), tax amounts and
+    # grand total are read directly from the document — no hallucination risk.
+    gst_table = _extract_gst_summary_table(full_text)
+    if gst_table:
+        if 'taxable_value' in gst_table and gst_table['taxable_value'] > 0:
+            all_res.overall_taxable_value = gst_table['taxable_value']
+        if 'cgst_amount' in gst_table:
+            all_res.overall_cgst_amount = gst_table['cgst_amount']
+        if 'sgst_amount' in gst_table:
+            all_res.overall_sgst_amount = gst_table['sgst_amount']
+        if 'igst_amount' in gst_table:
+            all_res.overall_igst_amount = gst_table['igst_amount']
+        if 'round_off' in gst_table:
+            all_res.overall_round_off = gst_table['round_off']
+        if 'total_invoice_value' in gst_table and gst_table['total_invoice_value'] > 0:
+            all_res.overall_total_invoice_value = gst_table['total_invoice_value']
+        if 'advance_amount' in gst_table:
+            all_res.overall_advance_amount = gst_table['advance_amount']
 
     total_prompt_tokens = 0
     total_completion_tokens = 0
