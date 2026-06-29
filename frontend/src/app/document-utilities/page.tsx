@@ -57,6 +57,8 @@ export default function DocumentUtilitiesPage() {
   // Tab 5: Local OCR State
   const [ocrFile, setOcrFile] = useState<File | null>(null);
   const [ocrText, setOcrText] = useState("");
+  const [ocrProvider, setOcrProvider] = useState("auto");
+  const [ocrProviderUsed, setOcrProviderUsed] = useState("");
   const [copied, setCopied] = useState(false);
 
   // Drag and drop states for each tab
@@ -267,12 +269,14 @@ export default function DocumentUtilitiesPage() {
     setLoading(true);
     resetMessages();
     setOcrText("");
+    setOcrProviderUsed("");
 
     const formData = new FormData();
     formData.append("file", ocrFile);
+    formData.append("provider", ocrProvider);
 
     try {
-      const res = await fetch(`${API_BASE_URL}/api/docs/ocr-extract`, {
+      const res = await fetch(`${API_BASE_URL}/api/invoice-metadata`, {
         method: "POST",
         body: formData,
       });
@@ -284,9 +288,14 @@ export default function DocumentUtilitiesPage() {
 
       const data = await res.json();
       setOcrText(data.text || "");
-      setSuccessMsg("OCR extraction complete.");
+      setOcrProviderUsed(data.provider_used || "");
+      const charCount = data.char_count || 0;
+      const msg = charCount > 0
+        ? `✓ Extracted ${charCount} characters using ${data.provider_used || "OCR"}`
+        : `⚠ No text extracted. Try: 1) Upload a different file, 2) Use Scan Enhancer first`;
+      setSuccessMsg(msg);
     } catch (e: any) {
-      setErrorMsg(e.message || "An error occurred during local OCR rendering.");
+      setErrorMsg(e.message || "OCR extraction failed — try a different provider.");
     } finally {
       setLoading(false);
     }
@@ -1027,14 +1036,40 @@ export default function DocumentUtilitiesPage() {
 
                 {/* Actions */}
                 <div style={{ display: "flex", flexDirection: "column", justifyContent: "center", gap: 20 }}>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                    <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-secondary)" }}>OCR Provider</label>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                      {[
+                        { value: "auto", label: "Auto (fast → slow)", desc: "PyMuPDF → Tesseract → EasyOCR" },
+                        { value: "pymupdf", label: "PyMuPDF (native)", desc: "Instant, PDF text layer only" },
+                        { value: "tesseract", label: "Tesseract (CPU)", desc: "~1-2s per page, if available" },
+                        { value: "easyocr", label: "EasyOCR (ML)", desc: "Best accuracy, ~30-60s" },
+                      ].map((opt) => (
+                        <label key={opt.value} style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 12 }}>
+                          <input
+                            type="radio"
+                            name="ocr-provider"
+                            value={opt.value}
+                            checked={ocrProvider === opt.value}
+                            onChange={(e) => setOcrProvider(e.target.value)}
+                          />
+                          <div>
+                            <div style={{ fontWeight: 600 }}>{opt.label}</div>
+                            <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{opt.desc}</div>
+                          </div>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+
                   <button
                     type="submit"
                     className="btn-primary"
-                    disabled={!ocrFile}
-                    style={{ padding: "12px 20px", display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 8, cursor: ocrFile ? "pointer" : "not-allowed" }}
+                    disabled={!ocrFile || loading}
+                    style={{ padding: "12px 20px", display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 8, cursor: (ocrFile && !loading) ? "pointer" : "not-allowed" }}
                   >
                     <Cpu size={14} />
-                    Run Local OCR Extraction
+                    {loading ? "Extracting..." : "Run OCR Extraction"}
                   </button>
                 </div>
               </div>

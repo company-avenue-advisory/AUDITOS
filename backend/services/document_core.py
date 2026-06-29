@@ -606,6 +606,192 @@ def enhance_scan(image_bytes: bytes) -> bytes:
     
     return pdf_stream
 
+# ────── Tiered OCR System ──────
+class OCRProvider:
+    """Enum-like class for OCR providers."""
+    PYMUPDF_TEXT = "pymupdf"      # Tier 1: Native text extraction (instant, no ML)
+    TESSERACT = "tesseract"        # Tier 2: Lightweight CPU OCR
+    EASYOCR = "easyocr"            # Tier 3: Heavyweight but accurate
+    AUTO = "auto"                  # Try Tier 1 → Tier 2 → Tier 3
+
+def is_tesseract_available() -> bool:
+    """Check if tesseract-ocr is installed on the system."""
+    try:
+        import pytesseract
+        pytesseract.get_tesseract_version()
+        return True
+    except Exception:
+        return False
+
+def ocr_extract_pymupdf(pdf_bytes: bytes) -> str:
+    """
+    Tier 1 (Fastest): Extract text directly from PDF using PyMuPDF.
+    Works on PDFs with embedded text layers (most modern PDFs).
+    Returns: extracted text or empty string if no text found
+    """
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        full_text = ""
+
+        for page_num in range(len(doc)):
+            page = doc[page_num]
+            text = page.get_text(option="text")
+            if text.strip():
+                full_text += f"--- Page {page_num + 1} ---\n{text}\n"
+
+        doc.close()
+
+        if full_text.strip():
+            return full_text.strip()
+        else:
+            return ""  # Signal: no text found, try next tier
+
+    except Exception as e:
+        print(f"  [PyMuPDF] Text extraction failed: {e}")
+        return ""
+
+def ocr_extract_tesseract(pdf_bytes: bytes, timeout: int = 30) -> str:
+    """
+    Tier 2 (Medium): Lightweight Tesseract OCR via pytesseract.
+    Good for scanned PDFs, CPU-only, ~1-2s per page.
+    """
+    try:
+        import pytesseract
+        from PIL import Image
+
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        full_text = ""
+
+        for page_num in range(len(doc)):
+            page = doc[page_num]
+
+            # Render to image
+            pix = page.get_pixmap(dpi=150)
+            img_data = pix.tobytes("png")
+
+            # Convert to PIL Image
+            from io import BytesIO
+            img = Image.open(BytesIO(img_data))
+
+            # Run Tesseract with timeout
+            try:
+                text = pytesseract.image_to_string(img)
+                if text.strip():
+                    full_text += f"--- Page {page_num + 1} ---\n{text}\n"
+            except Exception as e:
+                print(f"  [Tesseract] Page {page_num + 1} failed: {e}")
+                continue
+
+        doc.close()
+        return full_text.strip() if full_text.strip() else ""
+
+    except ImportError:
+        print("  [Tesseract] pytesseract not installed. Install via: pip install pytesseract")
+        return ""
+    except Exception as e:
+        print(f"  [Tesseract] Error: {e}")
+        return ""
+
+def ocr_extract_easyocr(pdf_bytes: bytes, timeout: int = 60) -> str:
+    """
+    Tier 3 (Heavyweight): EasyOCR with GPU fallback to CPU.
+    Best accuracy, ~2-5s per page, lazy-loaded.
+    """
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        full_text = ""
+
+        for page_num in range(len(doc)):
+            page = doc[page_num]
+
+            # Render to image
+            pix = page.get_pixmap(dpi=150)
+            img_data = pix.tobytes("png")
+
+            # Decode to OpenCV
+            nparr = np.frombuffer(img_data, np.uint8)
+            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+            if img is None:
+                print(f"  [EasyOCR] Page {page_num + 1}: failed to decode image")
+                continue
+
+            try:
+                results = get_ocr_reader().readtext(img, detail=0)
+                page_text = "\n".join(results) if results else ""
+
+                if page_text.strip():
+                    full_text += f"--- Page {page_num + 1} ---\n{page_text}\n"
+
+            except Exception as e:
+                print(f"  [EasyOCR] Page {page_num + 1} failed: {e}")
+                continue
+
+        doc.close()
+        return full_text.strip() if full_text.strip() else ""
+
+    except Exception as e:
+        print(f"  [EasyOCR] Error: {e}")
+        return ""
+
+def ocr_extract_with_fallback(pdf_bytes: bytes, provider: str = "auto") -> str:
+    """
+    Extract text from PDF with intelligent fallback chain.
+
+    Provider priority:
+      "auto": PyMuPDF → Tesseract (if available) → EasyOCR
+      "pymupdf": PyMuPDF only
+      "tesseract": Tesseract only (raises error if not available)
+      "easyocr": EasyOCR only
+
+    Returns: extracted text (may be empty if all tiers fail)
+    """
+    provider = provider.lower()
+
+    # Tier 1: PyMuPDF (always try first in auto mode)
+    if provider in ["auto", "pymupdf"]:
+        print("[OCR] Tier 1: Trying PyMuPDF native text extraction...")
+        text = ocr_extract_pymupdf(pdf_bytes)
+        if text:
+            print(f"  ✓ PyMuPDF succeeded ({len(text)} chars)")
+            return text
+        if provider == "pymupdf":
+            print("  [PyMuPDF] No text found in PDF")
+            return ""
+
+    # Tier 2: Tesseract (if available)
+    if provider in ["auto", "tesseract"]:
+        if is_tesseract_available():
+            print("[OCR] Tier 2: Trying Tesseract...")
+            text = ocr_extract_tesseract(pdf_bytes)
+            if text:
+                print(f"  ✓ Tesseract succeeded ({len(text)} chars)")
+                return text
+        elif provider == "tesseract":
+            raise RuntimeError(
+                "Tesseract OCR requested but pytesseract not installed. "
+                "Install via: pip install pytesseract"
+            )
+
+    # Tier 3: EasyOCR (fallback)
+    if provider in ["auto", "easyocr"]:
+        print("[OCR] Tier 3: Trying EasyOCR (may take 30-60s)...")
+        text = ocr_extract_easyocr(pdf_bytes)
+        if text:
+            print(f"  ✓ EasyOCR succeeded ({len(text)} chars)")
+            return text
+        elif provider == "easyocr":
+            raise RuntimeError("EasyOCR failed — PDF may be corrupted or unreadable")
+
+    # All tiers failed
+    if provider == "auto":
+        raise RuntimeError(
+            "All OCR tiers failed. PDF may be corrupted, encrypted, or contain no readable content. "
+            "Try: 1) Upload a different PDF, 2) Use Scan Enhancer on scanned images first."
+        )
+
+    return ""
+
 def compress_pdf(pdf_bytes: bytes, quality: int = 50) -> bytes:
     """
     Optimizes a PDF file by downscaling image DPI and executing
@@ -622,30 +808,16 @@ def compress_pdf(pdf_bytes: bytes, quality: int = 50) -> bytes:
     doc.close()
     return compressed_bytes
 
-def ocr_extract(pdf_bytes: bytes) -> str:
+def ocr_extract(pdf_bytes: bytes, provider: str = "auto") -> str:
     """
-    Renders PDF pages to high-resolution images in memory and extracts
-    text using the local offline EasyOCR model.
+    Legacy wrapper for OCR extraction.
+    Delegates to ocr_extract_with_fallback() with provider parameter.
+
+    Args:
+        pdf_bytes: PDF file bytes
+        provider: "auto" (default), "pymupdf", "tesseract", "easyocr"
+
+    Returns:
+        Extracted text string (may be empty if all tiers fail)
     """
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    full_text = ""
-    
-    for page_num in range(len(doc)):
-        page = doc[page_num]
-        
-        # Render page to high-quality image (150 DPI)
-        pix = page.get_pixmap(dpi=150)
-        img_data = pix.tobytes("png")
-        
-        # Load into OpenCV
-        nparr = np.frombuffer(img_data, np.uint8)
-        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        
-        # Run OCR
-        results = get_ocr_reader().readtext(img)
-        page_text = "\n".join([res[1] for res in results])
-        
-        full_text += f"--- Page {page_num + 1} ---\n{page_text}\n\n"
-        
-    doc.close()
-    return full_text.strip()
+    return ocr_extract_with_fallback(pdf_bytes, provider)

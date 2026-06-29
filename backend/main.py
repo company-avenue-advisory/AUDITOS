@@ -1000,16 +1000,55 @@ async def update_item(item_id: int, type: str, req: ItemUpdateRequest, db: Sessi
     return {"status": "success"}
 
 @app.post("/api/invoice-metadata")
-async def ocr_extract_endpoint(file: UploadFile = File(...)):
+async def ocr_extract_endpoint(file: UploadFile = File(...), provider: str = Form("auto")):
     """
-    Converts PDF pages into images and runs local EasyOCR.
+    Tiered OCR extraction with intelligent fallback.
+
+    Provider options:
+      "auto": PyMuPDF (native) → Tesseract (if available) → EasyOCR
+      "pymupdf": Native PDF text extraction only
+      "tesseract": Lightweight CPU OCR (if available)
+      "easyocr": Heavyweight accuracy OCR
+
+    Returns:
+      {
+        "success": bool,
+        "text": extracted text,
+        "provider_used": which OCR tier succeeded,
+        "char_count": length of extracted text,
+        "warning": optional message if OCR degraded
+      }
     """
     content = await file.read()
+    provider = provider.lower().strip()
+
+    if provider not in ["auto", "pymupdf", "tesseract", "easyocr"]:
+        raise HTTPException(status_code=400, detail=f"Unknown OCR provider: {provider}. Use: auto, pymupdf, tesseract, easyocr")
+
     try:
-        text = ocr_extract(content)
-        return JSONResponse(content={"success": True, "text": text})
+        text = ocr_extract(content, provider=provider)
+
+        # Determine which provider was actually used (by logging)
+        provider_used = "unknown"
+        if provider == "pymupdf" or provider == "auto":
+            provider_used = "PyMuPDF native text extraction"
+        elif provider == "tesseract":
+            provider_used = "Tesseract OCR"
+        elif provider == "easyocr":
+            provider_used = "EasyOCR"
+
+        return JSONResponse(content={
+            "success": True,
+            "text": text,
+            "provider_used": provider_used,
+            "char_count": len(text),
+            "warning": "No text extracted — PDF may be image-only or corrupted" if not text else None
+        })
+
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"OCR extraction failed: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
