@@ -11,10 +11,111 @@ import numpy as np
 import io
 import re
 import os
+import time
 from typing import List, Dict, Any, Tuple, Optional
 from enum import Enum
 from difflib import SequenceMatcher
 import easyocr
+
+# ────── Configuration & Limits ──────
+MAX_PDF_SIZE_MB = 50  # Max file size for bank statements
+MAX_EXTRACTION_TIME_SEC = 120  # Max time to extract from one PDF
+SAFE_FILENAME_CHARS = re.compile(r'[^a-zA-Z0-9._\-]')
+
+# ────── Input Validation ──────
+class DocumentValidationError(Exception):
+    """Raised when document validation fails."""
+    pass
+
+def validate_pdf_input(pdf_bytes: bytes, filename: str = "document.pdf") -> None:
+    """
+    Validates PDF input for security and format compliance.
+
+    Raises:
+        DocumentValidationError: if validation fails
+    """
+    # Check file size
+    size_mb = len(pdf_bytes) / (1024 * 1024)
+    if size_mb > MAX_PDF_SIZE_MB:
+        raise DocumentValidationError(
+            f"File too large: {size_mb:.1f}MB exceeds limit of {MAX_PDF_SIZE_MB}MB. "
+            f"Use Portal Splitter to chunk the file."
+        )
+
+    if size_mb < 0.01:
+        raise DocumentValidationError("File is too small (<10KB) — not a valid PDF.")
+
+    # Check PDF magic bytes
+    if not pdf_bytes.startswith(b'%PDF'):
+        raise DocumentValidationError("Invalid PDF format: file does not start with PDF magic bytes.")
+
+    # Safe filename (prevent path traversal)
+    if filename and '..' in filename or '/' in filename or '\\' in filename:
+        raise DocumentValidationError("Invalid filename: contains path separators.")
+
+def sanitize_text(text: str, max_length: int = 500) -> str:
+    """
+    Sanitizes transaction narrative/description text.
+    - Removes control characters and excessive whitespace
+    - Truncates to max_length to prevent CSV/Excel issues
+    - Safe for CSV/JSON serialization
+    """
+    if not text:
+        return ""
+
+    # Remove control characters (except newline, tab)
+    text = re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]', '', str(text))
+
+    # Collapse multiple spaces/tabs to single space
+    text = re.sub(r'\s+', ' ', text).strip()
+
+    # Truncate to safe length
+    if len(text) > max_length:
+        text = text[:max_length] + "..."
+
+    return text
+
+def sanitize_amount(amount_str: str) -> str:
+    """
+    Sanitizes numeric amount fields.
+    Returns clean decimal number or empty string.
+    """
+    if not amount_str:
+        return ""
+
+    amount_str = str(amount_str).strip()
+
+    # Remove common currency symbols and markers
+    amount_str = re.sub(r'[₹$€£¥\s]', '', amount_str)
+
+    # Allow only digits, commas, decimal point, minus sign
+    if not re.match(r'^[\-]?[\d,]*\.?\d+$', amount_str):
+        return ""
+
+    # Normalize: remove commas, validate it's a valid number
+    try:
+        normalized = amount_str.replace(',', '')
+        float(normalized)  # Validation check
+        return normalized
+    except ValueError:
+        return ""
+
+def sanitize_date(date_str: str) -> str:
+    """
+    Sanitizes date field — already extracted by extract_date_pattern,
+    but apply final cleanup.
+    """
+    if not date_str:
+        return ""
+
+    # Remove control chars
+    date_str = re.sub(r'[\x00-\x1F\x7F]', '', str(date_str)).strip()
+
+    # Truncate to reasonable length (dates are max ~20 chars)
+    if len(date_str) > 30:
+        return ""
+
+    return date_str
 
 # ────── Confidence Scoring for Bank Transactions ──────
 class TransactionConfidence(Enum):
@@ -220,10 +321,12 @@ def parse_bank_statement(pdf_bytes: bytes, password: str = "", confidence_min: s
     """
     Multi-stage bank statement parser with confidence scoring.
 
+    Stage 0: Validate input (file size, format, encryption)
     Stage 1: Detect bank type from PDF metadata
     Stage 2: Extract via table finder (fitz) with fuzzy column matching
     Stage 3: Fallback to regex extraction with right-to-left token parsing
     Stage 4: Validate each transaction and assign confidence score
+    Stage 5: Sanitize output (clean text, amounts, dates)
 
     Returns list of dicts with fields:
       - date, narration, debit, credit, balance
@@ -235,7 +338,20 @@ def parse_bank_statement(pdf_bytes: bytes, password: str = "", confidence_min: s
         pdf_bytes: PDF file bytes
         password: password for encrypted PDFs (optional)
         confidence_min: filter by confidence ("SURE", "PROBABLE", "UNCERTAIN"). None = no filter.
+
+    Raises:
+        DocumentValidationError: if input validation fails
+        ValueError: if decryption fails
     """
+    start_time = time.time()
+
+    # Stage 0: Input Validation
+    try:
+        validate_pdf_input(pdf_bytes)
+    except DocumentValidationError as e:
+        print(f"[Validation Error] {str(e)}")
+        raise
+
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
 
     if doc.is_encrypted:
@@ -289,6 +405,13 @@ def parse_bank_statement(pdf_bytes: bytes, password: str = "", confidence_min: s
                     debit = row_vals[debit_idx] if debit_idx < len(row_vals) else ""
                     credit = row_vals[credit_idx] if credit_idx < len(row_vals) else ""
                     balance = row_vals[balance_idx] if balance_idx < len(row_vals) else ""
+
+                    # Sanitize all fields
+                    date_val = sanitize_date(date_val)
+                    narration = sanitize_text(narration, max_length=300)
+                    debit = sanitize_amount(debit)
+                    credit = sanitize_amount(credit)
+                    balance = sanitize_amount(balance)
 
                     # Clean empty values
                     debit = debit if debit not in ["nan", "None", "0", "0.00", ""] else ""
@@ -360,20 +483,24 @@ def parse_bank_statement(pdf_bytes: bytes, password: str = "", confidence_min: s
 
                     narration = " ".join(narration_tokens)
 
+                    # Sanitize all fields
+                    date_str = sanitize_date(date_str)
+                    narration = sanitize_text(narration or "BANK TRANSACTION", max_length=300)
+
                     debit, credit, balance = "", "", ""
                     if len(amounts) == 1:
-                        balance = amounts[0]
+                        balance = sanitize_amount(amounts[0])
                     elif len(amounts) == 2:
-                        debit = amounts[0]
-                        balance = amounts[1]
+                        debit = sanitize_amount(amounts[0])
+                        balance = sanitize_amount(amounts[1])
                     elif len(amounts) >= 3:
-                        debit = amounts[0]
-                        credit = amounts[1]
-                        balance = amounts[-1]
+                        debit = sanitize_amount(amounts[0])
+                        credit = sanitize_amount(amounts[1])
+                        balance = sanitize_amount(amounts[-1])
 
                     txn = {
                         "date": date_str,
-                        "narration": narration if narration else "BANK TRANSACTION",
+                        "narration": narration,
                         "debit": debit,
                         "credit": credit,
                         "balance": balance,
@@ -394,6 +521,13 @@ def parse_bank_statement(pdf_bytes: bytes, password: str = "", confidence_min: s
         original_count = len(transactions)
         transactions = [t for t in transactions if t["confidence"] == confidence_min]
         print(f"[Confidence Filter] {original_count} → {len(transactions)} (min: {confidence_min})")
+
+    # Performance logging
+    elapsed = time.time() - start_time
+    if elapsed > MAX_EXTRACTION_TIME_SEC:
+        print(f"[Warning] Extraction took {elapsed:.1f}s (max: {MAX_EXTRACTION_TIME_SEC}s)")
+    else:
+        print(f"[Performance] Extracted {len(transactions)} transactions in {elapsed:.2f}s")
 
     doc.close()
     return transactions

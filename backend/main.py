@@ -31,7 +31,10 @@ from invoice_processor import process_pdf, build_dataframes, InvoiceExtractionRe
 from services.gstr2b_reconciler import parse_gstr2b, reconcile as recon_match
 from services.udyam_parser import parse_udyam_certificate
 from services.msme_compliance import calculate_43bh_compliance
-from services.document_core import parse_bank_statement, smart_split_by_size, enhance_scan, compress_pdf, ocr_extract
+from services.document_core import (
+    parse_bank_statement, smart_split_by_size, enhance_scan, compress_pdf, ocr_extract,
+    DocumentValidationError
+)
 from services.gcs_storage import gcs_storage
 from services.task_queue import dispatch_batch_task
 from models import User
@@ -839,10 +842,18 @@ async def bank_parse_endpoint(
                 **confidence_counts
             }
         })
+
+    except DocumentValidationError as e:
+        raise HTTPException(status_code=400, detail=f"Validation failed: {str(e)}")
+
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=f"Invalid password or encrypted file error: {str(e)}")
+        error_msg = str(e)
+        if "Invalid password" in error_msg or "encrypted" in error_msg.lower():
+            raise HTTPException(status_code=400, detail="Invalid password for encrypted PDF.")
+        raise HTTPException(status_code=400, detail=f"PDF error: {error_msg}")
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Bank statement parsing failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Unexpected error during parsing: {str(e)}")
 
 @app.post("/api/docs/split-portal")
 async def split_portal_endpoint(file: UploadFile = File(...), target_mb: float = Form(4.5)):
