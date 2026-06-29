@@ -98,6 +98,14 @@ def extract_financials(text: str) -> dict:
         if adv > 0.50:
             result['advance_amount'] = adv
 
+    # HSN/SAC — 4-8 digit code near HSN/SAC label
+    hsn_m = re.search(r'(?:HSN|SAC)[/\s]*(?:Code|No)?[:\s]*(\d{4,8})', t, re.IGNORECASE)
+    if not hsn_m:
+        # Fallback: any standalone 4-8 digit number on a line with HSN context
+        hsn_m = re.search(r'\b(\d{4,8})\b', t)
+    if hsn_m:
+        result['hsn'] = hsn_m.group(1)
+
     return result
 
 def extract_header_fields(text: str) -> dict:
@@ -122,18 +130,19 @@ def extract_header_fields(text: str) -> dict:
 # ── Minimal LLM call for party name + place of supply ──────────────────────
 
 def _llm_party_pos(header_text: str, client, model: str) -> dict:
-    """One tiny call, ~500 input tokens, to get party name, place of supply, and particulars."""
+    """One tiny call, ~600 input tokens, to get party name, place of supply, particulars, and HSN."""
     from openai import OpenAI
-    prompt = f"""From this invoice extract ONLY these 3 fields:
+    prompt = f"""From this invoice extract ONLY these 4 fields:
 - party_name: the customer/buyer company name (NOT the seller)
 - place_of_supply: state name or state code shown on invoice
 - particulars: brief description of what was sold/billed (e.g. "Mobile Charges", "Cloud Hosting", "Professional Fees"). Use the service/product description line if visible. Max 80 chars.
+- hsn_sac: the HSN or SAC code (4-8 digit number). Return empty string if not found.
 
 Return JSON only, no explanation.
-Example: {{"party_name": "ABC Bank Ltd.", "place_of_supply": "Karnataka", "particulars": "Internet Bandwidth Charges"}}
+Example: {{"party_name": "ABC Bank Ltd.", "place_of_supply": "Karnataka", "particulars": "Internet Bandwidth Charges", "hsn_sac": "998314"}}
 
 Invoice header:
-{header_text[:800]}
+{header_text[:1200]}
 """
     try:
         resp = client.chat.completions.create(
@@ -141,7 +150,7 @@ Invoice header:
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"},
             temperature=0.0,
-            max_tokens=160,
+            max_tokens=200,
         )
         raw = resp.choices[0].message.content.strip()
         data = json.loads(raw)
@@ -149,9 +158,10 @@ Invoice header:
             "party_ledger_name": data.get("party_name", ""),
             "place_of_supply":   data.get("place_of_supply", ""),
             "particulars":       data.get("particulars", ""),
+            "hsn_sac":           data.get("hsn_sac", ""),
         }
     except Exception as e:
-        return {"party_ledger_name": "", "place_of_supply": "", "particulars": ""}
+        return {"party_ledger_name": "", "place_of_supply": "", "particulars": "", "hsn_sac": ""}
 
 
 # ── Per-invoice processor ───────────────────────────────────────────────────
@@ -169,8 +179,8 @@ async def process_one(sem, pdf_path, client):
             fin    = extract_financials(full)
             header = extract_header_fields(full[:2000])
 
-            # One LLM call for party name + POS (header only, ~500 tokens)
-            llm = await asyncio.to_thread(_llm_party_pos, full[:800], client, GROQ_MODEL)
+            # One LLM call for party name + POS + HSN (header only, ~600 tokens)
+            llm = await asyncio.to_thread(_llm_party_pos, full[:1200], client, GROQ_MODEL)
 
             tv   = fin.get('taxable_value', 0.0)
             cgst = fin.get('cgst_amount', 0.0)
@@ -203,7 +213,7 @@ async def process_one(sem, pdf_path, client):
                 "Party GSTIN": gstin,
                 "Place of Supply": pos,
                 "Particulars": llm.get('particulars', ''),
-                "HSN/SAC": "",
+                "HSN/SAC": fin.get('hsn', '') or llm.get('hsn_sac', ''),
                 "Taxable Value": tv,
                 "CGST Rate (%)": fin.get('cgst_rate', 0.0),
                 "CGST Amount": cgst,
@@ -229,7 +239,7 @@ async def process_one(sem, pdf_path, client):
             return {
                 "File Name": fname, "Invoice No": "", "Invoice Date": "",
                 "Party Name": "", "Party GSTIN": "", "Place of Supply": "",
-                "Particulars": "", "HSN/SAC": "", "Taxable Value": 0.0, "CGST Rate (%)": 0.0,
+                "Particulars": "", "HSN/SAC": "", "Taxable Value": 0.0, "CGST Rate (%)": 0.0,  # noqa
                 "CGST Amount": 0.0, "SGST Rate (%)": 0.0, "SGST Amount": 0.0,
                 "IGST Rate (%)": 0.0, "IGST Amount": 0.0, "Total Tax": 0.0,
                 "Round Off": 0.0, "Advance Deducted": 0.0, "Total Invoice Value": 0.0,

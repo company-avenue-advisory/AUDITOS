@@ -20,6 +20,20 @@ if _project_root not in sys.path:
 env_path = os.path.join(os.path.dirname(__file__), ".env")
 load_dotenv(dotenv_path=env_path)
 
+_STATE_CODE_MAP = {
+    "01": "JAMMU AND KASHMIR", "02": "HIMACHAL PRADESH", "03": "PUNJAB",
+    "04": "CHANDIGARH", "05": "UTTARAKHAND", "06": "HARYANA",
+    "07": "DELHI", "08": "RAJASTHAN", "09": "UTTAR PRADESH",
+    "10": "BIHAR", "11": "SIKKIM", "12": "ARUNACHAL PRADESH",
+    "13": "NAGALAND", "14": "MANIPUR", "15": "MIZORAM",
+    "16": "TRIPURA", "17": "MEGHALAYA", "18": "ASSAM",
+    "19": "WEST BENGAL", "20": "JHARKHAND", "21": "ODISHA",
+    "22": "CHATTISGARH", "23": "MADHYA PRADESH", "24": "GUJARAT",
+    "27": "MAHARASHTRA", "29": "KARNATAKA", "30": "GOA",
+    "32": "KERALA", "33": "TAMIL NADU", "36": "TELANGANA",
+    "37": "ANDHRA PRADESH",
+}
+
 class SuvitSalesItem(BaseModel):
     voucher_date: Optional[str] = Field(None, description="Voucher Date (DD-MMM-YYYY)")
     voucher_type: str = Field("Sales", description="Voucher Type")
@@ -727,11 +741,14 @@ def classify_gstr1_item(item, seller_gstin=None) -> str:
         pos_clean = re.sub(r'[^A-Z0-9]', '', pos)
         if len(pos_clean) >= 2 and pos_clean[:2].isdigit():
             pos_code = pos_clean[:2]
-            # One Stack GSTIN typically starts with 08 (Haryana), if not 08 it is interstate
-            if pos_code != "08":
+            firm_gstin = os.getenv("FIRM_GSTIN", "")
+            firm_state = firm_gstin[:2] if len(firm_gstin) >= 2 else "06"
+            if pos_code != firm_state:
                 is_interstate = True
         else:
-            if pos and "HARYANA" not in pos and "HR" not in pos:
+            firm_gstin = os.getenv("FIRM_GSTIN", "")
+            firm_state_name = _STATE_CODE_MAP.get(firm_gstin[:2] if len(firm_gstin) >= 2 else "06", "HARYANA")
+            if pos and firm_state_name not in pos and pos not in firm_state_name:
                 is_interstate = True
                 
     invoice_value = float(item.total_invoice_value or 0.0)

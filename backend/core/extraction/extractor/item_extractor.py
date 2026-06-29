@@ -56,7 +56,7 @@ CRITICAL INSTRUCTIONS:
 4. Ensure all values are mathematically consistent.
 
 Here is the table region:
-{_truncate(text, 4000)}
+{_truncate(text, 6000)}
 
 Return the correct lines list in JSON matching the schema.
 """
