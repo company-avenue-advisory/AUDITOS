@@ -574,37 +574,74 @@ def enhance_scan(image_bytes: bytes) -> bytes:
     """
     Uses OpenCV to improve text scanning contrast.
     Converts image to grayscale, applies Gaussian adaptive thresholding,
-    and returns a clean, single-page vector PDF file byte stream.
+    and returns a clean, single-page PDF.
+
+    Falls back to simple greyscale conversion if cv2 not available.
+
+    Raises:
+        DocumentValidationError: if image is invalid or cv2/PIL unavailable
     """
-    # 1. Load image
-    nparr = np.frombuffer(image_bytes, np.uint8)
-    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-    if img is None:
-        raise ValueError("Invalid image file format.")
-        
-    # 2. Transform to grayscale
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    
-    # 3. Apply Adaptive thresholding for clean black-and-white print
-    # 11 is block size, 2 is constant subtracted from mean
-    enhanced = cv2.adaptiveThreshold(
-        gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2
-    )
-    
-    # 4. Save to temporary PNG stream in memory
-    _, img_encoded = cv2.imencode(".png", enhanced)
-    png_bytes = img_encoded.tobytes()
-    
+    try:
+        # 1. Load image with OpenCV
+        nparr = np.frombuffer(image_bytes, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        if img is None:
+            raise ValueError("Could not decode image — unsupported format or corrupted file.")
+
+        # 2. Transform to grayscale
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+        # 3. Apply Adaptive thresholding for clean black-and-white print
+        # 11 is block size, 2 is constant subtracted from mean
+        enhanced = cv2.adaptiveThreshold(
+            gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2
+        )
+
+        # 4. Encode to PNG
+        _, img_encoded = cv2.imencode(".png", enhanced)
+        png_bytes = img_encoded.tobytes()
+
+    except ImportError:
+        raise DocumentValidationError(
+            "OpenCV (cv2) not installed. Install via: pip install opencv-python-headless"
+        )
+    except Exception as e:
+        print(f"[Scan Enhancer] OpenCV processing failed: {e}. Attempting PIL fallback...")
+        # Fallback: use PIL for simple greyscale conversion
+        try:
+            from PIL import Image, ImageOps
+            pil_img = Image.open(io.BytesIO(image_bytes))
+            # Convert to greyscale and increase contrast
+            pil_img = ImageOps.grayscale(pil_img)
+            # Save to PNG bytes
+            png_buffer = io.BytesIO()
+            pil_img.save(png_buffer, format="PNG")
+            png_bytes = png_buffer.getvalue()
+            print("  ✓ Fallback to PIL succeeded")
+        except Exception as pil_error:
+            raise DocumentValidationError(
+                f"Image processing failed: {str(e)}. "
+                f"Install cv2 (opencv-python-headless) for better results."
+            )
+
     # 5. Insert image into a blank single-page PDF
-    out_pdf = fitz.open()
-    rect = fitz.Rect(0, 0, img.shape[1], img.shape[0])
-    page = out_pdf.new_page(width=rect.width, height=rect.height)
-    page.insert_image(rect, stream=png_bytes)
-    
-    pdf_stream = out_pdf.write()
-    out_pdf.close()
-    
-    return pdf_stream
+    try:
+        out_pdf = fitz.open()
+        # Estimate image dimensions from PNG
+        from PIL import Image as PILImage
+        pil_img_temp = PILImage.open(io.BytesIO(png_bytes))
+        width, height = pil_img_temp.size
+        rect = fitz.Rect(0, 0, width, height)
+        page = out_pdf.new_page(width=width, height=height)
+        page.insert_image(rect, stream=png_bytes)
+
+        pdf_stream = out_pdf.write()
+        out_pdf.close()
+
+        return pdf_stream
+
+    except Exception as e:
+        raise DocumentValidationError(f"PDF generation failed: {str(e)}")
 
 # ────── Tiered OCR System ──────
 class OCRProvider:

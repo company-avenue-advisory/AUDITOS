@@ -33,7 +33,7 @@ from services.udyam_parser import parse_udyam_certificate
 from services.msme_compliance import calculate_43bh_compliance
 from services.document_core import (
     parse_bank_statement, smart_split_by_size, enhance_scan, compress_pdf, ocr_extract,
-    DocumentValidationError
+    DocumentValidationError, validate_pdf_input
 )
 from services.gcs_storage import gcs_storage
 from services.task_queue import dispatch_batch_task
@@ -885,19 +885,29 @@ async def split_portal_endpoint(file: UploadFile = File(...), target_mb: float =
 @app.post("/api/docs/enhance-scan")
 async def enhance_scan_endpoint(file: UploadFile = File(...)):
     """
-    Applies adaptive contrast thresholding to a raw image, generating a clean vector PDF.
+    Applies adaptive contrast thresholding to a scanned image, generating a clean PDF.
+    Uses OpenCV (cv2) with PIL fallback for maximum compatibility.
     """
     content = await file.read()
     try:
+        validate_pdf_input(content, file.filename or "image")  # Reuse validation
+    except DocumentValidationError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid file: {str(e)}")
+
+    try:
         pdf_bytes = enhance_scan(content)
-        base_name = os.path.splitext(file.filename)[0]
+        base_name = os.path.splitext(file.filename or "image")[0]
         return Response(
             content=pdf_bytes,
             media_type="application/pdf",
             headers={"Content-Disposition": f"attachment; filename={base_name}_enhanced.pdf"}
         )
+
+    except DocumentValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Image enhancement failed: {str(e)}")
 
 @app.post("/api/docs/compress")
 async def compress_pdf_endpoint(file: UploadFile = File(...), quality: int = Form(50)):
