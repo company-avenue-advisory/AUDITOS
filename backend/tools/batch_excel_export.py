@@ -133,7 +133,8 @@ def _llm_party_pos(header_text: str, client, model: str) -> dict:
     """One tiny call, ~600 input tokens, to get party name, place of supply, particulars, and HSN."""
     from openai import OpenAI
     prompt = f"""From this invoice extract ONLY these 4 fields:
-- party_name: the customer/buyer company name (NOT the seller)
+- party_name: the customer/buyer company name (NOT the seller/issuer).
+  IMPORTANT: The seller firms are "One Stack Solution" and "Marquecom". Do NOT return either of these as party_name. Return the OTHER party (the customer).
 - place_of_supply: state name or state code shown on invoice
 - particulars: brief description of what was sold/billed (e.g. "Mobile Charges", "Cloud Hosting", "Professional Fees"). Use the service/product description line if visible. Max 80 chars.
 - hsn_sac: the HSN or SAC code (4-8 digit number). Return empty string if not found.
@@ -154,8 +155,13 @@ Invoice header:
         )
         raw = resp.choices[0].message.content.strip()
         data = json.loads(raw)
+        party = data.get("party_name", "")
+        # Safety filter — if LLM still returned our own firm name, blank it out
+        _own_firms = ["one stack", "marquecom"]
+        if any(f in party.lower() for f in _own_firms):
+            party = ""
         return {
-            "party_ledger_name": data.get("party_name", ""),
+            "party_ledger_name": party,
             "place_of_supply":   data.get("place_of_supply", ""),
             "particulars":       data.get("particulars", ""),
             "hsn_sac":           data.get("hsn_sac", ""),

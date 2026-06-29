@@ -39,6 +39,8 @@ def extract_metadata(text: str, candidates: List[Candidate], client, model_name:
 Extract invoice metadata matching the schema:
 {json.dumps(METADATA_SCHEMA)}
 
+IMPORTANT: The seller/issuer firms are "One Stack Solution" and "Marquecom". Do NOT return either as party_ledger_name. party_ledger_name must be the customer/buyer name.
+
 Here is the document metadata region:
 {_truncate(text, 2000)}
 
