@@ -372,7 +372,7 @@ def parse_bank_statement(pdf_bytes: bytes, password: str = "", confidence_min: s
     table_count = 0
     for page_num in range(len(doc)):
         page = doc[page_num]
-        tables = page.find_tables()
+        tables = list(page.find_tables())  # Convert TableFinder to list
         table_count += len(tables)
 
         for table in tables:
