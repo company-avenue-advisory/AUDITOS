@@ -844,16 +844,21 @@ async def bank_parse_endpoint(
         })
 
     except DocumentValidationError as e:
+        print(f"[Validation Error] {str(e)}")
         raise HTTPException(status_code=400, detail=f"Validation failed: {str(e)}")
 
     except ValueError as e:
         error_msg = str(e)
+        print(f"[ValueError] {error_msg}")
         if "Invalid password" in error_msg or "encrypted" in error_msg.lower():
             raise HTTPException(status_code=400, detail="Invalid password for encrypted PDF.")
         raise HTTPException(status_code=400, detail=f"PDF error: {error_msg}")
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Unexpected error during parsing: {str(e)}")
+        import traceback
+        print(f"[Parsing Error] {type(e).__name__}: {str(e)}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Parsing failed: {type(e).__name__}: {str(e)}")
 
 @app.post("/api/docs/split-portal")
 async def split_portal_endpoint(file: UploadFile = File(...), target_mb: float = Form(4.5)):
