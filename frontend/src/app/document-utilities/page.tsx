@@ -113,7 +113,10 @@ export default function DocumentUtilitiesPage() {
 
       const data = await res.json();
       setTransactions(data.transactions || []);
-      setSuccessMsg(`Extracted ${data.transactions?.length || 0} transactions successfully.`);
+      const summary = data.summary || {};
+      const summaryText = `Extracted ${data.transactions?.length || 0} transactions. ` +
+        `SURE: ${summary.sure || 0}, PROBABLE: ${summary.probable || 0}, UNCERTAIN: ${summary.uncertain || 0}`;
+      setSuccessMsg(summaryText);
     } catch (e: any) {
       setErrorMsg(e.message || "Could not parse bank statement. Ensure correct password.");
     } finally {
@@ -583,18 +586,30 @@ export default function DocumentUtilitiesPage() {
                           <th style={{ padding: "10px 12px", textAlign: "right", color: "var(--text-muted)" }}>Debit / Withdrawal (₹)</th>
                           <th style={{ padding: "10px 12px", textAlign: "right", color: "var(--text-muted)" }}>Credit / Deposit (₹)</th>
                           <th style={{ padding: "10px 12px", textAlign: "right", color: "var(--text-muted)" }}>Balance (₹)</th>
+                          <th style={{ padding: "10px 12px", textAlign: "center", color: "var(--text-muted)" }}>Confidence</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {transactions.map((tx, idx) => (
-                          <tr key={idx} style={{ borderBottom: "1px solid var(--border)" }}>
-                            <td style={{ padding: "10px 12px", whiteSpace: "nowrap" }}>{tx.date}</td>
-                            <td style={{ padding: "10px 12px" }}>{tx.narration}</td>
-                            <td style={{ padding: "10px 12px", textAlign: "right", color: "var(--red)", fontFamily: "monospace" }}>{tx.debit || "—"}</td>
-                            <td style={{ padding: "10px 12px", textAlign: "right", color: "var(--green)", fontFamily: "monospace" }}>{tx.credit || "—"}</td>
-                            <td style={{ padding: "10px 12px", textAlign: "right", fontFamily: "monospace", fontWeight: 600 }}>{tx.balance || "—"}</td>
-                          </tr>
-                        ))}
+                        {transactions.map((tx, idx) => {
+                          const confColor =
+                            tx.confidence === "SURE" ? "#10b981" :
+                            tx.confidence === "PROBABLE" ? "#f59e0b" :
+                            "#ef4444";
+                          return (
+                            <tr key={idx} style={{ borderBottom: "1px solid var(--border)" }}>
+                              <td style={{ padding: "10px 12px", whiteSpace: "nowrap" }}>{tx.date}</td>
+                              <td style={{ padding: "10px 12px" }}>{tx.narration}</td>
+                              <td style={{ padding: "10px 12px", textAlign: "right", color: "var(--red)", fontFamily: "monospace" }}>{tx.debit || "—"}</td>
+                              <td style={{ padding: "10px 12px", textAlign: "right", color: "var(--green)", fontFamily: "monospace" }}>{tx.credit || "—"}</td>
+                              <td style={{ padding: "10px 12px", textAlign: "right", fontFamily: "monospace", fontWeight: 600 }}>{tx.balance || "—"}</td>
+                              <td style={{ padding: "10px 12px", textAlign: "center" }}>
+                                <span style={{ fontSize: 11, fontWeight: 600, padding: "4px 8px", borderRadius: 4, background: `${confColor}20`, color: confColor }}>
+                                  {tx.confidence || "—"}
+                                </span>
+                              </td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   </div>

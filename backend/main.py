@@ -796,17 +796,53 @@ async def calculate_compliance_metrics(req: MSMEComplianceRequest, current_user:
 # ── Document Utility Suite Endpoints ──────────────────────────────────────────
 
 @app.post("/api/docs/bank-parse")
-async def bank_parse_endpoint(file: UploadFile = File(...), password: str = Form("")):
+async def bank_parse_endpoint(
+    file: UploadFile = File(...),
+    password: str = Form(""),
+    confidence_min: str = None
+):
     """
-    Ingests password-protected bank statements, decrypts them,
-    and returns structured JSON tables.
+    Multi-stage bank statement parser with confidence scoring.
+    Returns: {
+        "success": bool,
+        "transactions": [
+            {
+                "date": str,
+                "narration": str,
+                "debit": str,
+                "credit": str,
+                "balance": str,
+                "confidence": "SURE" | "PROBABLE" | "UNCERTAIN",
+                "bank_detected": str,
+                "extraction_method": "table" | "regex"
+            }, ...
+        ],
+        "summary": {"total": int, "sure": int, "probable": int, "uncertain": int}
+    }
     """
     content = await file.read()
     try:
-        txs = parse_bank_statement(content, password)
-        return JSONResponse(content={"success": True, "transactions": txs})
+        txs = parse_bank_statement(content, password, confidence_min)
+
+        # Build summary
+        confidence_counts = {
+            "SURE": sum(1 for t in txs if t.get("confidence") == "SURE"),
+            "PROBABLE": sum(1 for t in txs if t.get("confidence") == "PROBABLE"),
+            "UNCERTAIN": sum(1 for t in txs if t.get("confidence") == "UNCERTAIN"),
+        }
+
+        return JSONResponse(content={
+            "success": True,
+            "transactions": txs,
+            "summary": {
+                "total": len(txs),
+                **confidence_counts
+            }
+        })
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid password or encrypted file error: {str(e)}")
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Bank statement parsing failed: {str(e)}")
 
 @app.post("/api/docs/split-portal")
 async def split_portal_endpoint(file: UploadFile = File(...), target_mb: float = Form(4.5)):
