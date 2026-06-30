@@ -59,6 +59,19 @@ Thumbs.db
 invoices/
 *.pdf
 
+# Vendor profiles (real client GSTINs & invoice patterns — never commit)
+backend/data/
+
+# Internal strategic data (competitive intelligence, roadmap)
+data/
+
+# Google Drive service account key
+*.json
+!package.json
+!package-lock.json
+!tsconfig.json
+!backend/tests/regression/fixtures/gstr2b/sample_gstr2b.json
+
 # Extra Data Dirs
 salesinvoices/
 purchaseinvoices/

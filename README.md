@@ -6,107 +6,189 @@ AuditOS is a highly specialized, enterprise-grade AI pipeline designed to automa
 
 ---
 
-## 🚀 Core Capabilities
+## Core Capabilities
 
-- **Layout-Preserving Extraction Engine:** Built on top of `pdfplumber` with coordinate-aware parsing (`layout=True`), ensuring perfect spatial awareness. This mitigates the text-scrambling limitations typical of sequential OCR/extraction libraries, providing the LLM with an accurate visual representation of complex, multi-page tables.
-- **Granular Transaction Itemization:** Intelligently parses unstructured PDF tables, gracefully ignoring non-data headers, footers, and page breaks to capture individual billing transactions with 100% itemization accuracy.
-- **Deterministic Math Reconciliation & Guardrails:** Dynamically validates and corrects LLM hallucinations against rigid accounting rules:
-  - **Gross vs. Net Validation:** Automatically resolves parsing anomalies where Gross values are misidentified as Net values by computing discount differentials to balance ledgers.
-  - **Anti-Double Counting:** Programmatically detects and filters out aggregate rows (e.g., "Sub-Total", "Grand Total") erroneously extracted as transaction line items.
-  - **Statutory Tax Apportionment:** Re-allocates aggregate tax amounts (IGST, CGST, SGST) down to the line-item level, distributed proportionally based on taxable values.
-- **Automated Ledger Balancing:** Instantly flags discrepancies between the sum of itemized lines and the final invoice total, automatically injecting an `Unallocated / Missing Lines` variance row to balance the ledger down to the penny.
-- **Advanced Financial Reconciliation Engine (Phases 3C & 4A):** A deterministic, 8-stage post-processing logic that executes after candidate extraction:
-  - **Stage 1 (Semantic Classification):** Maps unstructured table headers (e.g. Rate, Amount) to correct ledger fields.
-  - **Stage 2 (Evidence Candidate Scoring):** Computes evidence logs detailing score contributions and penalties for each extraction candidate.
-  - **Stage 3 (HSN Guardrails):** Prevents HSN/SAC codes from being misidentified as taxable values.
-  - **Stage 4 (Tax Mathematics Engine):** Runs multiple mathematical paths to find the lowest-variance calculation.
-  - **Stage 5 (Dual-State Reconciler):** Dynamically detects gross-based vs. net-based billing models.
-  - **Stage 6 (Variance Classifier):** Identifies error reasons (e.g. `ROUND_OFF`, `COLUMN_SHIFT`, `GLOBAL_DISCOUNT`).
-  - **Stage 7 (Auto-Correction Proposals):** Creates structured corrections that are patched in-flight.
-  - **Stage 8 (Layout Memory):** Hashes page coordinates and header positions to cache layout structures.
-- **CA Audit Review Dashboard:** Integrates an interactive drawer UI allowing human auditors to review reconciliation variances and accept auto-correction proposals with one click.
-- **High-Productivity Audit Workspace:** A dedicated, full-screen Next.js interface featuring a dual-pane layout. It renders the source invoice PDF alongside an interactive, layout-optimized grid displaying 20+ GST fields simultaneously for rapid CA review.
-- **Asynchronous & Scalable Batch Processing:** Features a zero-infra queueing backend powered by SQLite and threading, complete with client-side WebSocket progress notifications and Semaphore throttling to prevent LLM API rate limits.
-- **Enterprise-Grade Security:** Implements secure Role-Based Access Control (RBAC), JWT-based authentication with bcrypt password hashing, and strictly protected Next.js routes via an `AuthGuard` middleware layer.
+### Extraction & Reconciliation
+- **Layout-Preserving Extraction Engine:** Built on `pdfplumber` with coordinate-aware parsing (`layout=True`), providing the LLM with an accurate spatial representation of complex multi-page tables and mitigating text-scrambling from sequential OCR.
+- **Granular Transaction Itemization:** Parses unstructured PDF tables while ignoring non-data headers, footers, and page breaks to capture individual billing transactions accurately.
+- **Deterministic Math Reconciliation & Guardrails:** Validates and corrects LLM outputs against rigid accounting rules:
+  - **Gross vs. Net Validation:** Resolves parsing anomalies where gross values are misidentified as net values by computing discount differentials.
+  - **Anti-Double Counting:** Detects and filters out aggregate rows (Sub-Total, Grand Total) extracted as line items.
+  - **Statutory Tax Apportionment:** Re-allocates aggregate tax amounts (IGST, CGST, SGST) to line-item level proportionally by taxable value.
+- **Automated Ledger Balancing:** Flags discrepancies between itemized line sums and invoice totals, injecting an `Unallocated / Missing Lines` variance row to balance to the penny.
+- **8-Stage Reconciliation Engine:** Post-extraction pipeline covering semantic classification, evidence scoring, HSN guardrails, tax math, dual-state reconciliation, variance classification, auto-correction proposals, and layout memory caching.
+
+### GST Compliance
+- **GSTR-2B Reconciliation:** Deterministic 8-stage engine matching purchase invoices against the GSTR-2B portal data, with ITC Section 17(5) eligibility rules and Excel export.
+- **GSTR-1 JSON Export:** Generates GSTR-1 JSON in GST portal schema format (B2B, B2CS, HSN summary, document summary) from processed sales invoices.
+- **43B(h) MSME Compliance:** Tracks vendor payment timelines against Section 43B(h) limits and flags at-risk outstanding balances.
+- **Duplicate Invoice Detection:** Cross-batch deduplication using composite key hashing (GSTIN + invoice number + date + amount) to prevent double-booking.
+
+### Google Drive Auto-Sync
+- Polls a configured Google Drive folder, downloads new PDFs, and queues them for extraction automatically via Celery.
+- Supports real-time webhook-based sync for instant processing, with a full sync history log.
+- ZIP ingestion: upload a ZIP of invoices to Drive and have them auto-extracted and processed.
+
+### Multi-Tenant & Auth
+- Full multi-tenant data isolation — each firm's data is scoped to their tenant, enforced at the API layer.
+- JWT-based authentication with bcrypt, role-based access control (RBAC), and `require_same_tenant` middleware.
+- User session persistence and per-user preferences stored server-side.
+
+### CA Audit Workspace
+- **Review Panel:** Interactive drawer UI for auditors to inspect reconciliation variances and accept auto-correction proposals with one click.
+- **Dual-Pane Interface:** Full-screen Next.js layout rendering source PDF alongside an editable grid of 20+ GST fields simultaneously.
+- **Task Annotations:** Auditors can annotate individual invoice tasks with notes and flags, stored per-user.
+
+### Observability
+- Sentry integration with FastAPI, SQLAlchemy, and Celery integrations wired in — controlled via `SENTRY_DSN` env var.
+- Structured JSON logging for ops dashboards (Datadog, CloudWatch, Render logs).
+- Observability log table for per-request audit trails.
 
 ---
 
-## 🛠️ Technology Stack & Architecture
+## Technology Stack
 
-- **Backend Architecture:** FastAPI (Python 3.10+), SQLAlchemy ORM (SQLite engine), Pydantic for strict schema validation, and LiteLLM for LLM routing.
-- **Frontend Architecture:** React 18, Next.js (App Router), TypeScript, and TailwindCSS, utilizing a custom glassmorphic design system.
-- **Data Processing:** `pdfplumber` for spatial PDF extraction, alongside Pandas and OpenPyXL for robust Excel ledger generation.
+| Layer | Technology |
+|---|---|
+| Backend | FastAPI (Python 3.10+), SQLAlchemy ORM, Pydantic, LiteLLM |
+| Async Tasks | Celery + Redis |
+| Frontend | Next.js (App Router), React 18, TypeScript, TailwindCSS |
+| PDF Processing | pdfplumber (coordinate-aware spatial extraction) |
+| Storage | PostgreSQL (prod) / SQLite (dev), GCS / local filesystem |
+| Auth | JWT + bcrypt, multi-tenant RBAC |
+| Observability | Sentry, structured JSON logging |
 
-### System Architecture Flowchart
+### System Architecture
 
 ```mermaid
 graph TD
-    A[Upload Invoice Batch] --> B[FastAPI Batch Queue]
-    B --> C[SQLite Job Registry]
-    C --> D[Semaphore Throttled Workers max 20]
-    D --> E[pdfplumber Layout Extraction]
-    E --> F[LLM Pydantic Extraction]
-    F --> G[CA Reconciliation & Math Balancer]
-    G --> H[SQLite Database & Client WebSockets]
-    H --> I[Next.js Full-Screen Editing Workspace]
-    I --> J[Excel Export via openpyxl]
+    A[Upload Invoice / Google Drive Sync] --> B[FastAPI API Layer]
+    B --> C[Celery Task Queue + Redis]
+    C --> D[pdfplumber Spatial Extraction]
+    D --> E[LLM Pydantic Extraction via LiteLLM]
+    E --> F[8-Stage Reconciliation Engine]
+    F --> G[PostgreSQL + WebSocket Notifications]
+    G --> H[Next.js CA Review Workspace]
+    H --> I[Excel / GSTR-1 JSON Export]
 ```
 
 ---
 
-## 💻 Local Development Setup
+## Local Development Setup
 
-### 1. Backend Service
-The backend service handles PDF processing, LLM orchestration, and WebSocket communication.
+### Prerequisites
+- Python 3.10+
+- Node.js 18+
+- Redis (for Celery task queue)
+
+### 1. Backend
 
 ```bash
 cd backend
 python -m venv venv
 
-# Activate the virtual environment
-# Windows: venv\Scripts\activate
-# Unix/macOS: source venv/bin/activate
+# Windows
+venv\Scripts\activate
+# Unix/macOS
+source venv/bin/activate
 
 pip install -r requirements.txt
 ```
 
-Create a `.env` file in the `backend` directory:
-```env
-OPENROUTER_API_KEY="your-openrouter-api-key"
-API_BASE_URL="http://localhost:8000"
-```
+Copy the example env file and fill in your values:
 
-Start the FastAPI development server:
 ```bash
-uvicorn main:app --reload --port 8000
+cp .env.example .env
 ```
 
-### 2. Frontend Application
-The frontend application is a modern Next.js dashboard for invoice review and user authentication.
+Key variables in `.env`:
+
+```env
+# LLM routing (at least one required)
+OPENROUTER_API_KEY="your-openrouter-api-key"
+
+# Database (defaults to SQLite for local dev)
+DATABASE_URL="sqlite:///./audit_os.db"
+
+# Celery
+CELERY_BROKER_URL="redis://localhost:6379/0"
+
+# Google Drive sync (optional)
+GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON=/path/to/service-account-key.json
+GOOGLE_DRIVE_FOLDER_ID=YOUR_GOOGLE_DRIVE_FOLDER_ID_HERE
+
+# Observability (optional)
+SENTRY_DSN=""
+```
+
+Start the API server and Celery worker:
+
+```bash
+# Terminal 1 — API
+uvicorn main:app --reload --port 8000
+
+# Terminal 2 — Celery worker
+celery -A celery_app worker --loglevel=info
+```
+
+### 2. Frontend
 
 ```bash
 cd frontend
 npm install
 ```
 
-Create a `.env.local` file in the `frontend` directory:
+Create `frontend/.env.local`:
+
 ```env
 NEXT_PUBLIC_API_URL="http://localhost:8000"
 ```
 
-Start the Next.js development server:
 ```bash
 npm run dev
 ```
 
-The application will be accessible at `http://localhost:3000`.
+The app will be at `http://localhost:3000`.
+
+### Quick Start Scripts
+- **Windows:** `START_ALL_WINDOWS.bat`
+- **Linux/macOS:** `START_ALL_LINUX.sh`
 
 ---
 
-## 📅 Scalability & Reliability Roadmap
+## Project Structure
 
-AuditOS is architected for seamless migration to cloud-native infrastructure for enterprise deployments (10,000+ invoices/day):
+```
+backend/
+  core/extraction/        # 9-stage extraction pipeline
+  services/
+    auth.py               # JWT, RBAC, multi-tenant middleware
+    gstr1_generator.py    # GSTR-1 JSON export
+    gstr2b_reconciler.py  # GSTR-2B reconciliation engine
+    duplicate_detector.py # Cross-batch deduplication
+    google_drive_sync.py  # Google Drive polling & webhook sync
+    excel_sync.py         # Excel output with lockfile coordination
+    vendor_profile.py     # Per-vendor extraction hints
+  tests/regression/       # GST math, GSTR-2B, ITC rules regression suite
+  scripts/                # Setup, backtest, and training utilities
 
-- **Distributed Queuing:** Migration from SQLite/FastAPI background tasks to AWS SQS or RabbitMQ orchestrated by Celery workers.
-- **Persistent Object Storage:** Transitioning ephemeral file storage to Google Cloud Storage (GCS) or AWS S3.
-- **Enterprise Relational Layer:** Upgrading the local SQLite database to a highly available PostgreSQL cluster or Amazon RDS.
+frontend/src/
+  app/
+    invoice-extractor/    # Batch upload & extraction workspace
+    reconciliation/       # GSTR-2B reconciliation UI
+    firm-settings/        # Tenant & user settings
+    google-drive-sync/    # Drive sync configuration & status
+  components/
+    ReviewPanel.tsx        # CA audit review drawer
+    AuthGuard.tsx          # Route-level auth + role enforcement
+    Sidebar.tsx            # Navigation
+```
+
+---
+
+## Security Notes
+
+- Never commit `.env` files, service account JSON keys, or vendor profile data.
+- `backend/data/` and `data/` directories are in `.gitignore` — they contain client-specific data.
+- Use `.env.example` as the only committed env reference; replace all placeholder values before running.
+- Vendor profiles (per-client GSTIN extraction hints) are stored locally in `backend/data/vendor_profiles/` and must not be committed.

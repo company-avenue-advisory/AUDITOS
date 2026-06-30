@@ -542,6 +542,18 @@ def process_pdf(pdf_path, model_override=None, invoice_type="both", logger=None)
         if 'advance_amount' in gst_table:
             all_res.overall_advance_amount = gst_table['advance_amount']
 
+    # Guard: if the printed GST summary table shows non-zero taxes, the invoice is
+    # domestic — not an export/LUT invoice — regardless of any text-based detection.
+    # The GST table is deterministically parsed and is the legal ground truth.
+    if gst_table:
+        _gst_table_taxes = (
+            gst_table.get('cgst_amount', 0.0) +
+            gst_table.get('sgst_amount', 0.0) +
+            gst_table.get('igst_amount', 0.0)
+        )
+        if _gst_table_taxes > 0.0:
+            _is_export_invoice = False
+
     total_prompt_tokens = 0
     total_completion_tokens = 0
     total_retries = 0
@@ -1005,9 +1017,9 @@ def _correct_taxable_values(items):
             continue
 
         # Path B: no qty/rate — LLM stored gross amount as taxable_value.
-        # Signal: total_invoice_value ≈ taxable_value (no tax baked in yet)
-        # and discount is less than taxable (sanity check).
-        if qty == 0 and rate == 0 and discount < taxable:
+        # Signal: total_invoice_value ≈ taxable_value (no tax baked in yet).
+        # Use <= so 100%-discount cases (discount == amount) are also corrected.
+        if qty == 0 and rate == 0 and discount <= taxable:
             total = item.total_invoice_value or 0.0
             if total == 0 or abs(total - taxable) < 1.0:
                 item.taxable_value = round(taxable - discount, 2)

@@ -130,11 +130,14 @@ def main():
             continue
 
         items = res.sales_items or []
-        ext_taxable = sum(i.taxable_value or 0 for i in items) or res.overall_taxable_value or 0
-        ext_cgst    = sum(i.cgst_amount   or 0 for i in items) or res.overall_cgst_amount   or 0
-        ext_sgst    = sum(i.sgst_amount   or 0 for i in items) or res.overall_sgst_amount   or 0
-        ext_igst    = sum(i.igst_amount   or 0 for i in items) or res.overall_igst_amount   or 0
-        ext_total   = sum(i.total_invoice_value or 0 for i in items) or res.overall_total_invoice_value or 0
+        # Prefer overall_* fields (set by deterministic gst_table parser) over item sums.
+        # gst_table reads the printed GST summary row and is authoritative for totals,
+        # especially when the LLM picks wrong rows or misses the discount column.
+        ext_taxable = res.overall_taxable_value or sum(i.taxable_value or 0 for i in items) or 0
+        ext_cgst    = res.overall_cgst_amount   or sum(i.cgst_amount   or 0 for i in items) or 0
+        ext_sgst    = res.overall_sgst_amount   or sum(i.sgst_amount   or 0 for i in items) or 0
+        ext_igst    = res.overall_igst_amount   or sum(i.igst_amount   or 0 for i in items) or 0
+        ext_total   = res.overall_total_invoice_value or sum(i.total_invoice_value or 0 for i in items) or 0
 
         checks = {
             'taxable': ok(ext_taxable, g['taxable']),
