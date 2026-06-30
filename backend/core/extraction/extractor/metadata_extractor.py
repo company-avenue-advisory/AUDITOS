@@ -26,29 +26,30 @@ def safe_json_loads(text: str) -> Dict[str, Any]:
         text = "\n".join(lines).strip()
     return json.loads(text)
 
-def extract_metadata(text: str, candidates: List[Candidate], client, model_name: str) -> Dict[str, Any]:
+def extract_metadata(text: str, candidates: List[Candidate], client, model_name: str, vendor_hints: str = "") -> Dict[str, Any]:
     """
     Calls the LLM to extract invoice header metadata using resolved candidates.
     """
-    candidates_summary = "\n".join([
-        f"- Field: {c.field}, Value: {c.value}, Method: {c.method}, Confidence: {c.confidence}"
-        for c in candidates
-    ])
-    
-    prompt = f"""
-Extract invoice metadata matching the schema:
+    # Keep only the top-15 candidates by confidence; drop low-signal noise
+    top_candidates = sorted(candidates, key=lambda c: c.confidence, reverse=True)[:15]
+    candidates_summary = _truncate("\n".join([
+        f"- {c.field}: {c.value} (conf={c.confidence:.2f})"
+        for c in top_candidates
+    ]), 600)
+
+    hint_block = f"{vendor_hints}\n\n" if vendor_hints else ""
+    prompt = f"""{hint_block}Extract invoice metadata as JSON matching this schema:
 {json.dumps(METADATA_SCHEMA)}
 
-IMPORTANT: The seller/issuer firms are "One Stack Solution" and "Marquecom". Do NOT return either as party_ledger_name. party_ledger_name must be the customer/buyer name.
+IMPORTANT: Do NOT return "One Stack Solution" or "Marquecom" as party_ledger_name — those are the seller. party_ledger_name is the customer/buyer.
 
-Here is the document metadata region:
+Metadata region:
 {_truncate(text, 2000)}
 
-Here are the deterministically detected candidates:
+Detected candidates:
 {candidates_summary}
 
-Resolve any conflicts and return the correct values in JSON matching the schema.
-"""
+Return JSON only."""
     res_text = ""
     try:
         res_text = llm_call(client, model_name, prompt)

@@ -1,5 +1,7 @@
 import asyncio
 import collections
+import hashlib
+import json
 import os
 import time
 from database import SessionLocal
@@ -7,6 +9,66 @@ from models import InvoiceTask, TaskStatus, BatchJob, SalesLineItem, PurchaseLin
 from invoice_processor import process_pdf, InvoiceExtractionResponse
 from services.observability import ObsLogger, now_utc, calc_cost_inr
 from services.gcs_storage import gcs_storage
+
+# ---------------------------------------------------------------------------
+# Redis PDF cache — keyed by SHA-256(file bytes) + invoice_type + model.
+# TTL: 7 days. Eliminates re-extraction cost when the same PDF is re-uploaded.
+# Uses the same Upstash Redis broker already configured for Celery.
+# ---------------------------------------------------------------------------
+_redis_client = None
+
+def _get_redis():
+    global _redis_client
+    if _redis_client is None:
+        broker_url = os.getenv("CELERY_BROKER_URL") or os.getenv("REDIS_URL")
+        if broker_url:
+            try:
+                import redis as redis_lib
+                _redis_client = redis_lib.from_url(broker_url, decode_responses=True, socket_connect_timeout=3)
+                _redis_client.ping()
+            except Exception as e:
+                print(f"[PDF Cache] Redis unavailable: {e}. Cache disabled.")
+                _redis_client = None
+    return _redis_client
+
+
+def _pdf_cache_key(file_path: str, invoice_type: str, model_config: dict) -> str:
+    """SHA-256 of file bytes + type + model → deterministic cache key."""
+    try:
+        with open(file_path, "rb") as f:
+            file_hash = hashlib.sha256(f.read()).hexdigest()
+    except OSError:
+        return ""
+    model_key = json.dumps(model_config or {}, sort_keys=True)
+    compound = f"{file_hash}:{invoice_type}:{model_key}"
+    return f"auditOS:pdf_cache:{hashlib.sha256(compound.encode()).hexdigest()}"
+
+
+def _cache_get(key: str) -> InvoiceExtractionResponse | None:
+    if not key:
+        return None
+    r = _get_redis()
+    if not r:
+        return None
+    try:
+        raw = r.get(key)
+        if raw:
+            return InvoiceExtractionResponse(**json.loads(raw))
+    except Exception:
+        pass
+    return None
+
+
+def _cache_set(key: str, result: InvoiceExtractionResponse):
+    if not key:
+        return
+    r = _get_redis()
+    if not r:
+        return
+    try:
+        r.setex(key, 7 * 86400, result.model_dump_json())  # 7-day TTL
+    except Exception:
+        pass
 
 # ---------------------------------------------------------------------------
 # Concurrency controls — tuned for Gemini 2.5 Flash FREE tier (15 RPM limit).
@@ -74,13 +136,21 @@ async def extract_invoice_async(file_path: str, model_config: dict, invoice_type
     """
     Wraps the synchronous process_pdf in an async thread.
     Guarded by:
-      1. llm_semaphore  — caps total concurrent threads (50)
-      2. RpmGuard       — sliding-window RPM limiter per model family
+      1. Redis SHA-256 cache  — returns instantly if same PDF was processed before
+      2. llm_semaphore        — caps total concurrent LLM threads
+      3. RpmGuard             — sliding-window RPM limiter per model family
     """
+    cache_key = _pdf_cache_key(file_path, invoice_type, model_config)
+    cached = _cache_get(cache_key)
+    if cached:
+        print(f"[PDF Cache] HIT for {os.path.basename(file_path)} — skipping LLM extraction.")
+        return cached
+
     rpm_guard = _get_rpm_guard(model_config)
     await rpm_guard.acquire()
     async with llm_semaphore:
         res = await asyncio.to_thread(process_pdf, file_path, model_config, invoice_type, logger=logger)
+        _cache_set(cache_key, res)
         return res
 
 async def process_batch(batch_id: str, tasks: list, model_config: dict, type_val: str):
@@ -104,6 +174,19 @@ async def process_batch(batch_id: str, tasks: list, model_config: dict, type_val
         api_provider = "google_native"
         
     api_endpoint = "https://generativelanguage.googleapis.com/v1beta/openai/" if api_provider == "google_native" else ("https://openrouter.ai/api/v1" if api_provider == "openrouter" else "http://localhost:11434/v1")
+
+    # Resolve tenant_id from BatchJob for observability logs
+    _tenant_id = None
+    _db_tmp = SessionLocal()
+    try:
+        from models import BatchJob as _BJ
+        _bj = _db_tmp.query(_BJ).filter(_BJ.id == batch_id).first()
+        if _bj:
+            _tenant_id = _bj.tenant_id
+    except Exception:
+        pass
+    finally:
+        _db_tmp.close()
 
     # Step 1a — Emit Batch Envelope
     db = SessionLocal()
@@ -182,7 +265,8 @@ async def process_batch(batch_id: str, tasks: list, model_config: dict, type_val
             file_id=task_id,
             model_identifier=model_identifier,
             api_provider=api_provider,
-            db_session=db
+            db_session=db,
+            tenant_id=_tenant_id,
         )
         
         try:
@@ -249,13 +333,14 @@ async def process_batch(batch_id: str, tasks: list, model_config: dict, type_val
                 import json as _json
                 from core.reconciliation.engine import FinancialReconciliationEngine
                 from core.schema import CanonicalInvoice
-                from core.schema.tax import TaxSummary, TaxField
+                from core.schema.tax import TaxSummary
+                from core.schema.confidence import ProvenancedValue
                 from core.schema.document import DocumentMetadata
-                from core.schema.supplier import SupplierInfo
+                from core.schema.supplier import Supplier
 
                 recon_engine = FinancialReconciliationEngine()
 
-                def _tf(v): return TaxField(value=float(v or 0.0), confidence=0.9, sources=["async_task"])
+                def _tf(v): return ProvenancedValue(value=float(v or 0.0), confidence=0.9, sources=["async_task"])
 
                 tax_summary = TaxSummary(
                     taxable_value=_tf(res.overall_taxable_value),
@@ -285,7 +370,7 @@ async def process_batch(batch_id: str, tasks: list, model_config: dict, type_val
 
                 canonical = CanonicalInvoice(
                     metadata=DocumentMetadata(invoice_no=None, voucher_date=None, voucher_type=None),
-                    supplier=SupplierInfo(),
+                    supplier=Supplier(),
                     tax_summary=tax_summary,
                     line_items=line_items_raw,
                 )

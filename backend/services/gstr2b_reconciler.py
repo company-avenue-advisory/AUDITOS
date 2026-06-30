@@ -142,6 +142,47 @@ def _dig(d: dict, *keys):
     return cur
 
 
+# ── Field normalisation (handles both old manual JSON and AuditOS extraction) ─
+
+def _normalise_item(item: dict) -> dict:
+    """
+    Map AuditOS PurchaseLineItem field names → legacy reconciler field names.
+    Idempotent: if legacy keys already present they are kept.
+
+    AuditOS extraction:  invoice_no, party_gstin, taxable_value, cgst_amount,
+                         sgst_amount, igst_amount, total_invoice_value,
+                         party_ledger_name, voucher_date, particulars,
+                         itc_eligibility
+    Legacy reconciler:   supplier_inv, gst_no, amount, cgst, sgst, igst,
+                         total_amount, party_ac_name, invoice_date, particulars
+    """
+    out = dict(item)
+    if "supplier_inv" not in out:
+        out["supplier_inv"] = item.get("invoice_no") or item.get("supplier_inv") or ""
+    if "gst_no" not in out:
+        out["gst_no"] = item.get("party_gstin") or item.get("gst_no") or ""
+    if "amount" not in out:
+        out["amount"] = safe_float(item.get("taxable_value") or item.get("amount"))
+    if "cgst" not in out:
+        out["cgst"] = safe_float(item.get("cgst_amount") or item.get("cgst"))
+    if "sgst" not in out:
+        out["sgst"] = safe_float(item.get("sgst_amount") or item.get("sgst"))
+    if "igst" not in out:
+        out["igst"] = safe_float(item.get("igst_amount") or item.get("igst"))
+    if "total_amount" not in out:
+        out["total_amount"] = safe_float(
+            item.get("total_invoice_value") or item.get("total_amount")
+            or (out["amount"] + out["cgst"] + out["sgst"] + out["igst"])
+        )
+    if "party_ac_name" not in out:
+        out["party_ac_name"] = item.get("party_ledger_name") or item.get("party_ac_name") or ""
+    if "invoice_date" not in out:
+        out["invoice_date"] = item.get("voucher_date") or item.get("invoice_date") or ""
+    # Preserve ITC eligibility if present (from AuditOS purchase pipeline)
+    out.setdefault("itc_eligibility", item.get("itc_eligibility") or "ITC_UNKNOWN")
+    return out
+
+
 # ── Aggregation Layer (v2) ────────────────────────────────────────────────────
 
 def _aggregate_books_by_invoice(books_items: list[dict]) -> list[dict]:
@@ -214,6 +255,9 @@ def reconcile(books_items: list[dict], gstr2b_records: list[dict]) -> dict:
             "summary": {...},   # aggregate counts + amounts
         }
     """
+    # Step 0: Normalise field names (handles AuditOS extraction output)
+    books_items = [_normalise_item(i) for i in books_items]
+
     # Step 1: Aggregate books items by invoice
     aggregated = _aggregate_books_by_invoice(books_items)
 
@@ -319,16 +363,27 @@ def _build_summary(all_rows: list[dict]) -> dict:
             counts[s] += 1
             amounts[s] += safe_float(r.get("total_amount") or r.get("2b_total_val"))
 
-    itc_at_risk = round(
-        amounts["missing_in_2b"]
-        + amounts.get("mismatch", 0.0),
-        2,
+    itc_at_risk = round(amounts["missing_in_2b"] + amounts.get("mismatch", 0.0), 2)
+
+    # Rule 36(4): provisional ITC cap = 105% of matched GSTR-2B ITC
+    # Only matched invoices form the base; excess books ITC is capped.
+    matched_itc_base = round(amounts["matched"], 2)
+    rule_36_4_cap    = round(matched_itc_base * 1.05, 2)
+    total_books_itc  = round(
+        amounts["matched"] + amounts["mismatch"] + amounts["missing_in_2b"], 2
     )
+    rule_36_4_excess = round(max(0.0, total_books_itc - rule_36_4_cap), 2)
 
     return {
-        "counts":        counts,
-        "amounts":       {k: round(v, 2) for k, v in amounts.items()},
-        "itc_at_risk":   itc_at_risk,
-        "matched_itc":   round(amounts["matched"], 2),
-        "total_rows":    len(all_rows),
+        "counts":           counts,
+        "amounts":          {k: round(v, 2) for k, v in amounts.items()},
+        "itc_at_risk":      itc_at_risk,
+        "matched_itc":      matched_itc_base,
+        "total_rows":       len(all_rows),
+        "rule_36_4": {
+            "cap":          rule_36_4_cap,
+            "total_claimed":total_books_itc,
+            "excess":       rule_36_4_excess,
+            "breached":     rule_36_4_excess > 0,
+        },
     }

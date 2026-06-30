@@ -1,0 +1,1860 @@
+{
+  "generated_at": "2026-06-30T17:58:37.072217",
+  "results": [
+    {
+      "ref": "HR26051012",
+      "status": "PASS",
+      "pdf": "C:\\Users\\yugvk\\Downloads\\antigravityaudit\\backend\\..\\salesinvoices\\Nagar_Sahakari_Bank_Ltd._Maharajganj-05-2026.pdf",
+      "golden": {
+        "ref": "HR26051012",
+        "party": "Nagar Sahakari Bank Ltd. Maharajganj",
+        "gstin": "09AAATN7355B1ZM",
+        "taxable": 10976.0,
+        "amount": 10976.0,
+        "discount": 0.0,
+        "advance": 0.0,
+        "cgst": 0.0,
+        "sgst": 0.0,
+        "igst": 1975.68,
+        "total": 12951.68
+      },
+      "golden_items": [
+        {
+          "particulars": "SaaS Mobile Model 8 - Rs. 32 per user - 0 to 200 Users - RS: 6400 (per month)",
+          "amount": 6400.0,
+          "discount": 0.0,
+          "taxable": 6400.0,
+          "cgst": 0.0,
+          "sgst": 0.0,
+          "igst": 1152.0,
+          "total": 7552.0,
+          "hsn": "9971"
+        },
+        {
+          "particulars": "Additional Users",
+          "amount": 4576.0,
+          "discount": 0.0,
+          "taxable": 4576.0,
+          "cgst": 0.0,
+          "sgst": 0.0,
+          "igst": 823.68,
+          "total": 5399.68,
+          "hsn": "9971"
+        }
+      ],
+      "extracted": {
+        "taxable": 10976.0,
+        "cgst": 0,
+        "sgst": 0,
+        "igst": 1975.68,
+        "total": 12951.68,
+        "items": [
+          {
+            "particulars": "SaaS Mobile Model 8 - Rs. 32 per user - 0 to 200 Users - RS: 6400 (per month)",
+            "taxable": 6400.0,
+            "cgst": 0.0,
+            "sgst": 0.0,
+            "igst": 1152.0,
+            "total": 7552.0,
+            "hsn": "9971",
+            "category": "B2B"
+          },
+          {
+            "particulars": "Additional Users",
+            "taxable": 4576.0,
+            "cgst": 0.0,
+            "sgst": 0.0,
+            "igst": 823.68,
+            "total": 5399.68,
+            "hsn": "9971",
+            "category": "B2B"
+          }
+        ]
+      },
+      "checks": {
+        "taxable": true,
+        "cgst": true,
+        "sgst": true,
+        "igst": true,
+        "total": true
+      }
+    },
+    {
+      "ref": "MH26051007",
+      "status": "FAIL",
+      "pdf": "C:\\Users\\yugvk\\Downloads\\antigravityaudit\\backend\\..\\salesinvoices\\Astha_Mahila_Nagrik_Sahakari_Bank_MaryaditBhopal-05-2026 (1).pdf",
+      "golden": {
+        "ref": "MH26051007",
+        "party": "Astha Mahila Nagrik Sahakari Bank MaryaditBhopal",
+        "gstin": "23AAALA0030E1Z9",
+        "taxable": 3448.9,
+        "amount": 5948.9,
+        "discount": 2500.0,
+        "advance": 0.0,
+        "cgst": 0.0,
+        "sgst": 0.0,
+        "igst": 770.81,
+        "total": 6719.71
+      },
+      "golden_items": [
+        {
+          "particulars": "SaaS Mobile Model 1 - Rs. 5 per user - 0 to 1000 Users - RS: 5000 (per month)",
+          "amount": 5000.0,
+          "discount": 2500.0,
+          "taxable": 2500.0,
+          "cgst": 0.0,
+          "sgst": 0.0,
+          "igst": 600.0,
+          "total": 5600.0,
+          "hsn": "9971"
+        },
+        {
+          "particulars": "SMS Login",
+          "amount": 61.2,
+          "discount": 0.0,
+          "taxable": 61.2,
+          "cgst": 0.0,
+          "sgst": 0.0,
+          "igst": 11.02,
+          "total": 72.22,
+          "hsn": "998599"
+        },
+        {
+          "particulars": "SMS Transactions",
+          "amount": 536.4,
+          "discount": 0.0,
+          "taxable": 536.4,
+          "cgst": 0.0,
+          "sgst": 0.0,
+          "igst": 96.55,
+          "total": 632.95,
+          "hsn": "998599"
+        },
+        {
+          "particulars": "App Notifications Transactions",
+          "amount": 268.2,
+          "discount": 0.0,
+          "taxable": 268.2,
+          "cgst": 0.0,
+          "sgst": 0.0,
+          "igst": 48.28,
+          "total": 316.48,
+          "hsn": "998599"
+        },
+        {
+          "particulars": "Late Fees Charges",
+          "amount": 83.1,
+          "discount": 0.0,
+          "taxable": 83.1,
+          "cgst": 0.0,
+          "sgst": 0.0,
+          "igst": 14.96,
+          "total": 98.06,
+          "hsn": "998311"
+        }
+      ],
+      "extracted": {
+        "taxable": 3448.9,
+        "cgst": 0,
+        "sgst": 0,
+        "igst": 620.81,
+        "total": 4069.71,
+        "items": [
+          {
+            "particulars": "SaaS Mobile Model 1 - Rs. 5 per user - 0 to 1000 Users",
+            "taxable": 2500.0,
+            "cgst": 0.0,
+            "sgst": 0.0,
+            "igst": 450.0,
+            "total": 2950.0,
+            "hsn": "9971",
+            "category": "B2B"
+          },
+          {
+            "particulars": "SMS Login",
+            "taxable": 61.2,
+            "cgst": 0.0,
+            "sgst": 0.0,
+            "igst": 11.02,
+            "total": 72.22,
+            "hsn": "998599",
+            "category": "B2B"
+          },
+          {
+            "particulars": "SMS Transactions",
+            "taxable": 536.4,
+            "cgst": 0.0,
+            "sgst": 0.0,
+            "igst": 96.55,
+            "total": 632.95,
+            "hsn": "998599",
+            "category": "B2B"
+          },
+          {
+            "particulars": "App Notifications Transactions",
+            "taxable": 268.2,
+            "cgst": 0.0,
+            "sgst": 0.0,
+            "igst": 48.28,
+            "total": 316.48,
+            "hsn": "998599",
+            "category": "B2B"
+          },
+          {
+            "particulars": "Late Fees Charges",
+            "taxable": 83.1,
+            "cgst": 0.0,
+            "sgst": 0.0,
+            "igst": 14.96,
+            "total": 98.06,
+            "hsn": "998311",
+            "category": "B2B"
+          }
+        ]
+      },
+      "checks": {
+        "taxable": true,
+        "cgst": true,
+        "sgst": true,
+        "igst": false,
+        "total": false
+      }
+    },
+    {
+      "ref": "MH26051046",
+      "status": "FAIL",
+      "pdf": "C:\\Users\\yugvk\\Downloads\\antigravityaudit\\backend\\..\\salesinvoices\\Maratha_Cooperative_Bank_Ltd._Belgaum-05-2026.pdf",
+      "golden": {
+        "ref": "MH26051046",
+        "party": "Maratha Cooperative Bank Ltd. Belgaum",
+        "gstin": "29AABAM0730B1Z6",
+        "taxable": 5010.0,
+        "amount": 5010.0,
+        "discount": 0.0,
+        "advance": 5000.0,
+        "cgst": 450.0,
+        "sgst": 450.0,
+        "igst": 1.8,
+        "total": 5911.8
+      },
+      "golden_items": [
+        {
+          "particulars": "SaaS Mobile Model 1 - Rs. 5 per user - 0 to 1000 Users - RS: 5000 (per month)",
+          "amount": 5000.0,
+          "discount": 0.0,
+          "taxable": 5000.0,
+          "cgst": 450.0,
+          "sgst": 450.0,
+          "igst": 0.0,
+          "total": 5900.0,
+          "hsn": "9971"
+        },
+        {
+          "particulars": "SMS Transactions",
+          "amount": 2.0,
+          "discount": 0.0,
+          "taxable": 2.0,
+          "cgst": 0.0,
+          "sgst": 0.0,
+          "igst": 0.36,
+          "total": 2.36,
+          "hsn": "998599"
+        },
+        {
+          "particulars": "App Notifications Transactions",
+          "amount": 1.0,
+          "discount": 0.0,
+          "taxable": 1.0,
+          "cgst": 0.0,
+          "sgst": 0.0,
+          "igst": 0.18,
+          "total": 1.18,
+          "hsn": "998599"
+        },
+        {
+          "particulars": "Promotional Messages - SMS",
+          "amount": 6.0,
+          "discount": 0.0,
+          "taxable": 6.0,
+          "cgst": 0.0,
+          "sgst": 0.0,
+          "igst": 1.08,
+          "total": 7.08,
+          "hsn": "998599"
+        },
+        {
+          "particulars": "Promotional Messages - App Notification",
+          "amount": 1.0,
+          "discount": 0.0,
+          "taxable": 1.0,
+          "cgst": 0.0,
+          "sgst": 0.0,
+          "igst": 0.18,
+          "total": 1.18,
+          "hsn": "998599"
+        }
+      ],
+      "extracted": {
+        "taxable": 5002.0,
+        "cgst": 0,
+        "sgst": 0,
+        "igst": 900.36,
+        "total": 5902.36,
+        "items": [
+          {
+            "particulars": "SaaS Mobile Model 1 - Rs. 5 per user - 0 to 1000 Users - RS: 5000 (per month)",
+            "taxable": 5000.0,
+            "cgst": 0.0,
+            "sgst": 0.0,
+            "igst": 900.0,
+            "total": 5900.0,
+            "hsn": "9971",
+            "category": "B2B"
+          },
+          {
+            "particulars": "SMS Transactions",
+            "taxable": 2.0,
+            "cgst": 0.0,
+            "sgst": 0.0,
+            "igst": 0.36,
+            "total": 2.36,
+            "hsn": "998599",
+            "category": "B2B"
+          }
+        ]
+      },
+      "checks": {
+        "taxable": false,
+        "cgst": false,
+        "sgst": false,
+        "igst": false,
+        "total": false
+      }
+    },
+    {
+      "ref": "MH26051067",
+      "status": "FAIL",
+      "pdf": "C:\\Users\\yugvk\\Downloads\\antigravityaudit\\backend\\..\\salesinvoices\\Sadguru_Nagrik_Sahakari_Bank_Maryadit.-05-2026.pdf",
+      "golden": {
+        "ref": "MH26051067",
+        "party": "Sadguru Nagrik Sahakari Bank Maryadit.",
+        "gstin": "23AAABS0364F1ZX",
+        "taxable": 6450.17,
+        "amount": 6450.17,
+        "discount": 0.0,
+        "advance": 0.0,
+        "cgst": 0.0,
+        "sgst": 0.0,
+        "igst": 1161.03,
+        "total": 7611.2
+      },
+      "golden_items": [
+        {
+          "particulars": "SaaS Mobile Model 1 - Rs. 5 per user - 0 to 1000 Users - RS: 5000 (per month)",
+          "amount": 5000.0,
+          "discount": 0.0,
+          "taxable": 5000.0,
+          "cgst": 0.0,
+          "sgst": 0.0,
+          "igst": 900.0,
+          "total": 5900.0,
+          "hsn": "9971"
+        },
+        {
+          "particulars": "SMS Login",
+          "amount": 78.6,
+          "discount": 0.0,
+          "taxable": 78.6,
+          "cgst": 0.0,
+          "sgst": 0.0,
+          "igst": 14.15,
+          "total": 92.75,
+          "hsn": "998599"
+        },
+        {
+          "particulars": "SMS Transactions",
+          "amount": 413.4,
+          "discount": 0.0,
+          "taxable": 413.4,
+          "cgst": 0.0,
+          "sgst": 0.0,
+          "igst": 74.41,
+          "total": 487.81,
+          "hsn": "998599"
+        },
+        {
+          "particulars": "Late Fees Charges",
+          "amount": 958.17,
+          "discount": 0.0,
+          "taxable": 958.17,
+          "cgst": 0.0,
+          "sgst": 0.0,
+          "igst": 172.47,
+          "total": 1130.64,
+          "hsn": "998311"
+        }
+      ],
+      "extracted": {
+        "taxable": 3950.17,
+        "cgst": 0,
+        "sgst": 0,
+        "igst": 711.03,
+        "total": 4661.2,
+        "items": [
+          {
+            "particulars": "SaaS Mobile Model 1 - Rs. 5 per user - 0 to 1000 Users",
+            "taxable": 2500.0,
+            "cgst": 0.0,
+            "sgst": 0.0,
+            "igst": 450.0,
+            "total": 2950.0,
+            "hsn": "9971",
+            "category": "B2B"
+          },
+          {
+            "particulars": "SMS Login",
+            "taxable": 78.6,
+            "cgst": 0.0,
+            "sgst": 0.0,
+            "igst": 14.15,
+            "total": 92.75,
+            "hsn": "998599",
+            "category": "B2B"
+          },
+          {
+            "particulars": "SMS Transactions",
+            "taxable": 413.4,
+            "cgst": 0.0,
+            "sgst": 0.0,
+            "igst": 74.41,
+            "total": 487.81,
+            "hsn": "998599",
+            "category": "B2B"
+          },
+          {
+            "particulars": "Late Fees Charges",
+            "taxable": 958.17,
+            "cgst": 0.0,
+            "sgst": 0.0,
+            "igst": 172.47,
+            "total": 1130.64,
+            "hsn": "999799",
+            "category": "B2B"
+          }
+        ]
+      },
+      "checks": {
+        "taxable": false,
+        "cgst": true,
+        "sgst": true,
+        "igst": false,
+        "total": false
+      }
+    },
+    {
+      "ref": "MH26051059",
+      "status": "FAIL",
+      "pdf": "C:\\Users\\yugvk\\Downloads\\antigravityaudit\\backend\\..\\salesinvoices\\PRAGATI_MAHILA_NAGARIK_SAHAKARI_BANK_LIMITED-05-2026.pdf",
+      "golden": {
+        "ref": "MH26051059",
+        "party": "PRAGATI MAHILA NAGARIK SAHAKARI BANK LIMITED",
+        "gstin": "22AAAAP4257D1Z0",
+        "taxable": 43.44,
+        "amount": 3063.52,
+        "discount": 3020.08,
+        "advance": 0.0,
+        "cgst": 0.0,
+        "sgst": 0.0,
+        "igst": 551.44,
+        "total": 3614.96
+      },
+      "golden_items": [
+        {
+          "particulars": "SaaS Mobile Model 1 - Rs. 5 per user - 0 to 1000 Users - RS: 5000 (per month)",
+          "amount": 1979.92,
+          "discount": 3020.08,
+          "taxable": -1040.16,
+          "cgst": 0.0,
+          "sgst": 0.0,
+          "igst": 356.39,
+          "total": 2336.31,
+          "hsn": "9971"
+        },
+        {
+          "particulars": "SMS Login",
+          "amount": 1.2,
+          "discount": 0.0,
+          "taxable": 1.2,
+          "cgst": 0.0,
+          "sgst": 0.0,
+          "igst": 0.22,
+          "total": 1.42,
+          "hsn": "998599"
+        },
+        {
+          "particulars": "SMS Transactions",
+          "amount": 369.6,
+          "discount": 0.0,
+          "taxable": 369.6,
+          "cgst": 0.0,
+          "sgst": 0.0,
+          "igst": 66.53,
+          "total": 436.13,
+          "hsn": "998599"
+        },
+        {
+          "particulars": "App Notifications Transactions",
+          "amount": 184.8,
+          "discount": 0.0,
+          "taxable": 184.8,
+          "cgst": 0.0,
+          "sgst": 0.0,
+          "igst": 33.26,
+          "total": 218.06,
+          "hsn": "998599"
+        },
+        {
+          "particulars": "Late Fees Charges",
+          "amount": 528.0,
+          "discount": 0.0,
+          "taxable": 528.0,
+          "cgst": 0.0,
+          "sgst": 0.0,
+          "igst": 95.04,
+          "total": 623.04,
+          "hsn": "998311"
+        }
+      ],
+      "extracted": {
+        "taxable": 3063.52,
+        "cgst": 0,
+        "sgst": 0,
+        "igst": 551.44,
+        "total": 3614.96,
+        "items": [
+          {
+            "particulars": "SaaS Mobile Model 1 - Rs. 5 per user - 0 to 1000 Users - RS: 5000 (per month)",
+            "taxable": 2500.0,
+            "cgst": 0.0,
+            "sgst": 0.0,
+            "igst": 450.0,
+            "total": 2950.0,
+            "hsn": "9971",
+            "category": "B2B"
+          },
+          {
+            "particulars": "SMS Login",
+            "taxable": 1.2,
+            "cgst": 0.0,
+            "sgst": 0.0,
+            "igst": 0.22,
+            "total": 1.42,
+            "hsn": "998599",
+            "category": "B2B"
+          },
+          {
+            "particulars": "SMS Transactions",
+            "taxable": 369.6,
+            "cgst": 0.0,
+            "sgst": 0.0,
+            "igst": 66.53,
+            "total": 436.13,
+            "hsn": "998599",
+            "category": "B2B"
+          },
+          {
+            "particulars": "App Notifications Transactions",
+            "taxable": 184.8,
+            "cgst": 0.0,
+            "sgst": 0.0,
+            "igst": 33.26,
+            "total": 218.06,
+            "hsn": "998599",
+            "category": "B2B"
+          },
+          {
+            "particulars": "Late Fees Charges",
+            "taxable": 7.92,
+            "cgst": 0.0,
+            "sgst": 0.0,
+            "igst": 1.43,
+            "total": 9.35,
+            "hsn": "999799",
+            "category": "B2B"
+          }
+        ]
+      },
+      "checks": {
+        "taxable": false,
+        "cgst": true,
+        "sgst": true,
+        "igst": true,
+        "total": true
+      }
+    },
+    {
+      "ref": "MH26051062",
+      "status": "FAIL",
+      "pdf": "C:\\Users\\yugvk\\Downloads\\antigravityaudit\\backend\\..\\salesinvoices\\Rajadhani_CoOperative_Urban_Bank_Ltd.-05-2026.pdf",
+      "golden": {
+        "ref": "MH26051062",
+        "party": "Rajadhani CoOperative Urban Bank Ltd.",
+        "gstin": "36AAAAR7285H1Z7",
+        "taxable": 1380.0,
+        "amount": 3880.0,
+        "discount": 2500.0,
+        "advance": 0.0,
+        "cgst": 0.0,
+        "sgst": 0.0,
+        "igst": 698.4,
+        "total": 4578.4
+      },
+      "golden_items": [
+        {
+          "particulars": "SaaS Mobile Model 1 - Rs. 5 per user - 0 to 1000 Users - RS: 5000 (per month)",
+          "amount": 2500.0,
+          "discount": 2500.0,
+          "taxable": 0.0,
+          "cgst": 0.0,
+          "sgst": 0.0,
+          "igst": 450.0,
+          "total": 2950.0,
+          "hsn": "9971"
+        },
+        {
+          "particulars": "SMS Login",
+          "amount": 20.4,
+          "discount": 0.0,
+          "taxable": 20.4,
+          "cgst": 0.0,
+          "sgst": 0.0,
+          "igst": 3.67,
+          "total": 24.07,
+          "hsn": "998599"
+        },
+        {
+          "particulars": "SMS Transactions",
+          "amount": 837.4,
+          "discount": 0.0,
+          "taxable": 837.4,
+          "cgst": 0.0,
+          "sgst": 0.0,
+          "igst": 150.73,
+          "total": 988.13,
+          "hsn": "998599"
+        },
+        {
+          "particulars": "App Notifications Transactions",
+          "amount": 418.7,
+          "discount": 0.0,
+          "taxable": 418.7,
+          "cgst": 0.0,
+          "sgst": 0.0,
+          "igst": 75.37,
+          "total": 494.07,
+          "hsn": "998599"
+        },
+        {
+          "particulars": "SMS",
+          "amount": 87.0,
+          "discount": 0.0,
+          "taxable": 87.0,
+          "cgst": 0.0,
+          "sgst": 0.0,
+          "igst": 15.66,
+          "total": 102.66,
+          "hsn": "998599"
+        },
+        {
+          "particulars": "App Notification",
+          "amount": 16.5,
+          "discount": 0.0,
+          "taxable": 16.5,
+          "cgst": 0.0,
+          "sgst": 0.0,
+          "igst": 2.97,
+          "total": 19.47,
+          "hsn": "998599"
+        }
+      ],
+      "extracted": {
+        "taxable": 3879.65,
+        "cgst": 0,
+        "sgst": 0,
+        "igst": 698.33,
+        "total": 4577.98,
+        "items": [
+          {
+            "particulars": "SaaS Mobile Model 1 - Rs. 5 per user - 0 to 1000 Users",
+            "taxable": 2500.0,
+            "cgst": 0.0,
+            "sgst": 0.0,
+            "igst": 450.0,
+            "total": 2950.0,
+            "hsn": "9971",
+            "category": "B2B"
+          },
+          {
+            "particulars": "SMS Login",
+            "taxable": 20.4,
+            "cgst": 0.0,
+            "sgst": 0.0,
+            "igst": 3.67,
+            "total": 24.07,
+            "hsn": "998599",
+            "category": "B2B"
+          },
+          {
+            "particulars": "SMS Transactions",
+            "taxable": 837.4,
+            "cgst": 0.0,
+            "sgst": 0.0,
+            "igst": 150.73,
+            "total": 988.13,
+            "hsn": "998599",
+            "category": "B2B"
+          },
+          {
+            "particulars": "Unallocated / Missing Lines",
+            "taxable": 521.85,
+            "cgst": 0.0,
+            "sgst": 0.0,
+            "igst": 93.93,
+            "total": 615.78,
+            "hsn": "9971",
+            "category": null
+          }
+        ]
+      },
+      "checks": {
+        "taxable": false,
+        "cgst": true,
+        "sgst": true,
+        "igst": true,
+        "total": true
+      }
+    },
+    {
+      "ref": "MH26051022",
+      "status": "FAIL",
+      "pdf": "C:\\Users\\yugvk\\Downloads\\antigravityaudit\\backend\\..\\salesinvoices\\Idar Nagrik Sahakari Bank Ltd..pdf",
+      "golden": {
+        "ref": "MH26051022",
+        "party": "Idar Nagrik Sahakari Bank Ltd.",
+        "gstin": "24AAABT1950A2Z1",
+        "taxable": 108006.6,
+        "amount": 108006.6,
+        "discount": 0.0,
+        "advance": 0.0,
+        "cgst": 0.0,
+        "sgst": 0.0,
+        "igst": 19441.19,
+        "total": 127447.79
+      },
+      "golden_items": [
+        {
+          "particulars": "SaaS Mobile Model 1 - Rs. 5 per user - 0 to 1000 Users - RS: 5000 (per month)",
+          "amount": 5000.0,
+          "discount": 0.0,
+          "taxable": 5000.0,
+          "cgst": 0.0,
+          "sgst": 0.0,
+          "igst": 900.0,
+          "total": 5900.0,
+          "hsn": "9971"
+        },
+        {
+          "particulars": "SoundBox Model 1 - Rs. 999 per device / Annual plan",
+          "amount": 98901.0,
+          "discount": 0.0,
+          "taxable": 98901.0,
+          "cgst": 0.0,
+          "sgst": 0.0,
+          "igst": 17802.18,
+          "total": 116703.18,
+          "hsn": "997319"
+        },
+        {
+          "particulars": "SMS Login",
+          "amount": 150.6,
+          "discount": 0.0,
+          "taxable": 150.6,
+          "cgst": 0.0,
+          "sgst": 0.0,
+          "igst": 27.11,
+          "total": 177.71,
+          "hsn": "998599"
+        },
+        {
+          "particulars": "SMS Transactions",
+          "amount": 3955.0,
+          "discount": 0.0,
+          "taxable": 3955.0,
+          "cgst": 0.0,
+          "sgst": 0.0,
+          "igst": 711.9,
+          "total": 4666.9,
+          "hsn": "998599"
+        }
+      ],
+      "extracted": {
+        "taxable": 105506.6,
+        "cgst": 0,
+        "sgst": 0,
+        "igst": 18991.19,
+        "total": 124497.79,
+        "items": [
+          {
+            "particulars": "SaaS Mobile Model 1",
+            "taxable": 2500.0,
+            "cgst": 0.0,
+            "sgst": 0.0,
+            "igst": 450.0,
+            "total": 2950.0,
+            "hsn": "9971",
+            "category": "B2B"
+          },
+          {
+            "particulars": "SoundBox Model 1",
+            "taxable": 98901.0,
+            "cgst": 0.0,
+            "sgst": 0.0,
+            "igst": 17802.18,
+            "total": 116703.18,
+            "hsn": "997319",
+            "category": "B2B"
+          },
+          {
+            "particulars": "SMS Login",
+            "taxable": 150.6,
+            "cgst": 0.0,
+            "sgst": 0.0,
+            "igst": 27.11,
+            "total": 177.71,
+            "hsn": "998599",
+            "category": "B2B"
+          },
+          {
+            "particulars": "SMS Transactions",
+            "taxable": 3955.0,
+            "cgst": 0.0,
+            "sgst": 0.0,
+            "igst": 711.9,
+            "total": 4666.9,
+            "hsn": "998599",
+            "category": "B2B"
+          }
+        ]
+      },
+      "checks": {
+        "taxable": false,
+        "cgst": true,
+        "sgst": true,
+        "igst": false,
+        "total": false
+      }
+    },
+    {
+      "ref": "MH26051074",
+      "status": "PASS",
+      "pdf": "C:\\Users\\yugvk\\Downloads\\antigravityaudit\\backend\\..\\salesinvoices\\Sanmitra_Mahila_Nagri_Sahakari_Bank_Ltd-05-2026.pdf",
+      "golden": {
+        "ref": "MH26051074",
+        "party": "Sanmitra Mahila Nagri Sahakari Bank Ltd",
+        "gstin": "27AAAAS9943B1ZG",
+        "taxable": 7628.02,
+        "amount": 7628.02,
+        "discount": 0.0,
+        "advance": 0.0,
+        "cgst": 686.52,
+        "sgst": 686.52,
+        "igst": 0.0,
+        "total": 9001.060000000001
+      },
+      "golden_items": [
+        {
+          "particulars": "Additional Users",
+          "amount": 1385.0,
+          "discount": 0.0,
+          "taxable": 1385.0,
+          "cgst": 124.65,
+          "sgst": 124.65,
+          "igst": 0.0,
+          "total": 1634.3,
+          "hsn": "9971"
+        },
+        {
+          "particulars": "SMS Login",
+          "amount": 156.0,
+          "discount": 0.0,
+          "taxable": 156.0,
+          "cgst": 14.04,
+          "sgst": 14.04,
+          "igst": 0.0,
+          "total": 184.08,
+          "hsn": "998599"
+        },
+        {
+          "particulars": "SMS Transactions",
+          "amount": 3796.2,
+          "discount": 0.0,
+          "taxable": 3796.2,
+          "cgst": 341.66,
+          "sgst": 341.66,
+          "igst": 0.0,
+          "total": 4479.52,
+          "hsn": "998599"
+        },
+        {
+          "particulars": "App Notifications Transactions",
+          "amount": 1898.1,
+          "discount": 0.0,
+          "taxable": 1898.1,
+          "cgst": 170.83,
+          "sgst": 170.83,
+          "igst": 0.0,
+          "total": 2239.76,
+          "hsn": "998599"
+        },
+        {
+          "particulars": "Late Fees Charges",
+          "amount": 392.72,
+          "discount": 0.0,
+          "taxable": 392.72,
+          "cgst": 35.34,
+          "sgst": 35.34,
+          "igst": 0.0,
+          "total": 463.4,
+          "hsn": "998311"
+        }
+      ],
+      "extracted": {
+        "taxable": 7628.01,
+        "cgst": 686.52,
+        "sgst": 686.52,
+        "igst": 0,
+        "total": 9001.05,
+        "items": [
+          {
+            "particulars": "Additional Users",
+            "taxable": 1385.0,
+            "cgst": 124.65,
+            "sgst": 124.65,
+            "igst": 0.0,
+            "total": 1634.3,
+            "hsn": "9971",
+            "category": "B2B"
+          },
+          {
+            "particulars": "SMS Login",
+            "taxable": 156.0,
+            "cgst": 14.04,
+            "sgst": 14.04,
+            "igst": 0.0,
+            "total": 184.08,
+            "hsn": "998599",
+            "category": "B2B"
+          },
+          {
+            "particulars": "SMS Transactions",
+            "taxable": 3796.2,
+            "cgst": 341.66,
+            "sgst": 341.66,
+            "igst": 0.0,
+            "total": 4479.52,
+            "hsn": "998599",
+            "category": "B2B"
+          },
+          {
+            "particulars": "App Notifications Transactions",
+            "taxable": 1898.1,
+            "cgst": 170.83,
+            "sgst": 170.83,
+            "igst": 0.0,
+            "total": 2239.76,
+            "hsn": "998599",
+            "category": "B2B"
+          },
+          {
+            "particulars": "Late Fees Charges",
+            "taxable": 392.715,
+            "cgst": 35.34,
+            "sgst": 35.34,
+            "igst": 0.0,
+            "total": 463.39,
+            "hsn": "998311",
+            "category": "B2B"
+          }
+        ]
+      },
+      "checks": {
+        "taxable": true,
+        "cgst": true,
+        "sgst": true,
+        "igst": true,
+        "total": true
+      }
+    },
+    {
+      "ref": "MH26051072",
+      "status": "FAIL",
+      "pdf": "C:\\Users\\yugvk\\Downloads\\antigravityaudit\\backend\\..\\salesinvoices\\SANGOLA_URBAN_CO_OP_BANK_LTD_SANGOLA-05-2026.pdf",
+      "golden": {
+        "ref": "MH26051072",
+        "party": "SANGOLA URBAN CO OP BANK LTD SANGOLA",
+        "gstin": "27AABAS2345A1ZZ",
+        "taxable": 8037.4,
+        "amount": 10537.4,
+        "discount": 2500.0,
+        "advance": 0.0,
+        "cgst": 798.36,
+        "sgst": 798.36,
+        "igst": 0.0,
+        "total": 12134.12
+      },
+      "golden_items": [
+        {
+          "particulars": "SaaS Mobile Model 1 - Rs. 5 per user - 0 to 1000 Users - RS: 5000 (per month)",
+          "amount": 5000.0,
+          "discount": 2500.0,
+          "taxable": 2500.0,
+          "cgst": 300.0,
+          "sgst": 300.0,
+          "igst": 0.0,
+          "total": 5600.0,
+          "hsn": "9971"
+        },
+        {
+          "particulars": "SMS Login",
+          "amount": 183.6,
+          "discount": 0.0,
+          "taxable": 183.6,
+          "cgst": 16.52,
+          "sgst": 16.52,
+          "igst": 0.0,
+          "total": 216.64,
+          "hsn": "998599"
+        },
+        {
+          "particulars": "SMS Transactions",
+          "amount": 3569.2,
+          "discount": 0.0,
+          "taxable": 3569.2,
+          "cgst": 321.23,
+          "sgst": 321.23,
+          "igst": 0.0,
+          "total": 4211.66,
+          "hsn": "998599"
+        },
+        {
+          "particulars": "App Notifications Transactions",
+          "amount": 1784.6,
+          "discount": 0.0,
+          "taxable": 1784.6,
+          "cgst": 160.61,
+          "sgst": 160.61,
+          "igst": 0.0,
+          "total": 2105.82,
+          "hsn": "998599"
+        }
+      ],
+      "extracted": {
+        "taxable": 8037.4,
+        "cgst": 723.36,
+        "sgst": 723.36,
+        "igst": 0,
+        "total": 9484.12,
+        "items": [
+          {
+            "particulars": "SaaS Mobile Model 1 - Rs. 5 per user - 0 to 1000 Users - RS: 5000 (per month)",
+            "taxable": 2500.0,
+            "cgst": 225.0,
+            "sgst": 225.0,
+            "igst": 0.0,
+            "total": 2950.0,
+            "hsn": "9971",
+            "category": "B2B"
+          },
+          {
+            "particulars": "SMS Login",
+            "taxable": 183.6,
+            "cgst": 16.52,
+            "sgst": 16.52,
+            "igst": 0.0,
+            "total": 216.64,
+            "hsn": "998599",
+            "category": "B2B"
+          },
+          {
+            "particulars": "SMS Transactions",
+            "taxable": 3569.2,
+            "cgst": 321.23,
+            "sgst": 321.23,
+            "igst": 0.0,
+            "total": 4211.66,
+            "hsn": "998599",
+            "category": "B2B"
+          },
+          {
+            "particulars": "App Notifications Transactions",
+            "taxable": 1784.6,
+            "cgst": 160.61,
+            "sgst": 160.61,
+            "igst": 0.0,
+            "total": 2105.82,
+            "hsn": "998599",
+            "category": "B2B"
+          }
+        ]
+      },
+      "checks": {
+        "taxable": true,
+        "cgst": false,
+        "sgst": false,
+        "igst": true,
+        "total": false
+      }
+    },
+    {
+      "ref": "MH26051041",
+      "status": "FAIL",
+      "pdf": "C:\\Users\\yugvk\\Downloads\\antigravityaudit\\backend\\..\\salesinvoices\\Mahesh_Urban_Cooperative_Bank_Ltd-05-2026.pdf",
+      "golden": {
+        "ref": "MH26051041",
+        "party": "Mahesh Urban Cooperative Bank Ltd",
+        "gstin": "27AAAAM0511H1Z4",
+        "taxable": 4618.99,
+        "amount": 7118.99,
+        "discount": 2500.0,
+        "advance": 0.0,
+        "cgst": 490.72,
+        "sgst": 490.72,
+        "igst": 0.0,
+        "total": 8100.43
+      },
+      "golden_items": [
+        {
+          "particulars": "SaaS Mobile Model 1 - Rs. 5 per user - 0 to 1000 Users - RS: 5000 (per month)",
+          "amount": 5000.0,
+          "discount": 2500.0,
+          "taxable": 2500.0,
+          "cgst": 300.0,
+          "sgst": 300.0,
+          "igst": 0.0,
+          "total": 5600.0,
+          "hsn": "9971"
+        },
+        {
+          "particulars": "SoundBox Model 1 - Rs. 999 per device / Annual plan",
+          "amount": 999.0,
+          "discount": 0.0,
+          "taxable": 999.0,
+          "cgst": 89.91,
+          "sgst": 89.91,
+          "igst": 0.0,
+          "total": 1178.82,
+          "hsn": "997319"
+        },
+        {
+          "particulars": "SMS Login",
+          "amount": 18.0,
+          "discount": 0.0,
+          "taxable": 18.0,
+          "cgst": 1.62,
+          "sgst": 1.62,
+          "igst": 0.0,
+          "total": 21.24,
+          "hsn": "998599"
+        },
+        {
+          "particulars": "SMS Transactions",
+          "amount": 522.4,
+          "discount": 0.0,
+          "taxable": 522.4,
+          "cgst": 47.02,
+          "sgst": 47.02,
+          "igst": 0.0,
+          "total": 616.44,
+          "hsn": "998599"
+        },
+        {
+          "particulars": "App Notifications Transactions",
+          "amount": 261.2,
+          "discount": 0.0,
+          "taxable": 261.2,
+          "cgst": 23.51,
+          "sgst": 23.51,
+          "igst": 0.0,
+          "total": 308.22,
+          "hsn": "998599"
+        },
+        {
+          "particulars": "Late Fees Charges",
+          "amount": 318.39,
+          "discount": 0.0,
+          "taxable": 318.39,
+          "cgst": 28.66,
+          "sgst": 28.66,
+          "igst": 0.0,
+          "total": 375.71,
+          "hsn": "998311"
+        }
+      ],
+      "extracted": {
+        "taxable": 4618.65,
+        "cgst": 415.69,
+        "sgst": 415.69,
+        "igst": 0,
+        "total": 5450.03,
+        "items": [
+          {
+            "particulars": "SaaS Mobile Model 1 - Rs. 5 per user - 0 to 1000 Users - RS: 5000 (per month)",
+            "taxable": 2500.0,
+            "cgst": 225.0,
+            "sgst": 225.0,
+            "igst": 0.0,
+            "total": 2950.0,
+            "hsn": "9971",
+            "category": "B2B"
+          },
+          {
+            "particulars": "SoundBox Model 1 - Rs. 999 per device / Annual plan",
+            "taxable": 999.0,
+            "cgst": 89.91,
+            "sgst": 89.91,
+            "igst": 0.0,
+            "total": 1178.82,
+            "hsn": "997319",
+            "category": "B2B"
+          },
+          {
+            "particulars": "SMS Login",
+            "taxable": 18.0,
+            "cgst": 1.62,
+            "sgst": 1.62,
+            "igst": 0.0,
+            "total": 21.24,
+            "hsn": "998599",
+            "category": "B2B"
+          },
+          {
+            "particulars": "SMS Transactions",
+            "taxable": 522.4,
+            "cgst": 47.02,
+            "sgst": 47.02,
+            "igst": 0.0,
+            "total": 616.44,
+            "hsn": "998599",
+            "category": "B2B"
+          },
+          {
+            "particulars": "Late Fees Charges",
+            "taxable": 318.39,
+            "cgst": 28.66,
+            "sgst": 28.66,
+            "igst": 0.0,
+            "total": 375.71,
+            "hsn": "998311",
+            "category": "B2B"
+          },
+          {
+            "particulars": "Unallocated / Missing Lines",
+            "taxable": 260.86,
+            "cgst": 23.48,
+            "sgst": 23.48,
+            "igst": 0.0,
+            "total": 307.82,
+            "hsn": "9971",
+            "category": null
+          }
+        ]
+      },
+      "checks": {
+        "taxable": true,
+        "cgst": false,
+        "sgst": false,
+        "igst": true,
+        "total": false
+      }
+    },
+    {
+      "ref": "HR26051018",
+      "status": "FAIL",
+      "pdf": "C:\\Users\\yugvk\\Downloads\\antigravityaudit\\backend\\..\\salesinvoices\\Progressive_Urban_Co_Op_Bank_Ltd-05-2026.pdf",
+      "golden": {
+        "ref": "HR26051018",
+        "party": "Progressive Urban Co Op Bank Ltd",
+        "gstin": "09AAAAP1475D1ZQ",
+        "taxable": 5126.1,
+        "amount": 5126.1,
+        "discount": 0.0,
+        "advance": 1500.0,
+        "cgst": 461.35,
+        "sgst": 461.35,
+        "igst": 0.0,
+        "total": 6048.8
+      },
+      "golden_items": [
+        {
+          "particulars": "SaaS Mobile Model 1 - Rs. 5 per user - 0 to 1000 Users - RS: 5000 (per month)",
+          "amount": 5000.0,
+          "discount": 0.0,
+          "taxable": 5000.0,
+          "cgst": 450.0,
+          "sgst": 450.0,
+          "igst": 0.0,
+          "total": 5900.0,
+          "hsn": "9971"
+        },
+        {
+          "particulars": "App Notifications Transactions",
+          "amount": 126.1,
+          "discount": 0.0,
+          "taxable": 126.1,
+          "cgst": 11.35,
+          "sgst": 11.35,
+          "igst": 0.0,
+          "total": 148.8,
+          "hsn": "998599"
+        }
+      ],
+      "extracted": {
+        "taxable": 1500.0,
+        "cgst": 0,
+        "sgst": 0,
+        "igst": 270.0,
+        "total": 1770.0,
+        "items": [
+          {
+            "particulars": "SaaS Mobile Model 1 - Rs. 5 per user - 0 to 1000 Users",
+            "taxable": 1500.0,
+            "cgst": 0.0,
+            "sgst": 0.0,
+            "igst": 270.0,
+            "total": 1770.0,
+            "hsn": "9971",
+            "category": "B2B"
+          }
+        ]
+      },
+      "checks": {
+        "taxable": false,
+        "cgst": false,
+        "sgst": false,
+        "igst": false,
+        "total": false
+      }
+    },
+    {
+      "ref": "MH26051001",
+      "status": "PASS",
+      "pdf": "C:\\Users\\yugvk\\Downloads\\antigravityaudit\\backend\\..\\salesinvoices\\Ambarnath_JaiHind_CoOp_Bank_Limited-05-2026.pdf",
+      "golden": {
+        "ref": "MH26051001",
+        "party": "Ambarnath JaiHind CoOp Bank Limited",
+        "gstin": "27AAAAJ0263F2Z1",
+        "taxable": 29784.58,
+        "amount": 29784.58,
+        "discount": 0.0,
+        "advance": 0.0,
+        "cgst": 2680.62,
+        "sgst": 2680.62,
+        "igst": 0.0,
+        "total": 35145.82
+      },
+      "golden_items": [
+        {
+          "particulars": "SaaS Mobile Model 8 - Rs. 32 per user - 0 to 200 Users - RS: 6400 (per month)",
+          "amount": 6400.0,
+          "discount": 0.0,
+          "taxable": 6400.0,
+          "cgst": 576.0,
+          "sgst": 576.0,
+          "igst": 0.0,
+          "total": 7552.0,
+          "hsn": "9971"
+        },
+        {
+          "particulars": "Additional Users",
+          "amount": 6688.0,
+          "discount": 0.0,
+          "taxable": 6688.0,
+          "cgst": 601.92,
+          "sgst": 601.92,
+          "igst": 0.0,
+          "total": 7891.84,
+          "hsn": "9971"
+        },
+        {
+          "particulars": "SoundBox Model 2 - Rs. 149 per device / per month",
+          "amount": 14900.0,
+          "discount": 0.0,
+          "taxable": 14900.0,
+          "cgst": 1341.0,
+          "sgst": 1341.0,
+          "igst": 0.0,
+          "total": 17582.0,
+          "hsn": "997319"
+        },
+        {
+          "particulars": "App Notifications Transactions",
+          "amount": 1215.0,
+          "discount": 0.0,
+          "taxable": 1215.0,
+          "cgst": 109.35,
+          "sgst": 109.35,
+          "igst": 0.0,
+          "total": 1433.7,
+          "hsn": "998599"
+        },
+        {
+          "particulars": "App Notification",
+          "amount": 67.5,
+          "discount": 0.0,
+          "taxable": 67.5,
+          "cgst": 6.08,
+          "sgst": 6.08,
+          "igst": 0.0,
+          "total": 79.66,
+          "hsn": "998599"
+        },
+        {
+          "particulars": "Late Fees Charges",
+          "amount": 514.08,
+          "discount": 0.0,
+          "taxable": 514.08,
+          "cgst": 46.27,
+          "sgst": 46.27,
+          "igst": 0.0,
+          "total": 606.62,
+          "hsn": "998311"
+        }
+      ],
+      "extracted": {
+        "taxable": 29784.74,
+        "cgst": 2680.63,
+        "sgst": 2680.63,
+        "igst": 0,
+        "total": 35146.0,
+        "items": [
+          {
+            "particulars": "SaaS Mobile Model 8 - Rs. 32 per user - 0 to 200 Users",
+            "taxable": 6400.0,
+            "cgst": 576.0,
+            "sgst": 576.0,
+            "igst": 0.0,
+            "total": 7552.0,
+            "hsn": "9971",
+            "category": "B2B"
+          },
+          {
+            "particulars": "Additional Users",
+            "taxable": 6688.0,
+            "cgst": 601.92,
+            "sgst": 601.92,
+            "igst": 0.0,
+            "total": 7891.84,
+            "hsn": "9971",
+            "category": "B2B"
+          },
+          {
+            "particulars": "SoundBox Model 2 - Rs. 149 per device / per - month",
+            "taxable": 14900.0,
+            "cgst": 1341.0,
+            "sgst": 1341.0,
+            "igst": 0.0,
+            "total": 17582.0,
+            "hsn": "997319",
+            "category": "B2B"
+          },
+          {
+            "particulars": "Late Fees Charges",
+            "taxable": 514.08,
+            "cgst": 46.27,
+            "sgst": 46.27,
+            "igst": 0.0,
+            "total": 606.62,
+            "hsn": "998311",
+            "category": "B2B"
+          },
+          {
+            "particulars": "Unallocated / Missing Lines",
+            "taxable": 1282.66,
+            "cgst": 115.44,
+            "sgst": 115.44,
+            "igst": 0.0,
+            "total": 1513.54,
+            "hsn": "9971",
+            "category": null
+          }
+        ]
+      },
+      "checks": {
+        "taxable": true,
+        "cgst": true,
+        "sgst": true,
+        "igst": true,
+        "total": true
+      }
+    },
+    {
+      "ref": "MH26051076",
+      "status": "FAIL",
+      "pdf": "C:\\Users\\yugvk\\Downloads\\antigravityaudit\\backend\\..\\salesinvoices\\Sehore_Nagrik_Sahakari_Bank_Limited-05-2026.pdf",
+      "golden": {
+        "ref": "MH26051076",
+        "party": "Sehore Nagrik Sahakari Bank Limited",
+        "gstin": "23AABAS5970R1ZV",
+        "taxable": 4673.2,
+        "amount": 7173.2,
+        "discount": 2500.0,
+        "advance": 0.0,
+        "cgst": 0.0,
+        "sgst": 0.0,
+        "igst": 991.1800000000001,
+        "total": 8164.38
+      },
+      "golden_items": [
+        {
+          "particulars": "SaaS Mobile Model 1 - Rs. 5 per user - 0 to 1000 Users - RS: 5000 (per month)",
+          "amount": 5000.0,
+          "discount": 2500.0,
+          "taxable": 2500.0,
+          "cgst": 0.0,
+          "sgst": 0.0,
+          "igst": 600.0,
+          "total": 5600.0,
+          "hsn": "9971"
+        },
+        {
+          "particulars": "SMS Login",
+          "amount": 36.6,
+          "discount": 0.0,
+          "taxable": 36.6,
+          "cgst": 0.0,
+          "sgst": 0.0,
+          "igst": 6.59,
+          "total": 43.19,
+          "hsn": "998599"
+        },
+        {
+          "particulars": "SMS Transactions",
+          "amount": 1007.6,
+          "discount": 0.0,
+          "taxable": 1007.6,
+          "cgst": 0.0,
+          "sgst": 0.0,
+          "igst": 181.37,
+          "total": 1188.97,
+          "hsn": "998599"
+        },
+        {
+          "particulars": "Late Fees Charges",
+          "amount": 1129.0,
+          "discount": 0.0,
+          "taxable": 1129.0,
+          "cgst": 0.0,
+          "sgst": 0.0,
+          "igst": 203.22,
+          "total": 1332.22,
+          "hsn": "998311"
+        }
+      ],
+      "extracted": {
+        "taxable": 4673.2,
+        "cgst": 0,
+        "sgst": 0,
+        "igst": 841.18,
+        "total": 5514.38,
+        "items": [
+          {
+            "particulars": "SaaS Mobile Model 1 - Rs. 5 per user - 0 to 1000 Users",
+            "taxable": 2500.0,
+            "cgst": 0.0,
+            "sgst": 0.0,
+            "igst": 450.0,
+            "total": 2950.0,
+            "hsn": "9971",
+            "category": "B2B"
+          },
+          {
+            "particulars": "SMS Login",
+            "taxable": 36.6,
+            "cgst": 0.0,
+            "sgst": 0.0,
+            "igst": 6.59,
+            "total": 43.19,
+            "hsn": "998599",
+            "category": "B2B"
+          },
+          {
+            "particulars": "SMS Transactions",
+            "taxable": 1007.6,
+            "cgst": 0.0,
+            "sgst": 0.0,
+            "igst": 181.37,
+            "total": 1188.97,
+            "hsn": "998599",
+            "category": "B2B"
+          },
+          {
+            "particulars": "Late Fees Charges",
+            "taxable": 1129.0,
+            "cgst": 0.0,
+            "sgst": 0.0,
+            "igst": 203.22,
+            "total": 1332.22,
+            "hsn": "998311",
+            "category": "B2B"
+          }
+        ]
+      },
+      "checks": {
+        "taxable": true,
+        "cgst": true,
+        "sgst": true,
+        "igst": false,
+        "total": false
+      }
+    },
+    {
+      "ref": "MH26051090",
+      "status": "FAIL",
+      "pdf": "C:\\Users\\yugvk\\Downloads\\antigravityaudit\\backend\\..\\salesinvoices\\Shri_Kadasiddeshwar_Pattan_Sahakari_Bank_Niyamit_Banhatti-05-2026.pdf",
+      "golden": {
+        "ref": "MH26051090",
+        "party": "Shri Kadasiddeshwar Pattan Sahakari Bank Niyamit Banhatti",
+        "gstin": "29AAXAS3649F1ZQ",
+        "taxable": 345.25,
+        "amount": 345.25,
+        "discount": 0.0,
+        "advance": 5000.0,
+        "cgst": 0.0,
+        "sgst": 0.0,
+        "igst": 62.14,
+        "total": 407.39
+      },
+      "golden_items": [
+        {
+          "particulars": "SaaS Mobile Application, UPI QR, Transactional Messages, Promotional Messages, Late Fees Charges",
+          "amount": 345.25,
+          "discount": 0.0,
+          "taxable": 345.25,
+          "cgst": 0.0,
+          "sgst": 0.0,
+          "igst": 62.14,
+          "total": 407.39,
+          "hsn": "9971, 998599"
+        }
+      ],
+      "extracted": {
+        "taxable": 6545.5,
+        "cgst": 0,
+        "sgst": 0,
+        "igst": 1178.19,
+        "total": 7723.69,
+        "items": [
+          {
+            "particulars": "SaaS Mobile Model 1 - Rs. 5 per user - 0 to 1000 Users - RS: 5000 (per month)",
+            "taxable": 5000.0,
+            "cgst": 0.0,
+            "sgst": 0.0,
+            "igst": 900.0,
+            "total": 5900.0,
+            "hsn": "9971",
+            "category": "B2B"
+          },
+          {
+            "particulars": "SMS Login",
+            "taxable": 29.4,
+            "cgst": 0.0,
+            "sgst": 0.0,
+            "igst": 5.29,
+            "total": 34.69,
+            "hsn": "998599",
+            "category": "B2B"
+          },
+          {
+            "particulars": "SMS Transactions",
+            "taxable": 155.4,
+            "cgst": 0.0,
+            "sgst": 0.0,
+            "igst": 27.97,
+            "total": 183.37,
+            "hsn": "998599",
+            "category": "B2B"
+          },
+          {
+            "particulars": "App Notifications Transactions",
+            "taxable": 77.7,
+            "cgst": 0.0,
+            "sgst": 0.0,
+            "igst": 13.99,
+            "total": 91.69,
+            "hsn": "998599",
+            "category": "B2B"
+          },
+          {
+            "particulars": "Late Fees Charges",
+            "taxable": 1283.0,
+            "cgst": 0.0,
+            "sgst": 0.0,
+            "igst": 230.94,
+            "total": 1513.94,
+            "hsn": "998311",
+            "category": "B2B"
+          }
+        ]
+      },
+      "checks": {
+        "taxable": false,
+        "cgst": true,
+        "sgst": true,
+        "igst": false,
+        "total": false
+      }
+    },
+    {
+      "ref": "MH26051099",
+      "status": "FAIL",
+      "pdf": "C:\\Users\\yugvk\\Downloads\\antigravityaudit\\backend\\..\\salesinvoices\\Sriramnagar_Pattana_Sahakar_Bank_Niyamit_Sriramnagar-05-2026.pdf",
+      "golden": {
+        "ref": "MH26051099",
+        "party": "Sriramnagar Pattana Sahakar Bank Niyamit Sriramnagar",
+        "gstin": "29AAAAS7749D2Z7",
+        "taxable": 2532.21,
+        "amount": 5105.1,
+        "discount": 2572.89,
+        "advance": 2500.0,
+        "cgst": 459.47,
+        "sgst": 459.47,
+        "igst": 0.0,
+        "total": 6024.04
+      },
+      "golden_items": [
+        {
+          "particulars": "SaaS Mobile Model 1 - Rs. 5 per user - 0 to 1000 Users - RS: 5000 (per month)",
+          "amount": 5000.0,
+          "discount": 2572.89,
+          "taxable": 2427.11,
+          "cgst": 450.0,
+          "sgst": 450.0,
+          "igst": 0.0,
+          "total": 5900.0,
+          "hsn": "9971"
+        },
+        {
+          "particulars": "SMS Transactions",
+          "amount": 4.4,
+          "discount": 0.0,
+          "taxable": 4.4,
+          "cgst": 0.4,
+          "sgst": 0.4,
+          "igst": 0.0,
+          "total": 5.2,
+          "hsn": "998599"
+        },
+        {
+          "particulars": "App Notifications Transactions",
+          "amount": 2.2,
+          "discount": 0.0,
+          "taxable": 2.2,
+          "cgst": 0.2,
+          "sgst": 0.2,
+          "igst": 0.0,
+          "total": 2.6,
+          "hsn": "998599"
+        },
+        {
+          "particulars": "SMS (Promotional Messages)",
+          "amount": 21.0,
+          "discount": 0.0,
+          "taxable": 21.0,
+          "cgst": 1.89,
+          "sgst": 1.89,
+          "igst": 0.0,
+          "total": 24.78,
+          "hsn": "998599"
+        },
+        {
+          "particulars": "App Notification (Promotional Messages)",
+          "amount": 3.5,
+          "discount": 0.0,
+          "taxable": 3.5,
+          "cgst": 0.32,
+          "sgst": 0.32,
+          "igst": 0.0,
+          "total": 4.14,
+          "hsn": "998599"
+        },
+        {
+          "particulars": "Late Fees Charges",
+          "amount": 74.0,
+          "discount": 0.0,
+          "taxable": 74.0,
+          "cgst": 6.66,
+          "sgst": 6.66,
+          "igst": 0.0,
+          "total": 87.32,
+          "hsn": "998311"
+        }
+      ],
+      "extracted": {
+        "taxable": 2507.71,
+        "cgst": 0,
+        "sgst": 0,
+        "igst": 451.39,
+        "total": 2959.1,
+        "items": [
+          {
+            "particulars": "SaaS Mobile Model 1 - Rs. 5 per user - 0 to 1000 Users",
+            "taxable": 2500.0,
+            "cgst": 0.0,
+            "sgst": 0.0,
+            "igst": 450.0,
+            "total": 2950.0,
+            "hsn": "9971",
+            "category": "B2B"
+          },
+          {
+            "particulars": "SMS Transactions",
+            "taxable": 4.4,
+            "cgst": 0.0,
+            "sgst": 0.0,
+            "igst": 0.79,
+            "total": 5.19,
+            "hsn": "998599",
+            "category": "B2B"
+          },
+          {
+            "particulars": "App Notifications Transactions",
+            "taxable": 2.2,
+            "cgst": 0.0,
+            "sgst": 0.0,
+            "igst": 0.4,
+            "total": 2.6,
+            "hsn": "998599",
+            "category": "B2B"
+          },
+          {
+            "particulars": "Late Fees Charges",
+            "taxable": 1.11,
+            "cgst": 0.0,
+            "sgst": 0.0,
+            "igst": 0.2,
+            "total": 1.31,
+            "hsn": "998311",
+            "category": "B2B"
+          }
+        ]
+      },
+      "checks": {
+        "taxable": false,
+        "cgst": false,
+        "sgst": false,
+        "igst": false,
+        "total": false
+      }
+    }
+  ]
+}

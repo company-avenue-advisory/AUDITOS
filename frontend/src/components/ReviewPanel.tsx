@@ -72,14 +72,17 @@ const STATUS_CONFIG: Record<string, { icon: React.ElementType; color: string; bg
 const FMT = (v: number | null | undefined) =>
   v == null ? "—" : `INR ${v.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
-export default function ReviewPanel({ taskId, filename, onClose, onAccepted }: {
-  taskId: string; filename: string; onClose: () => void; onAccepted?: () => void;
+export default function ReviewPanel({ taskId, filename, batchId, onClose, onAccepted }: {
+  taskId: string; filename: string; batchId?: string; onClose: () => void; onAccepted?: () => void;
 }) {
   const [data, setData] = useState<ReviewResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [accepting, setAccepting] = useState(false);
   const [accepted, setAccepted] = useState(false);
   const [error, setError] = useState("");
+  const [pdfUrl, setPdfUrl] = useState<string | null>(null);
+  const [pdfLoading, setPdfLoading] = useState(false);
+  const [pdfError, setPdfError] = useState(false);
 
   const fetchReview = useCallback(async () => {
     setLoading(true); setError("");
@@ -94,6 +97,30 @@ export default function ReviewPanel({ taskId, filename, onClose, onAccepted }: {
   }, [taskId]);
 
   useEffect(() => { fetchReview(); }, [fetchReview]);
+
+  // Load source PDF when batchId + filename are available
+  useEffect(() => {
+    if (!batchId || !filename) return;
+    setPdfLoading(true); setPdfError(false);
+    const token = localStorage.getItem("token");
+    fetch(`${API_BASE_URL}/api/jobs/${batchId}/files/${encodeURIComponent(filename)}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    })
+      .then((r) => {
+        if (!r.ok) throw new Error("not found");
+        return r.blob();
+      })
+      .then((blob) => {
+        const url = URL.createObjectURL(blob);
+        setPdfUrl(url);
+      })
+      .catch(() => setPdfError(true))
+      .finally(() => setPdfLoading(false));
+    return () => {
+      // cleanup blob URL on unmount / filename change
+      setPdfUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return null; });
+    };
+  }, [batchId, filename]);
 
   const handleAccept = async () => {
     setAccepting(true);
@@ -115,9 +142,46 @@ export default function ReviewPanel({ taskId, filename, onClose, onAccepted }: {
   const StatusIcon = statusCfg.icon;
   const report = data?.recon_report;
 
+  const hasPdf = batchId && (pdfUrl || pdfLoading || pdfError);
+
   return (
     <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.65)", backdropFilter: "blur(4px)", zIndex: 1000, display: "flex", alignItems: "stretch", justifyContent: "flex-end" }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ width: "min(520px, 95vw)", height: "100vh", background: "var(--surface, #0f0f1a)", borderLeft: "1px solid rgba(255,255,255,0.08)", display: "flex", flexDirection: "column", overflow: "hidden", animation: "slideInRight 0.25s ease" }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ width: hasPdf ? "min(1100px, 98vw)" : "min(520px, 95vw)", height: "100vh", background: "var(--surface, #0f0f1a)", borderLeft: "1px solid rgba(255,255,255,0.08)", display: "flex", flexDirection: "row", overflow: "hidden", animation: "slideInRight 0.25s ease" }}>
+
+        {/* ── Left pane: Source PDF ── */}
+        {hasPdf && (
+          <div style={{ flex: "0 0 60%", borderRight: "1px solid rgba(255,255,255,0.08)", display: "flex", flexDirection: "column", background: "#0a0a12" }}>
+            <div style={{ padding: "12px 16px", borderBottom: "1px solid rgba(255,255,255,0.07)", display: "flex", alignItems: "center", gap: 8, background: "rgba(0,0,0,0.3)" }}>
+              <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text-muted, #888)", fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>
+                📄 {filename}
+              </span>
+              {pdfUrl && (
+                <a href={pdfUrl} download={filename} style={{ fontSize: 11, color: "#6366f1", textDecoration: "none", fontWeight: 600, flexShrink: 0 }}>↓ Download</a>
+              )}
+            </div>
+            <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
+              {pdfLoading && (
+                <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10, color: "var(--text-muted, #888)" }}>
+                  <Loader2 size={28} className="animate-spin" />
+                  <span style={{ fontSize: 13 }}>Loading source document…</span>
+                </div>
+              )}
+              {pdfError && (
+                <div style={{ textAlign: "center", color: "var(--text-muted, #888)", padding: 32 }}>
+                  <div style={{ fontSize: 32, marginBottom: 12 }}>📂</div>
+                  <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6 }}>PDF not available</div>
+                  <div style={{ fontSize: 12 }}>This file was processed in an older session and has been cleaned from the server.<br />Re-upload to view it here.</div>
+                </div>
+              )}
+              {pdfUrl && !pdfLoading && (
+                <iframe src={pdfUrl} width="100%" height="100%" style={{ border: "none", display: "block" }} title={filename} />
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ── Right pane: Recon report ── */}
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
         <div style={{ padding: "20px 24px", borderBottom: "1px solid rgba(255,255,255,0.07)", display: "flex", alignItems: "center", justifyContent: "space-between", background: statusCfg.bg }}>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <div style={{ width: 40, height: 40, borderRadius: 10, background: statusCfg.bg, border: `1px solid ${statusCfg.border}`, display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -131,9 +195,11 @@ export default function ReviewPanel({ taskId, filename, onClose, onAccepted }: {
           <button onClick={onClose} style={{ background: "transparent", border: "none", cursor: "pointer", color: "var(--text-muted, #888)", padding: 6 }}><X size={20} /></button>
         </div>
 
-        <div style={{ padding: "10px 24px", borderBottom: "1px solid rgba(255,255,255,0.06)", fontSize: 12, color: "var(--text-muted, #888)", fontFamily: "monospace", background: "rgba(0,0,0,0.2)" }}>
-          {filename}
-        </div>
+        {!hasPdf && (
+          <div style={{ padding: "10px 24px", borderBottom: "1px solid rgba(255,255,255,0.06)", fontSize: 12, color: "var(--text-muted, #888)", fontFamily: "monospace", background: "rgba(0,0,0,0.2)" }}>
+            {filename}
+          </div>
+        )}
 
         <div style={{ flex: 1, overflowY: "auto", padding: "20px 24px", display: "flex", flexDirection: "column", gap: 20 }}>
           {loading && <div style={{ display: "flex", alignItems: "center", gap: 10, color: "var(--text-muted, #888)" }}><Loader2 size={18} className="animate-spin" /><span style={{ fontSize: 13 }}>Loading reconciliation report...</span></div>}
@@ -237,6 +303,7 @@ export default function ReviewPanel({ taskId, filename, onClose, onAccepted }: {
             Correction accepted and marked as <strong style={{ color: "#a78bfa", marginLeft: 4 }}>Human Corrected</strong>
           </div>
         )}
+        </div>{/* end right pane */}
       </div>
 
       <style>{`@keyframes slideInRight { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }`}</style>

@@ -1,0 +1,49 @@
+{
+  "_comment": "Minimal GSTR-2B fixture for matching regression tests. Shape A (portal download format).",
+  "data": {
+    "docdata": {
+      "b2b": [
+        {
+          "ctin": "27DDDDD4444D4Z4",
+          "inv": [
+            {
+              "inum": "PURCH/2024/007",
+              "dt": "10-05-2024",
+              "val": 1014800.0,
+              "itms": [
+                {
+                  "itm_det": {
+                    "txval": 860000.0,
+                    "cgst": 77400.0,
+                    "sgst": 77400.0,
+                    "igst": 0.0
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "ctin": "27EEEEE5555E5Z5",
+          "inv": [
+            {
+              "inum": "EXT/2024/099",
+              "dt": "20-05-2024",
+              "val": 59000.0,
+              "itms": [
+                {
+                  "itm_det": {
+                    "txval": 50000.0,
+                    "cgst": 4500.0,
+                    "sgst": 4500.0,
+                    "igst": 0.0
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

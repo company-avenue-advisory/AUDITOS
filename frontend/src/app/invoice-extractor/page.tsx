@@ -1,8 +1,9 @@
 "use client";
 
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, useMemo } from "react";
 import { ChevronLeft } from "lucide-react";
 import ReviewPanel from "@/components/ReviewPanel";
+import { useSessionSync, clearActiveSession } from "@/utils/sessionSync";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -31,12 +32,24 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
   const [batchMetrics, setBatchMetrics] = useState<any>(null);
   const [batchFlags, setBatchFlags] = useState<any[]>([]);
   const [tasksMeta, setTasksMeta] = useState<any[]>([]);
+  const [duplicates, setDuplicates] = useState<{ within_batch: any[]; cross_batch: any[]; total_duplicates: number; critical_count: number } | null>(null);
+  const [selectedPdfFilename, setSelectedPdfFilename] = useState<string | null>(null);
   const [activeOursTab, setActiveOursTab] = useState<"ledger" | "observability">("ledger");
   const [traceTaskId, setTraceTaskId] = useState<string | null>(null);
   const [traceEvents, setTraceEvents] = useState<any[]>([]);
   const [isTraceLoading, setIsTraceLoading] = useState(false);
   // Phase 4A: Review Panel state
   const [reviewTask, setReviewTask] = useState<{ taskId: string; filename: string } | null>(null);
+
+  // Auto-save session state so users can resume across devices/interfaces
+  const sessionState = useMemo(() => ({
+    active_batch_id: batchId,
+    active_page: "invoice-extractor",
+    selected_invoice_type: type ?? undefined,
+    selected_model: model,
+  }), [batchId, type, model]);
+
+  useSessionSync(sessionState, !!batchId);
 
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -267,6 +280,8 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
       const uploadData = await res.json();
       const activeBatchId = uploadData.batch_id;
       setBatchId(activeBatchId);
+      // Clear any previous session so the new batch becomes the resume target
+      clearActiveSession();
 
       // Connect via WebSocket for real-time progress
       const wsUrl = API_BASE_URL.replace(/^http/, "ws") + `/api/ws/jobs/${activeBatchId}`;
@@ -303,6 +318,17 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
               
               const errors = statusData.tasks?.filter((t: any) => t.status === "FAILED" && t.error_message).map((t: any) => `${t.filename}: ${t.error_message}`) || [];
               setTaskErrors(errors);
+
+              // Duplicate invoice check
+              try {
+                const dupRes = await fetch(`${API_BASE_URL}/api/jobs/${activeBatchId}/duplicates`, {
+                  headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+                });
+                if (dupRes.ok) {
+                  const dupData = await dupRes.json();
+                  if (dupData.has_duplicates) setDuplicates(dupData);
+                }
+              } catch { /* non-fatal */ }
             }
             
             setTimeout(() => {
@@ -355,18 +381,51 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
     return totalRows > 0 ? Math.round((validRows / totalRows) * 100) : 0;
   };
 
-  const handlePdfClick = async (url: string) => {
+  const handlePdfClick = async (url: string, filenameHint?: string) => {
     if (selectedPdf && selectedPdf.startsWith("blob:")) {
       URL.revokeObjectURL(selectedPdf);
     }
+    // Extract filename from URL if not provided
+    const fname = filenameHint || decodeURIComponent(url.split("/").pop() || "");
+    setSelectedPdfFilename(fname);
     try {
-      const res = await fetch(url);
+      const token = localStorage.getItem("token");
+      const res = await fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
       if (!res.ok) throw new Error("Failed to load PDF");
       const blob = await res.blob();
       const objUrl = URL.createObjectURL(blob);
       setSelectedPdf(objUrl);
     } catch (error) {
       console.error("Failed to fetch PDF", error);
+    }
+  };
+
+  const handleDownloadGSTR1 = async () => {
+    if (!batchId) {
+      alert("No active batch to download.");
+      return;
+    }
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/export/${batchId}/gstr1`, {
+        headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: "Export failed" }));
+        throw new Error(err.detail || "Export failed");
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      const cd = res.headers.get("Content-Disposition") || "";
+      const match = cd.match(/filename=([^\s;]+)/);
+      a.download = match ? match[1] : "GSTR1.json";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e: any) {
+      alert("Error downloading GSTR-1 JSON: " + e.message);
     }
   };
 
@@ -408,6 +467,8 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
     setSalesItems([]);
     setPurchaseItems([]);
     setTaskErrors([]);
+    setDuplicates(null);
+    setSelectedPdfFilename(null);
     setStep(1);
   };
 
@@ -1126,7 +1187,7 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
                             };
 
                             return (
-                              <tr key={idx} style={{ transition: "background 0.2s", cursor: "pointer" }} onMouseEnter={(e) => e.currentTarget.style.background = "rgba(0,0,0,0.02)"} onMouseLeave={(e) => e.currentTarget.style.background = "transparent"} onClick={(e) => { if ((e.target as HTMLElement).tagName !== "INPUT" && (e.target as HTMLElement).tagName !== "SELECT" && (e.target as HTMLElement).tagName !== "OPTION") handlePdfClick(`${API_BASE_URL}/api/jobs/${batchId}/files/${encodeURIComponent(row.filename)}`); }}>
+                              <tr key={idx} style={{ transition: "background 0.2s", cursor: "pointer" }} onMouseEnter={(e) => e.currentTarget.style.background = "rgba(0,0,0,0.02)"} onMouseLeave={(e) => e.currentTarget.style.background = "transparent"} onClick={(e) => { if ((e.target as HTMLElement).tagName !== "INPUT" && (e.target as HTMLElement).tagName !== "SELECT" && (e.target as HTMLElement).tagName !== "OPTION") handlePdfClick(`${API_BASE_URL}/api/jobs/${batchId}/files/${encodeURIComponent(row.filename)}`, row.filename); }}>
                                 {renderCell("party_gstin", row.party_gstin)}
                                 {isFullScreen && renderCell("party_ac_name", row.party_ac_name)}
                                 {renderCell("invoice_no", row.invoice_no)}
@@ -1168,9 +1229,12 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
                       
                       {selectedPdf && (
                         <div style={{ flex: "0 0 48%", height: "600px", borderRadius: "8px", overflow: "hidden", border: "1px solid var(--border)", display: "flex", flexDirection: "column" }}>
-                          <div style={{ padding: "8px 12px", background: "var(--bg-card)", borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                              <span style={{ fontSize: 13, fontWeight: 500 }}>Source Document</span>
-                              <button onClick={() => { if (selectedPdf && selectedPdf.startsWith("blob:")) URL.revokeObjectURL(selectedPdf); setSelectedPdf(null); }} style={{ background: "transparent", border: "none", color: "var(--text-secondary)", cursor: "pointer", fontSize: 16 }}>✕</button>
+                          <div style={{ padding: "8px 12px", background: "var(--bg-card)", borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                              <span style={{ fontSize: 12, fontWeight: 500, color: "var(--text-secondary)", fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }} title={selectedPdfFilename || ""}>
+                                📄 {selectedPdfFilename || "Source Document"}
+                              </span>
+                              <a href={selectedPdf!} download={selectedPdfFilename || "invoice.pdf"} style={{ fontSize: 11, color: "#6366f1", fontWeight: 600, textDecoration: "none", flexShrink: 0 }}>↓</a>
+                              <button onClick={() => { if (selectedPdf && selectedPdf.startsWith("blob:")) URL.revokeObjectURL(selectedPdf); setSelectedPdf(null); setSelectedPdfFilename(null); }} style={{ background: "transparent", border: "none", color: "var(--text-secondary)", cursor: "pointer", fontSize: 16, flexShrink: 0 }}>✕</button>
                           </div>
                           <iframe src={selectedPdf} width="100%" height="100%" style={{ border: "none", flex: 1 }} />
                         </div>
@@ -1200,6 +1264,41 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
                   <div className="done-sub">
                     {files.length || tasksMeta.length} file{(files.length || tasksMeta.length) !== 1 ? "s" : ""} processed. Download your Suvit-ready sheets below.
                   </div>
+
+                  {/* ── Duplicate invoice warning ── */}
+                  {duplicates && duplicates.total_duplicates > 0 && (
+                    <div style={{
+                      margin: "0 0 20px",
+                      borderRadius: 10,
+                      border: `1px solid ${duplicates.critical_count > 0 ? "rgba(239,68,68,0.35)" : "rgba(245,158,11,0.35)"}`,
+                      background: duplicates.critical_count > 0 ? "rgba(239,68,68,0.07)" : "rgba(245,158,11,0.07)",
+                      padding: "14px 18px",
+                    }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                        <span style={{ fontSize: 16 }}>{duplicates.critical_count > 0 ? "🔴" : "🟡"}</span>
+                        <span style={{ fontWeight: 700, fontSize: 13, color: duplicates.critical_count > 0 ? "#ef4444" : "#f59e0b" }}>
+                          {duplicates.critical_count > 0
+                            ? `${duplicates.critical_count} invoice(s) found in previous batches — possible double-count`
+                            : `${duplicates.total_duplicates} duplicate invoice(s) detected in this batch`}
+                        </span>
+                      </div>
+                      {duplicates.cross_batch.slice(0, 3).map((d: any, i: number) => (
+                        <div key={i} style={{ fontSize: 12, color: "var(--text-secondary)", marginBottom: 4, paddingLeft: 24 }}>
+                          ✗ <strong>{d.invoice_no}</strong> {d.party_gstin ? `· ${d.party_gstin}` : ""} — also in batch <code style={{ fontSize: 11, background: "rgba(255,255,255,0.07)", padding: "1px 5px", borderRadius: 4 }}>{d.other_batch_id?.slice(0,8)}…</code>
+                        </div>
+                      ))}
+                      {duplicates.within_batch.slice(0, 3).map((d: any, i: number) => (
+                        <div key={i} style={{ fontSize: 12, color: "var(--text-secondary)", marginBottom: 4, paddingLeft: 24 }}>
+                          ⚠ <strong>{d.invoice_no}</strong> appears {d.count}× in this batch ({d.occurrences.map((o: any) => o.filename).join(", ")})
+                        </div>
+                      ))}
+                      {duplicates.total_duplicates > 3 && (
+                        <div style={{ fontSize: 11, color: "var(--text-muted)", paddingLeft: 24, marginTop: 4 }}>
+                          +{duplicates.total_duplicates - 3} more. Review before exporting to avoid double-counted GST liability.
+                        </div>
+                      )}
+                    </div>
+                  )}
 
                   <div className="download-btns">
                     <div style={{ display: "flex", justifyContent: "center", marginBottom: "16px", gap: "12px", alignItems: "center" }}>
@@ -1242,6 +1341,18 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
                           <div>
                             <div className="dl-btn-title">Suvit_Sales_Upload.xlsx</div>
                             <div className="dl-btn-sub">Tables 4 · 5 · 7 · 9B · 12</div>
+                          </div>
+                        </div>
+                        <span className="dl-btn-arrow">↓</span>
+                      </button>
+                    )}
+                    {salesItems.length > 0 && (
+                      <button className="dl-btn secondary" onClick={handleDownloadGSTR1}>
+                        <div className="dl-btn-left">
+                          <span className="dl-btn-icon">🏛</span>
+                          <div>
+                            <div className="dl-btn-title">GSTR-1 JSON</div>
+                            <div className="dl-btn-sub">Portal-ready · B2B · B2CS · B2CL · HSN</div>
                           </div>
                         </div>
                         <span className="dl-btn-arrow">↓</span>
@@ -1427,6 +1538,15 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
                                       onClick={() => setReviewTask({ taskId: task.task_id, filename: task.filename })}
                                     >
                                       🔎 Audit Review
+                                    </button>
+                                  )}
+                                  {task.filename && batchId && (
+                                    <button
+                                      className="nav-pill"
+                                      style={{ borderColor: "#22d3ee", color: "#22d3ee", background: "rgba(34,211,238,0.05)", fontSize: 12, cursor: "pointer", padding: "6px 12px", borderRadius: 4 }}
+                                      onClick={() => handlePdfClick(`${API_BASE_URL}/api/jobs/${batchId}/files/${encodeURIComponent(task.filename)}`, task.filename)}
+                                    >
+                                      📄 View PDF
                                     </button>
                                   )}
                                   <button
@@ -1649,6 +1769,7 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
         <ReviewPanel
           taskId={reviewTask.taskId}
           filename={reviewTask.filename}
+          batchId={batchId ?? undefined}
           onClose={() => setReviewTask(null)}
           onAccepted={() => {
             // Refresh tasks meta to update recon badge

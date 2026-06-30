@@ -2,6 +2,7 @@ from sqlalchemy import Column, String, DateTime, Integer, Enum, Float, ForeignKe
 from sqlalchemy.orm import relationship
 import enum
 from datetime import datetime
+from uuid import uuid4
 from database import Base
 
 class TaskStatus(str, enum.Enum):
@@ -10,16 +11,37 @@ class TaskStatus(str, enum.Enum):
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
 
+# ── Multi-Tenant Model ────────────────────────────────────────────────────────
+
+class Tenant(Base):
+    """
+    Top-level org/firm record. Every user and every batch belongs to a tenant.
+    A CA firm onboarding as a client gets one Tenant row.
+    """
+    __tablename__ = "tenants"
+
+    id         = Column(String, primary_key=True, default=lambda: str(uuid4()))
+    name       = Column(String, nullable=False)
+    slug       = Column(String, unique=True, nullable=False, index=True)  # e.g. "sharma-associates"
+    is_active  = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    users = relationship("User", back_populates="tenant")
+    batches = relationship("BatchJob", back_populates="tenant")
+
+
 class BatchJob(Base):
     __tablename__ = "batch_jobs"
-    
-    id = Column(String, primary_key=True, index=True)
+
+    id         = Column(String, primary_key=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
-    total_files = Column(Integer, default=0)
-    status = Column(Enum(TaskStatus), default=TaskStatus.PENDING)
-    user_id = Column(String, ForeignKey("users.id"), nullable=True)
-    
-    tasks = relationship("InvoiceTask", back_populates="batch", cascade="all, delete-orphan")
+    total_files= Column(Integer, default=0)
+    status     = Column(Enum(TaskStatus), default=TaskStatus.PENDING)
+    user_id    = Column(String, ForeignKey("users.id"), nullable=True)
+    tenant_id  = Column(String, ForeignKey("tenants.id"), nullable=True, index=True)
+
+    tasks  = relationship("InvoiceTask", back_populates="batch", cascade="all, delete-orphan")
+    tenant = relationship("Tenant", back_populates="batches")
 
 class InvoiceTask(Base):
     __tablename__ = "invoice_tasks"
@@ -105,6 +127,7 @@ class ObservabilityLog(Base):
     __tablename__ = "observability_logs"
 
     id               = Column(Integer, primary_key=True, autoincrement=True)
+    tenant_id        = Column(String, index=True, nullable=True)   # for per-tenant cost aggregation
     # Correlation IDs — mandatory on every row
     batch_id         = Column(String, index=True, nullable=False)
     file_id          = Column(String, index=True, nullable=True)   # null for batch-level events
@@ -142,4 +165,124 @@ class User(Base):
     role            = Column(String, default="auditor", nullable=False)  # owner | hr | auditor | other
     is_active       = Column(Boolean, default=True, nullable=False)
     created_at      = Column(DateTime, default=datetime.utcnow, nullable=False)
+    tenant_id       = Column(String, ForeignKey("tenants.id"), nullable=True, index=True)
+
+    tenant = relationship("Tenant", back_populates="users")
+
+
+# ── Session Persistence Layer ─────────────────────────────────────────────────
+
+class UserSession(Base):
+    """
+    One row per user. Upserted on every meaningful UI action.
+    Enables "resume where you left off" across devices and interfaces.
+    """
+    __tablename__ = "user_sessions"
+
+    id                   = Column(String, primary_key=True, default=lambda: str(uuid4()))
+    user_id              = Column(String, ForeignKey("users.id"), nullable=False, unique=True, index=True)
+    active_batch_id      = Column(String, ForeignKey("batch_jobs.id"), nullable=True)
+    active_task_id       = Column(String, nullable=True)
+    active_page          = Column(String, nullable=True)       # e.g. "invoice-extractor"
+    selected_invoice_type= Column(String, nullable=True)       # sales | purchase | both
+    selected_model       = Column(String, nullable=True)       # auto | groq | gemini | ...
+    scroll_position      = Column(Integer, default=0)
+    context_blob         = Column(Text, nullable=True)         # JSON: extra UI state
+    updated_at           = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class UserPreferences(Base):
+    """
+    Per-user settings that follow them across devices.
+    """
+    __tablename__ = "user_preferences"
+
+    user_id              = Column(String, ForeignKey("users.id"), primary_key=True)
+    theme                = Column(String, default="dark")
+    default_invoice_type = Column(String, default="both")
+    default_model        = Column(String, default="auto")
+    default_export_schema= Column(String, default="standard")
+    updated_at           = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class UserAnnotation(Base):
+    """
+    Field-level notes and corrections made by auditors during review.
+    Append-only — each edit is a new row (before/after values preserved).
+    """
+    __tablename__ = "user_annotations"
+
+    id             = Column(String, primary_key=True, default=lambda: str(uuid4()))
+    user_id        = Column(String, ForeignKey("users.id"), nullable=False, index=True)
+    task_id        = Column(String, ForeignKey("invoice_tasks.id"), nullable=False, index=True)
+    field_name     = Column(String, nullable=False)
+    note           = Column(Text, nullable=True)
+    original_value = Column(Text, nullable=True)
+    corrected_value= Column(Text, nullable=True)
+    created_at     = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+# ── Google Drive Sync ──────────────────────────────────────────────────────
+
+class GoogleDriveFileTracker(Base):
+    """
+    Single source of truth for processed Google Drive files.
+    Tracks file metadata to detect new/changed files.
+    """
+    __tablename__ = "google_drive_file_tracker"
+
+    id                   = Column(String, primary_key=True)  # Google Drive file ID
+    tenant_id            = Column(String, ForeignKey("tenants.id"), nullable=False, index=True)
+    google_drive_id      = Column(String, nullable=False, unique=True, index=True)  # Immutable Drive ID
+    md5_checksum         = Column(String, nullable=False)    # File content hash
+    modified_time        = Column(DateTime, nullable=False)  # Drive's modifiedTime
+    filename             = Column(String, nullable=False)
+    mime_type            = Column(String, nullable=True)
+    processing_status    = Column(String, default="pending")  # pending | processing | completed | failed
+    error_message        = Column(Text, nullable=True)
+    task_id              = Column(String, ForeignKey("invoice_tasks.id"), nullable=True)  # Link to extracted task
+    excel_row_id         = Column(Integer, nullable=True)     # Which row in Excel output
+    processed_at         = Column(DateTime, nullable=True)
+    created_at           = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at           = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class GoogleDriveSyncJob(Base):
+    """
+    Log entry for each monthly sync run.
+    Tracks sync history for auditing.
+    """
+    __tablename__ = "google_drive_sync_jobs"
+
+    id               = Column(String, primary_key=True, default=lambda: str(uuid4()))
+    tenant_id        = Column(String, ForeignKey("tenants.id"), nullable=False, index=True)
+    sync_timestamp   = Column(DateTime, default=datetime.utcnow, nullable=False)
+    total_files_found = Column(Integer, default=0)
+    new_files        = Column(Integer, default=0)
+    updated_files    = Column(Integer, default=0)
+    processed_files  = Column(Integer, default=0)
+    failed_files     = Column(Integer, default=0)
+    status           = Column(String, default="in_progress")  # in_progress | completed | failed
+    error_message    = Column(Text, nullable=True)
+    excel_output_path = Column(String, nullable=True)
+    completed_at     = Column(DateTime, nullable=True)
+
+
+class GoogleDriveWebhookChannel(Base):
+    """
+    Track active Google Drive watch channels for real-time sync.
+    Channels expire and must be renewed every ~1 hour.
+    """
+    __tablename__ = "google_drive_webhook_channels"
+
+    id               = Column(String, primary_key=True)
+    tenant_id        = Column(String, ForeignKey("tenants.id"), nullable=False, index=True)
+    folder_id        = Column(String, nullable=False, index=True)
+    channel_id       = Column(String, nullable=False, unique=True, index=True)
+    resource_id      = Column(String, nullable=False)
+    expires_at       = Column(DateTime, nullable=False)
+    status           = Column(String, default="active")  # active | renewal_needed | expired
+    created_at       = Column(DateTime, default=datetime.utcnow, nullable=False)
+    renewed_at       = Column(DateTime, nullable=True)
+    last_notification_at = Column(DateTime, nullable=True)
 

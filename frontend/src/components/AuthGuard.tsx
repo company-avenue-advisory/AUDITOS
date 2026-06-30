@@ -3,6 +3,7 @@
 import React, { useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import Sidebar from "./Sidebar";
+import { fetchActiveSession, clearActiveSession, type ResumableSession } from "../utils/sessionSync";
 
 // Setup global fetch interceptor
 if (typeof window !== "undefined") {
@@ -42,6 +43,8 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
   const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null);
+  const [resumeSession, setResumeSession] = useState<ResumableSession | null>(null);
+  const [toastDismissed, setToastDismissed] = useState(false);
 
   useEffect(() => {
     const token = localStorage.getItem("token");
@@ -54,6 +57,16 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
       setIsAuthenticated(true);
       if (pathname === "/login") {
         router.replace("/");
+      } else if (pathname === "/" || pathname === "/dashboard") {
+        // Only show resume prompt on dashboard, not mid-session pages
+        fetchActiveSession().then((session) => {
+          if (
+            session?.active_batch_id &&
+            (session.batch_status === "PROCESSING" || session.batch_status === "COMPLETED")
+          ) {
+            setResumeSession(session);
+          }
+        });
       }
     }
   }, [pathname, router]);
@@ -116,6 +129,17 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
     return <div style={{ width: "100%", minHeight: "100vh" }}>{children}</div>;
   }
 
+  const handleResume = () => {
+    if (!resumeSession?.active_batch_id) return;
+    setToastDismissed(true);
+    router.push(`/invoice-extractor?batchId=${resumeSession.active_batch_id}`);
+  };
+
+  const handleDismissResume = () => {
+    setToastDismissed(true);
+    clearActiveSession();
+  };
+
   return (
     <>
       <Sidebar />
@@ -131,6 +155,76 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
       >
         {children}
       </div>
+
+      {/* Resume toast */}
+      {resumeSession && !toastDismissed && (
+        <div
+          style={{
+            position: "fixed",
+            bottom: 24,
+            right: 24,
+            zIndex: 9999,
+            background: "rgba(15,15,25,0.95)",
+            border: "1px solid rgba(129,140,248,0.3)",
+            borderRadius: 12,
+            padding: "14px 18px",
+            display: "flex",
+            flexDirection: "column",
+            gap: 10,
+            maxWidth: 320,
+            boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
+            backdropFilter: "blur(12px)",
+            fontFamily: "var(--font-inter), sans-serif",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+            <div style={{ fontSize: 18, lineHeight: 1 }}>📋</div>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: "#f5f5f7", marginBottom: 2 }}>
+                Resume last audit?
+              </div>
+              <div style={{ fontSize: 12, color: "#9ca3af" }}>
+                {resumeSession.batch_total_files
+                  ? `${resumeSession.batch_total_files} invoice${resumeSession.batch_total_files > 1 ? "s" : ""}`
+                  : "Batch"}{" "}
+                · {resumeSession.batch_status === "COMPLETED" ? "Ready for review" : "In progress"}
+              </div>
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button
+              onClick={handleResume}
+              style={{
+                flex: 1,
+                padding: "6px 12px",
+                background: "rgba(99,102,241,0.15)",
+                border: "1px solid rgba(99,102,241,0.4)",
+                borderRadius: 6,
+                color: "#a5b4fc",
+                fontSize: 12,
+                fontWeight: 600,
+                cursor: "pointer",
+              }}
+            >
+              Resume
+            </button>
+            <button
+              onClick={handleDismissResume}
+              style={{
+                padding: "6px 10px",
+                background: "transparent",
+                border: "1px solid rgba(255,255,255,0.1)",
+                borderRadius: 6,
+                color: "#6b7280",
+                fontSize: 12,
+                cursor: "pointer",
+              }}
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
     </>
   );
 }

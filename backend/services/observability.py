@@ -83,11 +83,12 @@ class ObsLogger:
     """
 
     def __init__(self, batch_id: str, file_id: str, model_identifier: str,
-                 api_provider: str, db_session=None):
+                 api_provider: str, db_session=None, tenant_id: str = None):
         self.batch_id         = batch_id
         self.file_id          = file_id
         self.model_identifier = model_identifier
         self.api_provider     = api_provider
+        self.tenant_id        = tenant_id
         self.prompt_version   = get_prompt_version()
         self._db              = db_session
         self._stage_timings: dict = {}
@@ -115,6 +116,7 @@ class ObsLogger:
         db = self._db or SessionLocal()
         try:
             log = ObservabilityLog(
+                tenant_id        = self.tenant_id,
                 batch_id         = self.batch_id,
                 file_id          = file_id_override or self.file_id,
                 event_type       = event_type,

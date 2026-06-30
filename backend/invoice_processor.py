@@ -467,7 +467,7 @@ def process_pdf(pdf_path, model_override=None, invoice_type="both", logger=None)
         task_id=run_id,
         tenant_id="tenant_default",
         firm_id="firm_default",
-        provider=model_override.get("provider") if model_override else ("groq" if os.getenv("GROQ_API_KEY") else "google_native"),
+        provider=model_override.get("provider") if model_override else ("gemini" if os.getenv("GEMINI_API_KEY") else ("groq" if os.getenv("GROQ_API_KEY") else "google_native")),
         model=model_name,
         temperature=0.0,
         prompt_version="1.0.0",
@@ -571,28 +571,59 @@ def process_pdf(pdf_path, model_override=None, invoice_type="both", logger=None)
         "gst_rates_snapped": 0,
         "taxes_recalculated": 0,
         "unallocated_rows_injected": 0,
-        "unallocated_row_details": {}
+        "unallocated_row_details": {},
+        "tax_type_ambiguous_fallback": False,
     }
     
+    # Detect export invoice from full text (LUT / zero-rated supply markers)
+    # NOTE: "lut" is 3 chars and appears inside common words like "solution", "absolute", etc.
+    # Use phrase markers for everything except LUT which requires a word-boundary check.
+    _export_phrases = [
+        "export invoice", "letter of undertaking", "without payment of integrated",
+        "without payment of igst", "zero-rated supply", "zero rated supply",
+    ]
+    _ft_lower = full_text.lower()
+    _is_export_invoice = (
+        any(m in _ft_lower for m in _export_phrases)
+        or bool(re.search(r'\blut\b', _ft_lower))
+    )
+
     if all_res.sales_items:
         # Detect subtotal rows dropped
         orig_len = len(all_res.sales_items)
         cleaned_sales = remove_subtotals(all_res.sales_items)
         dropped = orig_len - len(cleaned_sales)
         correction_meta["subtotal_rows_dropped"] = dropped
-        
+
         # Ensure taxable_value reflects post-discount net
         cleaned_sales = _correct_taxable_values(cleaned_sales)
 
-        # Apply QC Audit
+        # Apply QC Audit (EXPORT tag preserved inside qc_audit_sales_items)
         cleaned_sales = qc_audit_sales_items(cleaned_sales)
+
+        # Force EXPORT category + zero taxes AFTER QC audit (final override for LUT invoices)
+        if _is_export_invoice:
+            for item in cleaned_sales:
+                item.cgst_amount = 0.0
+                item.sgst_amount = 0.0
+                item.igst_amount = 0.0
+                item.total_invoice_value = round(item.taxable_value or 0.0, 2)
+                item.gstr1_category = "EXPORT"
+            all_res.overall_cgst_amount = 0.0
+            all_res.overall_sgst_amount = 0.0
+            all_res.overall_igst_amount = 0.0
+            all_res.overall_total_invoice_value = all_res.overall_taxable_value
 
         # Unallocated variance injection
         overall_total = all_res.overall_total_invoice_value
         sum_total = sum((item.taxable_value or 0.0) + (item.cgst_amount or 0.0) + (item.sgst_amount or 0.0) + (item.igst_amount or 0.0) for item in cleaned_sales)
         diff = overall_total - sum_total
-        
-        if overall_total > 0 and diff > 1.0:
+
+        # Skip phantom injection when diff ≈ tax on existing items (items extracted without per-line taxes)
+        _sum_taxable = sum(item.taxable_value or 0.0 for item in cleaned_sales)
+        _diff_is_just_tax = any(abs(diff - _sum_taxable * r) < 5.0 for r in (0.18, 0.12, 0.05, 0.28))
+
+        if overall_total > 0 and diff > 1.0 and not _diff_is_just_tax:
             taxable_diff = round(diff / 1.18, 2)
             is_interstate = (cleaned_sales[0].igst_amount or 0) > 0 if cleaned_sales else False
             
@@ -617,11 +648,72 @@ def process_pdf(pdf_path, model_override=None, invoice_type="both", logger=None)
             }
             
         # Math verification agent (GST snaps / recalculations)
-        # Determine interstate from invoice-level totals — per-item detection fails when
-        # line items carry 0 tax (e.g. advance-deducted invoices like Digitap/OneStack).
-        overall_is_interstate = (all_res.overall_igst_amount or 0.0) > (
-            (all_res.overall_cgst_amount or 0.0) + (all_res.overall_sgst_amount or 0.0)
-        )
+        # Priority 1: auto-detect seller GSTIN from invoice text, derive state code.
+        # Priority 2: fall back to FIRM_GSTIN env var.
+        # Priority 3: fall back to invoice-level tax amounts (least reliable).
+        _GSTIN_RE = re.compile(r'\b([0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z])\b')
+
+        def _detect_seller_gstin(text: str, buyer_gstins: set) -> str:
+            """
+            Finds all GSTINs in the invoice text, removes buyer GSTINs,
+            returns the first remaining one (= seller's GSTIN).
+            """
+            found = _GSTIN_RE.findall(text.upper())
+            for g in found:
+                if g not in buyer_gstins:
+                    return g
+            return ""
+
+        def _interstate_from_gstin(items, firm_gstin: str):
+            firm_state = firm_gstin[:2] if len(firm_gstin) >= 2 and firm_gstin[:2].isdigit() else None
+            if not firm_state:
+                return None
+            for it in items:
+                buyer = str(it.party_gstin or "").strip()
+                if len(buyer) >= 2 and buyer[:2].isdigit():
+                    return buyer[:2] != firm_state
+            return None
+
+        # Collect all buyer GSTINs from extracted items
+        _buyer_gstins = {
+            str(it.party_gstin or "").strip().upper()
+            for it in cleaned_sales
+            if it.party_gstin
+        }
+        # Try to auto-detect seller GSTIN from the invoice text
+        _seller_gstin = _detect_seller_gstin(full_text, _buyer_gstins)
+        if not _seller_gstin:
+            _seller_gstin = os.getenv("FIRM_GSTIN", "")
+
+        print(f"  [seller GSTIN] {_seller_gstin or 'unknown'}")
+        # Primary signal: trust the invoice's own printed tax columns.
+        # _extract_gst_summary_table already ran at the top of this function (gst_table).
+        # GSTIN state-code comparison is unreliable when the seller auto-detects the wrong
+        # GSTIN or issues from multiple-state entities — so use it only as a last resort.
+        _ex_cgst = gst_table.get('cgst_amount', 0.0) if gst_table else (all_res.overall_cgst_amount or 0.0)
+        _ex_sgst = gst_table.get('sgst_amount', 0.0) if gst_table else (all_res.overall_sgst_amount or 0.0)
+        _ex_igst = gst_table.get('igst_amount', 0.0) if gst_table else (all_res.overall_igst_amount or 0.0)
+
+        if _ex_igst > 0 and _ex_cgst == 0 and _ex_sgst == 0:
+            overall_is_interstate = True
+            print(f"  [interstate] IGST (from printed tax columns)")
+        elif (_ex_cgst > 0 or _ex_sgst > 0) and _ex_igst == 0:
+            overall_is_interstate = False
+            print(f"  [interstate] CGST+SGST (from printed tax columns)")
+        else:
+            # Ambiguous (all zero, or both non-zero) — fall back to GSTIN comparison
+            _gstin_result = _interstate_from_gstin(cleaned_sales, _seller_gstin)
+            if _gstin_result is not None:
+                overall_is_interstate = _gstin_result
+                print(f"  [interstate] {'IGST' if overall_is_interstate else 'CGST+SGST'} "
+                      f"(seller {_seller_gstin[:2]} vs buyer {next(iter(_buyer_gstins), '??')[:2]})")
+            else:
+                overall_is_interstate = (all_res.overall_igst_amount or 0.0) > (
+                    (all_res.overall_cgst_amount or 0.0) + (all_res.overall_sgst_amount or 0.0)
+                )
+            correction_meta["tax_type_ambiguous_fallback"] = True
+            _inv_no = cleaned_sales[0].invoice_no if cleaned_sales else "unknown"
+            print(f"  [interstate] AMBIGUOUS — falling back to GSTIN comparison (invoice {_inv_no})")
         pre_rates = [item.rate for item in cleaned_sales]
         pre_taxes = [(item.cgst_amount, item.sgst_amount, item.igst_amount) for item in cleaned_sales]
 
@@ -674,12 +766,18 @@ def deduplicate_purchase(df):
     df = df.drop_duplicates(subset=["SUPPLIER INV NO", "PARTY A/C NAME", "PARTICULARS", "AMOUNT"], keep="first")
     return df
 
+_SUBTOTAL_KEYWORDS = [
+    "sub total", "sub-total", "subtotal",
+    "grand total", "total amount", "net amount", "net cost",
+    "total cost", "amount payable", "balance due", "total payable",
+]
+
 def remove_subtotals(sales_items):
     cleaned_items = []
     current_group = []
     for item in sales_items:
         desc = str(item.particulars).lower()
-        if "sub total" in desc or "sub-total" in desc or "subtotal" in desc:
+        if any(k in desc for k in _SUBTOTAL_KEYWORDS):
             group_sum = sum(x.taxable_value or 0.0 for x in current_group)
             if abs(group_sum - (item.taxable_value or 0.0)) <= 2.0 and len(current_group) > 0:
                 # Drop the sub-total to avoid double counting, keep the granular items
@@ -732,7 +830,19 @@ def classify_gstr1_item(item, seller_gstin=None) -> str:
     
     # Export check
     pos = str(item.place_of_supply or "").upper()
-    is_export = "EXPORT" in pos or "OUTSIDE INDIA" in pos or "SEZ" in pos or "DUTY FREE" in pos
+    # Already tagged as EXPORT by upstream processing — honour it
+    _pre_tagged_export = str(item.gstr1_category or "").upper() in ("EXPORT", "EXP")
+    # Detect foreign country in place_of_supply:
+    #   "(FR)", "(US)", "(BE)", "(DE)" etc. — 2-letter alpha country codes in parens
+    import re as _re
+    _foreign_code = bool(_re.search(r'\(([A-Z]{2})\)', pos) and not _re.search(r'\(([A-Z]{2})\)', pos) is None
+                         and _re.search(r'\(([A-Z]{2})\)', pos).group(1) not in (
+                             "MH","DL","GJ","RJ","KA","TN","AP","TS","UP","MP","WB","PB","HR","BR",
+                             "OR","KL","AS","JK","GA","HP","MN","ML","MZ","NL","SK","TR","AR","CG",
+                             "JH","UK","CH","DD","DN","LD","PY","AN","LA","IN"
+                         ))
+    is_export = (_pre_tagged_export or "EXPORT" in pos or "OUTSIDE INDIA" in pos
+                 or "SEZ" in pos or "DUTY FREE" in pos or _foreign_code)
     
     # Interstate check
     is_interstate = False
@@ -812,8 +922,9 @@ def qc_audit_sales_items(sales_items):
             if not assigned:
                 item.hsn = "9971"
         
-        # Apply GSTR-1 category classification
-        item.gstr1_category = classify_gstr1_item(item)
+        # Apply GSTR-1 category classification (preserve if already correctly tagged as EXPORT/SEZ)
+        if str(item.gstr1_category or "").upper() not in ("EXPORT", "EXP", "SEZ", "NIL_EXEMPT"):
+            item.gstr1_category = classify_gstr1_item(item)
         valid_items.append(item)
     return valid_items
 
@@ -829,6 +940,14 @@ def math_verification_agent(sales_items, is_interstate: bool = None):
         taxable = item.taxable_value or 0.0
         if taxable <= 0:
             continue
+        # Export/SEZ/NIL-rated items must have 0 taxes — skip recalculation
+        if str(item.gstr1_category or "").upper() in ("EXPORT", "SEZ", "NIL_EXEMPT"):
+            item.cgst_amount = 0.0
+            item.sgst_amount = 0.0
+            item.igst_amount = 0.0
+            item.rate = 0.0
+            item.total_invoice_value = round(taxable, 2)
+            continue
 
         cgst_extracted = item.cgst_amount or 0.0
         sgst_extracted = item.sgst_amount or 0.0
@@ -839,7 +958,9 @@ def math_verification_agent(sales_items, is_interstate: bool = None):
         snapped_rate = min(valid_rates, key=lambda x: abs(x - raw_rate))
 
         # If the LLM hallucinated 0 tax but the HSN is a services HSN (99xx), force 18%
-        if snapped_rate == 0.0 and str(item.hsn).startswith("99"):
+        # Skip for export/zero-rated items — they legitimately have 0 tax.
+        _is_export_item = str(item.gstr1_category or "").upper() in ("EXPORT", "SEZ", "NIL_EXEMPT")
+        if snapped_rate == 0.0 and str(item.hsn).startswith("99") and not _is_export_item:
             snapped_rate = 0.18
 
         # Use invoice-level interstate flag if provided; fall back to item-level only
@@ -864,8 +985,10 @@ def math_verification_agent(sales_items, is_interstate: bool = None):
 def _correct_taxable_values(items):
     """
     Per GST law, taxable_value = (qty × rate) − discount.
-    If the LLM returned the gross amount when a discount exists, fix it here
-    so that CGST/SGST/IGST are applied on the correct net value.
+    Two correction paths:
+      A) qty & rate known: correct when taxable ≈ gross (discount not yet deducted).
+      B) qty & rate unknown (SaaS/service items): if total_invoice_value ≈ taxable_value
+         (i.e. no tax was added yet), the LLM stored the gross as taxable — subtract discount.
     """
     for item in items:
         discount = item.discount or 0.0
@@ -873,11 +996,21 @@ def _correct_taxable_values(items):
             continue
         qty = item.qty or 0.0
         rate = item.rate or 0.0
-        gross = qty * rate
         taxable = item.taxable_value or 0.0
-        # If taxable_value looks like the gross (discount not yet deducted), correct it
+
+        # Path A: qty × rate available
+        gross = qty * rate
         if gross > 0 and abs(taxable - gross) < 1.0:
             item.taxable_value = round(gross - discount, 2)
+            continue
+
+        # Path B: no qty/rate — LLM stored gross amount as taxable_value.
+        # Signal: total_invoice_value ≈ taxable_value (no tax baked in yet)
+        # and discount is less than taxable (sanity check).
+        if qty == 0 and rate == 0 and discount < taxable:
+            total = item.total_invoice_value or 0.0
+            if total == 0 or abs(total - taxable) < 1.0:
+                item.taxable_value = round(taxable - discount, 2)
     return items
 
 
@@ -897,8 +1030,12 @@ def build_dataframes(extraction_response):
         overall_total = extraction_response.overall_total_invoice_value
         sum_total = sum((item.taxable_value or 0.0) + (item.cgst_amount or 0.0) + (item.sgst_amount or 0.0) + (item.igst_amount or 0.0) for item in extraction_response.sales_items)
         diff = overall_total - sum_total
-        
-        if overall_total > 0 and diff > 1.0:
+
+        # Skip phantom injection when diff ≈ tax on existing items (items extracted without per-line taxes)
+        _sum_taxable_bd = sum(item.taxable_value or 0.0 for item in extraction_response.sales_items)
+        _diff_is_just_tax_bd = any(abs(diff - _sum_taxable_bd * r) < 5.0 for r in (0.18, 0.12, 0.05, 0.28))
+
+        if overall_total > 0 and diff > 1.0 and not _diff_is_just_tax_bd:
             taxable_diff = round(diff / 1.18, 2) # Assume standard 18% for missing lines
             is_interstate = False
             if len(extraction_response.sales_items) > 0:
@@ -920,10 +1057,18 @@ def build_dataframes(extraction_response):
             )
             extraction_response.sales_items.append(dummy_item)
             
-        # 3. Apply strict Math Verification Agent across all items
-        overall_is_interstate = (extraction_response.overall_igst_amount or 0.0) > (
-            (extraction_response.overall_cgst_amount or 0.0) + (extraction_response.overall_sgst_amount or 0.0)
-        )
+        # 3. Apply strict Math Verification Agent across all items.
+        # Trust the invoice's printed tax amounts (already set from _extract_gst_summary_table
+        # earlier in process_pdf) as the primary signal for interstate/intrastate.
+        _bd_cgst = extraction_response.overall_cgst_amount or 0.0
+        _bd_sgst = extraction_response.overall_sgst_amount or 0.0
+        _bd_igst = extraction_response.overall_igst_amount or 0.0
+        if _bd_igst > 0 and _bd_cgst == 0 and _bd_sgst == 0:
+            overall_is_interstate = True
+        elif (_bd_cgst > 0 or _bd_sgst > 0) and _bd_igst == 0:
+            overall_is_interstate = False
+        else:
+            overall_is_interstate = _bd_igst > (_bd_cgst + _bd_sgst)
         extraction_response.sales_items = math_verification_agent(
             extraction_response.sales_items, is_interstate=overall_is_interstate
         )
@@ -1133,22 +1278,26 @@ def build_dataframes(extraction_response):
     if extraction_response.purchase_items:
         records = []
         for item in extraction_response.purchase_items:
+            itc_status = getattr(item, "itc_category", None) or getattr(item, "itc_eligibility", None) or "ITC_UNKNOWN"
             records.append({
-                "SUPPLIER INV NO": item.invoice_no,
-                "INVOICE DATE": item.voucher_date,
-                "GST NO": item.party_gstin,
-                "PARTY A/C NAME": item.party_ledger_name,
-                "PLACE OF SUPPLY": item.place_of_supply,
-                "PARTICULARS": item.particulars,
-                "AMOUNT": item.taxable_value,
-                "SGST": item.sgst_amount,
-                "CGST": item.cgst_amount,
-                "IGST": item.igst_amount,
-                "TOTAL AMOUNT": item.total_invoice_value,
-                "Narration": item.narration,
-                "HSN": item.hsn
+                "SUPPLIER INV NO":  item.invoice_no,
+                "INVOICE DATE":     item.voucher_date,
+                "GST NO":           item.party_gstin,
+                "PARTY A/C NAME":   item.party_ledger_name,
+                "PLACE OF SUPPLY":  item.place_of_supply,
+                "HSN":              item.hsn,
+                "PARTICULARS":      item.particulars,
+                "QTY":              item.qty,
+                "RATE":             item.rate,
+                "TAXABLE AMOUNT":   item.taxable_value,
+                "CGST":             item.cgst_amount,
+                "SGST":             item.sgst_amount,
+                "IGST":             item.igst_amount,
+                "TOTAL AMOUNT":     item.total_invoice_value,
+                "ITC ELIGIBILITY":  itc_status,
+                "Narration":        item.narration,
             })
         purchase_df = pd.DataFrame(records)
         purchase_df = deduplicate_purchase(purchase_df)
-        
+
     return sales_dfs, purchase_df

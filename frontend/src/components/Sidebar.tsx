@@ -3,6 +3,7 @@
 import React, { useState, useEffect } from "react";
 import { usePathname } from "next/navigation";
 import Link from "next/link";
+import { fetchPreferences, savePreferences } from "../utils/sessionSync";
 import {
   LayoutDashboard,
   FileSpreadsheet,
@@ -13,7 +14,11 @@ import {
   Moon,
   FileText,
   LogOut,
+  Building2,
+  Cloud,
 } from "lucide-react";
+
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 /* ─────────── Navigation Items ─────────── */
 const NAV_ITEMS = [
@@ -47,6 +52,19 @@ const NAV_ITEMS = [
     icon: FileText,
     description: "Admin file toolbox",
   },
+  {
+    href: "/google-drive-sync",
+    label: "Drive Sync",
+    icon: Cloud,
+    description: "Auto-sync from Google Drive",
+  },
+  {
+    href: "/firm-settings",
+    label: "Firm Settings",
+    icon: Building2,
+    description: "Team & firm management",
+    ownerOnly: true,
+  },
 ];
 
 /* ─────────── Sidebar Component ─────────── */
@@ -55,12 +73,39 @@ export default function Sidebar() {
   const [theme, setTheme] = useState("dark");
   const [userEmail, setUserEmail] = useState("");
   const [userRole, setUserRole] = useState("");
+  const [firmName, setFirmName] = useState<string | null>(null);
 
   useEffect(() => {
-    const currentTheme = document.documentElement.getAttribute("data-theme") || "dark";
-    setTheme(currentTheme);
-    setUserEmail(localStorage.getItem("user_email") || "");
-    setUserRole(localStorage.getItem("user_role") || "");
+    const email = localStorage.getItem("user_email") || "";
+    const role = localStorage.getItem("user_role") || "";
+    setUserEmail(email);
+    setUserRole(role);
+
+    // Load theme from preferences API (falls back to localStorage then default)
+    fetchPreferences().then((prefs) => {
+      const serverTheme = prefs?.theme;
+      const localTheme = localStorage.getItem("theme");
+      const resolved = serverTheme || localTheme || "dark";
+      setTheme(resolved);
+      document.documentElement.setAttribute("data-theme", resolved);
+      localStorage.setItem("theme", resolved);
+    }).catch(() => {
+      const currentTheme = document.documentElement.getAttribute("data-theme") || "dark";
+      setTheme(currentTheme);
+    });
+
+    // Fetch tenant name (firm name) to show in sidebar
+    const token = localStorage.getItem("token");
+    if (token) {
+      fetch(`${API_BASE_URL}/api/me/tenant`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+        .then((r) => r.json())
+        .then((data) => {
+          if (data?.tenant?.name) setFirmName(data.tenant.name);
+        })
+        .catch(() => {});
+    }
   }, []);
 
   const toggleTheme = () => {
@@ -68,6 +113,8 @@ export default function Sidebar() {
     setTheme(newTheme);
     document.documentElement.setAttribute("data-theme", newTheme);
     localStorage.setItem("theme", newTheme);
+    // Persist to backend so theme follows the user across devices
+    savePreferences({ theme: newTheme });
   };
 
   return (
@@ -132,14 +179,19 @@ export default function Sidebar() {
             <div
               style={{
                 fontSize: 10,
-                color: "var(--text-muted)",
-                fontWeight: 500,
+                color: firmName ? "var(--accent)" : "var(--text-muted)",
+                fontWeight: firmName ? 600 : 500,
                 letterSpacing: "0.04em",
                 textTransform: "uppercase",
                 marginTop: 2,
+                maxWidth: 140,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
               }}
+              title={firmName || "Compliance Platform"}
             >
-              Compliance Platform
+              {firmName || "Compliance Platform"}
             </div>
           </div>
         </div>
@@ -159,19 +211,14 @@ export default function Sidebar() {
         >
           Modules
         </div>
-        {NAV_ITEMS.filter((item) => {
+        {NAV_ITEMS.filter((item: any) => {
           const role = userRole.toLowerCase();
-          if (role === "developer") return true; // Developers see all modules
-          if (role === "ca" || role === "auditor" || role === "owner") {
-            return true; // All roles see document utilities
-          }
-          if (role === "accountant") {
-            return item.href !== "/tax-audit/msme";
-          }
-          if (role === "client") {
-            return item.href === "/" || item.href === "/invoice-extractor"; // Clients only see basic dashboard/uploads
-          }
-          return true; // Default fallback
+          if ((item as any).ownerOnly && role !== "owner" && role !== "developer") return false;
+          if (role === "developer") return true;
+          if (role === "ca" || role === "auditor" || role === "owner") return true;
+          if (role === "accountant") return item.href !== "/tax-audit/msme";
+          if (role === "client") return item.href === "/" || item.href === "/invoice-extractor";
+          return true;
         }).map((item) => {
           const isActive =
             pathname === item.href ||

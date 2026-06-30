@@ -1,0 +1,78 @@
+{
+  "gstin": "06AAGCR4375J2Z1",
+  "name": "ONE STACK SOLUTION PRIVATE LIMITED",
+  "state": "Haryana",
+  "state_code": "06",
+  "invoice_number_prefix": [
+    "MH260510",
+    "HR260510"
+  ],
+  "hsn_codes": [
+    "9971",
+    "997319",
+    "998311",
+    "998599",
+    "999799"
+  ],
+  "tax_rule": "interstate_igst_18_intrastate_cgst_sgst_18",
+  "domestic_tax_rate": 18,
+  "product_type": "SaaS / Banking Software",
+  "prompt_hints": [
+    "KNOWN VENDOR: ONE STACK SOLUTION PRIVATE LIMITED (GSTIN 06AAGCR4375J2Z1, Haryana)",
+    "Products: SaaS Mobile Application, UPI QR, Soundbox, Transactional/Promotional Messages, PAN/Aadhaar Verification",
+    "HSN 9971 = SaaS/Mobile App/UPI QR/Additional Users; HSN 998599 = SMS/Messages; HSN 998529 = Verification services",
+    "Interstate (buyer state != 06) → IGST 18%. Intrastate (buyer state = 06 Haryana) → CGST 9% + SGST 9%",
+    "Discount column = waiver/credit on gross amount. taxable_value = AMOUNT - DISCOUNT",
+    "Advances column = previous payment deducted. total_invoice_value = taxable + tax - advance"
+  ],
+  "few_shot_examples": [
+    {
+      "invoice_type": "igst_no_discount",
+      "ref": "HR26051012",
+      "output": {
+        "particulars": "SaaS Mobile Model 8 - Rs. 32 per user - 0 to 200 Users - RS: 6400 (per month)",
+        "hsn": "9971",
+        "taxable_value": 6400.0,
+        "cgst_amount": 0.0,
+        "sgst_amount": 0.0,
+        "igst_amount": 1152.0,
+        "total_invoice_value": 7552.0,
+        "gstr1_category": "B2B"
+      }
+    },
+    {
+      "invoice_type": "cgst_sgst_no_discount",
+      "ref": "MH26051074",
+      "output": {
+        "particulars": "Additional Users",
+        "hsn": "9971",
+        "taxable_value": 1385.0,
+        "cgst_amount": 124.65,
+        "sgst_amount": 124.65,
+        "igst_amount": 0.0,
+        "total_invoice_value": 1634.3,
+        "gstr1_category": "B2B"
+      }
+    }
+  ],
+  "trained_on": [
+    "HR26051012",
+    "MH26051007",
+    "MH26051046",
+    "MH26051067",
+    "MH26051059",
+    "MH26051062",
+    "MH26051022",
+    "MH26051074",
+    "MH26051072",
+    "MH26051041",
+    "HR26051018",
+    "MH26051001",
+    "MH26051076",
+    "MH26051090",
+    "MH26051099"
+  ],
+  "invoice_count": 15,
+  "pass_rate_pct": 20.0,
+  "trained_at": "2026-06-30T17:58:37.088218"
+}

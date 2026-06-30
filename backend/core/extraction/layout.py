@@ -35,25 +35,34 @@ def analyze_layout(ocr_document: OCRDocument) -> LayoutAnalysis:
     table_started = False
     totals_started = False
     
-    table_headers = ["particulars", "description", "hsn", "qty", "quantity", "rate", "taxable"]
+    table_headers = ["particulars", "description", "hsn", "qty", "quantity", "rate", "taxable", "sac"]
+    # Only keywords that appear EXCLUSIVELY in totals rows (not column headers).
+    # Do NOT include "igst","cgst","sgst" — these appear as column headers too
+    # and cause premature totals detection on export invoices.
     totals_keywords = [
-        "subtotal", "cgst", "sgst", "igst", "cess", "round off", 
-        "grand total", "net amount", "total amount", "total taxable", 
-        "total invoice", "total tax", "final total"
+        "subtotal", "round off", "grand total", "net amount",
+        "total payable", "total invoice", "total tax", "final total",
+        "amount payable", "balance due",
     ]
+    # Patterns that signal a totals row even without the above keywords
+    # e.g. "SGST @ 9% : 4,410" or "Add: IGST"
+    totals_patterns = ["@ 9%", "@ 18%", "@ 12%", "@ 5%", "@ 28%", "add: igst", "add: cgst"]
     payment_keywords = ["bank name", "account no", "a/c", "ifsc", "rtgs", "neft"]
-    
+
     for page in ocr_document.pages:
         lines = page.raw_text.split('\n')
         for line in lines:
             lower_line = line.lower()
-            
+
             # Check for region transitions
             if any(h in lower_line for h in table_headers) and not table_started:
                 table_started = True
-                
-            if any(t in lower_line for t in totals_keywords) and table_started:
-                totals_started = True
+
+            # Totals section: require at least 1 actual item line first, then look
+            # for unambiguous totals markers (not column-header words like "igst").
+            if table_started and not totals_started and len(items_lines) >= 1:
+                if any(t in lower_line for t in totals_keywords) or any(p in lower_line for p in totals_patterns):
+                    totals_started = True
                 
             # Classify lines
             if any(p in lower_line for p in payment_keywords):

@@ -1,3 +1,10 @@
+from datetime import datetime
+import asyncio
+import logging
+import sentry_sdk
+from sentry_sdk.integrations.fastapi import FastApiIntegration
+from sentry_sdk.integrations.sqlalchemy import SqlalchemyIntegration
+from sentry_sdk.integrations.celery import CeleryIntegration
 from fastapi import FastAPI, File, UploadFile, Request, HTTPException, Form, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,8 +26,8 @@ from sqlalchemy.orm import Session
 # Ensure backend directory is in the path BEFORE local imports
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from database import get_db, engine, Base
-from models import BatchJob, InvoiceTask, TaskStatus, SalesLineItem, PurchaseLineItem, ObservabilityLog
+from database import get_db, engine, Base, SessionLocal
+from models import BatchJob, InvoiceTask, TaskStatus, SalesLineItem, PurchaseLineItem, ObservabilityLog, UserSession, UserPreferences, UserAnnotation, Tenant, GoogleDriveSyncJob
 from async_tasks import process_batch
 from ws_manager import manager
 
@@ -33,12 +40,12 @@ from services.udyam_parser import parse_udyam_certificate
 from services.msme_compliance import calculate_43bh_compliance
 from services.document_core import (
     parse_bank_statement, smart_split_by_size, enhance_scan, compress_pdf, ocr_extract,
-    DocumentValidationError, validate_pdf_input
+    ocr_extract_via_celery, DocumentValidationError, validate_pdf_input
 )
 from services.gcs_storage import gcs_storage
 from services.task_queue import dispatch_batch_task
 from models import User
-from services.auth import hash_password, verify_password, create_access_token, get_current_user, RoleChecker
+from services.auth import hash_password, verify_password, create_access_token, get_current_user, RoleChecker, require_same_tenant
 
 MODEL_OPTIONS = {
     "auto": None,  # Smart routing (Claude > Groq > Gemini based on keys present)
@@ -48,6 +55,33 @@ MODEL_OPTIONS = {
     "openrouter-gemini-flash": {"provider": "openrouter", "model": "google/gemini-2.5-flash"},
     "ollama": {"provider": "ollama", "model": None},  # Uses OLLAMA_MODEL_NAME env var
 }
+
+# ── Sentry Observability ──────────────────────────────────────────────────────
+_sentry_dsn = os.getenv("SENTRY_DSN", "")
+if _sentry_dsn:
+    sentry_sdk.init(
+        dsn=_sentry_dsn,
+        integrations=[
+            FastApiIntegration(transaction_style="url"),
+            SqlalchemyIntegration(),
+            CeleryIntegration(),
+        ],
+        traces_sample_rate=float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0.2")),
+        profiles_sample_rate=float(os.getenv("SENTRY_PROFILES_SAMPLE_RATE", "0.1")),
+        environment=os.getenv("ENVIRONMENT", "development"),
+        release=os.getenv("RENDER_GIT_COMMIT", "local"),
+        send_default_pii=True,
+    )
+    print(f"[Sentry] Initialized — env={os.getenv('ENVIRONMENT', 'development')}")
+else:
+    print("[Sentry] SENTRY_DSN not set — error tracking disabled.")
+
+# Structured JSON logger for ops dashboards (Datadog / CloudWatch / Render logs)
+logging.basicConfig(
+    level=logging.INFO,
+    format='{"time":"%(asctime)s","level":"%(levelname)s","logger":"%(name)s","msg":%(message)s}',
+)
+logger = logging.getLogger("auditOS")
 
 app = FastAPI(title="AI Invoice Extractor API")
 
@@ -65,6 +99,30 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    """
+    Structured request logging middleware.
+    Logs method, path, status, and latency as JSON — compatible with
+    Datadog log parsing, Render log drains, and CloudWatch Insights.
+    """
+    import time as _time
+    t0 = _time.perf_counter()
+    response = await call_next(request)
+    latency_ms = round((_time.perf_counter() - t0) * 1000)
+    # Skip noisy health-check paths to keep logs clean
+    if request.url.path not in ("/", "/docs", "/openapi.json"):
+        logger.info(
+            '"method":"%s","path":"%s","status":%d,"latency_ms":%d',
+            request.method,
+            request.url.path,
+            response.status_code,
+            latency_ms,
+        )
+    return response
+
 
 class UserRegisterRequest(BaseModel):
     email: str
@@ -150,6 +208,150 @@ def validate_suvit_item(item: dict) -> List[str]:
         
     return errors
 
+# ── Tenant Management ─────────────────────────────────────────────────────────
+
+class TenantCreateRequest(BaseModel):
+    name: str
+    slug: str
+
+@app.post("/api/admin/tenants", status_code=201)
+async def create_tenant(
+    req: TenantCreateRequest,
+    current_user: User = Depends(RoleChecker(["owner", "developer"])),
+    db: Session = Depends(get_db),
+):
+    """Creates a new tenant (CA firm). Only owners/developers can create tenants."""
+    existing = db.query(Tenant).filter(Tenant.slug == req.slug).first()
+    if existing:
+        raise HTTPException(status_code=400, detail=f"Tenant slug '{req.slug}' already exists.")
+    tenant = Tenant(name=req.name, slug=req.slug)
+    db.add(tenant)
+    db.commit()
+    db.refresh(tenant)
+    return {"tenant_id": tenant.id, "name": tenant.name, "slug": tenant.slug}
+
+@app.get("/api/admin/tenants")
+async def list_tenants(
+    current_user: User = Depends(RoleChecker(["owner", "developer"])),
+    db: Session = Depends(get_db),
+):
+    """Lists all tenants. Owner/developer only."""
+    tenants = db.query(Tenant).all()
+    return {"tenants": [{"id": t.id, "name": t.name, "slug": t.slug, "is_active": t.is_active, "created_at": t.created_at.isoformat()} for t in tenants]}
+
+@app.post("/api/admin/tenants/{tenant_id}/assign-user")
+async def assign_user_to_tenant(
+    tenant_id: str,
+    user_email: str,
+    current_user: User = Depends(RoleChecker(["owner", "developer"])),
+    db: Session = Depends(get_db),
+):
+    """Assigns an existing user to a tenant."""
+    tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found.")
+    user = db.query(User).filter(User.email == user_email).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    user.tenant_id = tenant_id
+    db.commit()
+    return {"ok": True, "user": user_email, "tenant": tenant.name}
+
+
+@app.get("/api/admin/tenants/{tenant_id}/users")
+async def list_tenant_users(
+    tenant_id: str,
+    current_user: User = Depends(RoleChecker(["owner", "developer"])),
+    db: Session = Depends(get_db),
+):
+    """List all users assigned to a tenant. Owner can only view their own tenant."""
+    if current_user.role == "owner" and current_user.tenant_id != tenant_id:
+        raise HTTPException(status_code=403, detail="You can only view your own firm's members.")
+    users = db.query(User).filter(User.tenant_id == tenant_id).all()
+    return {
+        "users": [
+            {"id": u.id, "email": u.email, "role": u.role, "is_active": u.is_active}
+            for u in users
+        ]
+    }
+
+
+@app.delete("/api/admin/tenants/{tenant_id}/users/{user_id}")
+async def remove_user_from_tenant(
+    tenant_id: str,
+    user_id: str,
+    current_user: User = Depends(RoleChecker(["owner", "developer"])),
+    db: Session = Depends(get_db),
+):
+    """Remove a user from a tenant (un-assign, does not delete the account)."""
+    if current_user.role == "owner" and current_user.tenant_id != tenant_id:
+        raise HTTPException(status_code=403, detail="You can only manage your own firm's members.")
+    user = db.query(User).filter(User.id == user_id, User.tenant_id == tenant_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found in this firm.")
+    if user.id == current_user.id:
+        raise HTTPException(status_code=400, detail="You cannot remove yourself from the firm.")
+    user.tenant_id = None
+    db.commit()
+    return {"ok": True, "removed": user.email}
+
+
+@app.put("/api/admin/tenants/{tenant_id}")
+async def update_tenant(
+    tenant_id: str,
+    req: TenantCreateRequest,
+    current_user: User = Depends(RoleChecker(["owner", "developer"])),
+    db: Session = Depends(get_db),
+):
+    """Update tenant name/slug. Owner can only update their own tenant."""
+    if current_user.role == "owner" and current_user.tenant_id != tenant_id:
+        raise HTTPException(status_code=403, detail="You can only update your own firm.")
+    tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Firm not found.")
+    tenant.name = req.name
+    tenant.slug = req.slug
+    db.commit()
+    db.refresh(tenant)
+    return {"id": tenant.id, "name": tenant.name, "slug": tenant.slug}
+
+
+@app.get("/api/me/tenant")
+async def get_my_tenant(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Returns the current user's tenant info."""
+    if not current_user.tenant_id:
+        return {"tenant": None}
+    tenant = db.query(Tenant).filter(Tenant.id == current_user.tenant_id).first()
+    if not tenant:
+        return {"tenant": None}
+    return {"tenant": {"id": tenant.id, "name": tenant.name, "slug": tenant.slug}}
+
+
+@app.get("/api/health/workers")
+async def health_workers():
+    """
+    Returns the status of Celery workers, the Redis broker, and all LLM circuit breakers.
+    Use this to verify the task queue is healthy before processing large batches.
+    """
+    from services.task_queue import check_celery_workers, CELERY_ACTIVE
+    from core.extraction.llm_call import get_all_breaker_status
+    worker_status = check_celery_workers()
+    breakers = get_all_breaker_status()
+    any_open = any(b["state"] == "open" for b in breakers)
+    return {
+        "celery_configured": CELERY_ACTIVE,
+        "workers_alive": worker_status["active"],
+        "worker_count": worker_status["worker_count"],
+        "celery_error": worker_status.get("error"),
+        "dispatch_mode": "celery" if CELERY_ACTIVE else "local_background_tasks",
+        "circuit_breakers": breakers,
+        "any_provider_down": any_open,
+    }
+
+
 @app.get("/api/models")
 async def get_models():
     return JSONResponse(content={
@@ -166,7 +368,7 @@ async def upload_batch(background_tasks: BackgroundTasks, files: List[UploadFile
     batch_id = str(uuid.uuid4())
     total_files = len(files)
     
-    batch_job = BatchJob(id=batch_id, total_files=total_files, status=TaskStatus.PENDING, user_id=current_user.id)
+    batch_job = BatchJob(id=batch_id, total_files=total_files, status=TaskStatus.PENDING, user_id=current_user.id, tenant_id=current_user.tenant_id)
     db.add(batch_job)
     db.commit()
 
@@ -258,10 +460,14 @@ async def upload_batch(background_tasks: BackgroundTasks, files: List[UploadFile
     })
 @app.get("/api/jobs")
 async def get_all_jobs(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    # Tenant-scoped: owners/developers see all batches within their tenant
+    base_q = db.query(BatchJob)
+    if current_user.tenant_id:
+        base_q = base_q.filter(BatchJob.tenant_id == current_user.tenant_id)
     if current_user.role in ["developer", "owner"]:
-        batches = db.query(BatchJob).order_by(BatchJob.created_at.desc()).all()
+        batches = base_q.order_by(BatchJob.created_at.desc()).all()
     else:
-        batches = db.query(BatchJob).filter(BatchJob.user_id == current_user.id).order_by(BatchJob.created_at.desc()).all()
+        batches = base_q.filter(BatchJob.user_id == current_user.id).order_by(BatchJob.created_at.desc()).all()
     return [{
         "id": b.id,
         "created_at": b.created_at.isoformat(),
@@ -315,6 +521,7 @@ async def get_job_status(batch_id: str, db: Session = Depends(get_db), current_u
     batch = db.query(BatchJob).filter(BatchJob.id == batch_id).first()
     if not batch:
         raise HTTPException(status_code=404, detail="Job not found")
+    require_same_tenant(batch.tenant_id, current_user)
         
     tasks = db.query(InvoiceTask).filter(InvoiceTask.batch_id == batch_id).all()
     
@@ -430,6 +637,38 @@ async def get_job_status(batch_id: str, db: Session = Depends(get_db), current_u
         "batch_flags": batch_flags
     })
 
+
+@app.get("/api/jobs/{batch_id}/duplicates")
+async def get_duplicate_invoices(
+    batch_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Detect duplicate invoices in this batch.
+    Returns two lists:
+      - within_batch : same invoice_no+gstin+date appears multiple times inside this batch
+      - cross_batch  : same invoice_no+gstin found in a previous batch for this user/tenant
+    Cross-batch matches are flagged as 'critical' (likely a re-upload causing double counting).
+    """
+    from services.duplicate_detector import detect_all
+
+    batch = db.query(BatchJob).filter(BatchJob.id == batch_id).first()
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch not found")
+    require_same_tenant(batch.tenant_id, current_user)
+
+    tasks = db.query(InvoiceTask).filter(InvoiceTask.batch_id == batch_id).all()
+    result = detect_all(
+        db=db,
+        tasks=tasks,
+        current_batch_id=batch_id,
+        user_id=current_user.id,
+        tenant_id=current_user.tenant_id,
+    )
+    return result
+
+
 @app.get("/api/tasks/{task_id}/review")
 async def get_task_review(task_id: str, db: Session = Depends(get_db)):
     """
@@ -500,7 +739,7 @@ async def get_task_observability(task_id: str, db: Session = Depends(get_db)):
     return JSONResponse(content={"task_id": task_id, "events": events})
 
 @app.get("/api/observability/stats")
-async def get_observability_stats(db: Session = Depends(get_db)):
+async def get_observability_stats(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """
     Aggregates metrics and flags across the workspace for the landing dashboard.
     """
@@ -564,7 +803,10 @@ async def get_observability_stats(db: Session = Depends(get_db)):
             pass
             
     # Query recent jobs
-    batches = db.query(BatchJob).order_by(BatchJob.created_at.desc()).limit(10).all()
+    batch_q = db.query(BatchJob)
+    if current_user.tenant_id:
+        batch_q = batch_q.filter(BatchJob.tenant_id == current_user.tenant_id)
+    batches = batch_q.order_by(BatchJob.created_at.desc()).limit(10).all()
     
     recent_jobs = []
     for b in batches:
@@ -602,11 +844,30 @@ async def get_observability_stats(db: Session = Depends(get_db)):
 async def websocket_endpoint(websocket: WebSocket, batch_id: str):
     await manager.connect(websocket, batch_id)
     try:
+        # Poll the DB every 2s and push status to the browser.
+        # This bridges the Celery worker (separate process) and the browser WebSocket
+        # without requiring shared in-memory state.
         while True:
-            # We don't expect the client to send messages, but we need to keep the connection open
-            # and listen for disconnects
-            await websocket.receive_text()
+            db = SessionLocal()
+            try:
+                batch = db.query(BatchJob).filter(BatchJob.id == batch_id).first()
+                tasks = db.query(InvoiceTask).filter(InvoiceTask.batch_id == batch_id).all()
+                total = len(tasks)
+                completed = sum(1 for t in tasks if t.status == TaskStatus.COMPLETED)
+                failed = sum(1 for t in tasks if t.status == TaskStatus.FAILED)
+                status = batch.status.value if batch else "PROCESSING"
+                msg = {"total": total, "completed": completed, "failed": failed, "status": status}
+                await websocket.send_json(msg)
+                if status in ("COMPLETED", "FAILED"):
+                    break
+            except Exception:
+                break
+            finally:
+                db.close()
+            await asyncio.sleep(2)
     except WebSocketDisconnect:
+        pass
+    finally:
         await manager.disconnect(websocket, batch_id)
 
 
@@ -670,17 +931,44 @@ async def export_to_excel(batch_id: str, type: str, schema: str = "suvit", db: S
             for sheet_name, df in sales_df.items():
                 if not df.empty:
                     df.to_excel(writer, sheet_name=sheet_name, index=False)
-                    
+
+    def save_purchase(path):
+        """Writes purchase register + ITC Summary sheet to Excel."""
+        with pd.ExcelWriter(path, engine="openpyxl") as writer:
+            purchase_df.to_excel(writer, sheet_name="Purchase Register", index=False)
+
+            # ITC Summary sheet
+            if "ITC ELIGIBILITY" in purchase_df.columns and "TAXABLE AMOUNT" in purchase_df.columns:
+                itc_col = purchase_df["ITC ELIGIBILITY"].fillna("ITC_UNKNOWN")
+                amt_col = purchase_df["TAXABLE AMOUNT"].fillna(0)
+                summary = {
+                    "Category": ["ITC_ELIGIBLE", "ITC_BLOCKED", "ITC_RESTRICTED", "ITC_EXEMPT", "ITC_UNKNOWN", "TOTAL"],
+                }
+                totals = {}
+                for cat in summary["Category"][:-1]:
+                    mask = itc_col == cat
+                    totals[cat] = float(amt_col[mask].sum())
+                totals["TOTAL"] = float(amt_col.sum())
+                summary["Taxable Amount (₹)"] = [totals[c] for c in summary["Category"]]
+                summary["Line Items"] = [int((itc_col == c).sum()) if c != "TOTAL" else len(purchase_df) for c in summary["Category"]]
+                summary["ITC at Risk (₹)"] = [
+                    totals.get("ITC_BLOCKED", 0) if c == "ITC_BLOCKED" else
+                    totals.get("ITC_RESTRICTED", 0) if c == "ITC_RESTRICTED" else
+                    totals.get("TOTAL", 0) - totals.get("ITC_ELIGIBLE", 0) if c == "TOTAL" else 0
+                    for c in summary["Category"]
+                ]
+                pd.DataFrame(summary).to_excel(writer, sheet_name="ITC Summary", index=False)
+
     if has_sales and has_purchase:
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
             sales_path = os.path.join(tempfile.gettempdir(), "Suvit_Sales_Upload.xlsx")
             purchase_path = os.path.join(tempfile.gettempdir(), "Suvit_Purchase_Upload.xlsx")
             save_sales(sales_path)
-            purchase_df.to_excel(purchase_path, index=False)
+            save_purchase(purchase_path)
             zip_file.write(sales_path, arcname="Suvit_Sales_Upload.xlsx")
             zip_file.write(purchase_path, arcname="Suvit_Purchase_Upload.xlsx")
-            
+
         zip_buffer.seek(0)
         return StreamingResponse(
             zip_buffer,
@@ -691,18 +979,63 @@ async def export_to_excel(batch_id: str, type: str, schema: str = "suvit", db: S
         output_path = os.path.join(tempfile.gettempdir(), "Suvit_Sales_Upload.xlsx")
         save_sales(output_path)
         return FileResponse(
-            path=output_path, 
-            filename="Suvit_Sales_Upload.xlsx", 
+            path=output_path,
+            filename="Suvit_Sales_Upload.xlsx",
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
     else:
         output_path = os.path.join(tempfile.gettempdir(), "Suvit_Purchase_Upload.xlsx")
-        purchase_df.to_excel(output_path, index=False)
+        save_purchase(output_path)
         return FileResponse(
-            path=output_path, 
-            filename="Suvit_Purchase_Upload.xlsx", 
+            path=output_path,
+            filename="Suvit_Purchase_Upload.xlsx",
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
+
+@app.get("/api/export/{batch_id}/gstr1")
+async def export_gstr1_json(
+    batch_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Generate and download a GSTR-1 filed-format JSON for the given batch.
+    Only sales invoices are included. The JSON structure matches the GSTN portal
+    offline tool / GSP API format (b2b, b2cl, b2cs, exp, cdnr, cdnur, hsn, doc).
+    """
+    from services.gstr1_generator import generate_gstr1_json
+
+    batch = db.query(BatchJob).filter(BatchJob.id == batch_id).first()
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch not found")
+
+    require_same_tenant(batch.tenant_id, current_user)
+
+    tasks = db.query(InvoiceTask).filter(InvoiceTask.batch_id == batch_id).all()
+    sales_items = []
+    for t in tasks:
+        if getattr(t, "sales_items", None):
+            sales_items.extend(t.sales_items)
+
+    if not sales_items:
+        raise HTTPException(
+            status_code=400,
+            detail="No sales line items found for this batch. GSTR-1 requires sales invoices.",
+        )
+
+    firm_gstin = os.getenv("FIRM_GSTIN", "")
+    gstr1 = generate_gstr1_json(sales_items, firm_gstin=firm_gstin)
+
+    json_bytes = json.dumps(gstr1, ensure_ascii=False, indent=2).encode("utf-8")
+    fp = gstr1.get("fp", "MMYYYY")
+    filename = f"GSTR1_{fp}_{batch_id[:8]}.json"
+
+    return StreamingResponse(
+        io.BytesIO(json_bytes),
+        media_type="application/json",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
 
 class MSMEVerifyRequest(BaseModel):
     udyam_number: str
@@ -1041,7 +1374,8 @@ async def ocr_extract_endpoint(file: UploadFile = File(...), provider: str = For
         raise HTTPException(status_code=400, detail=f"Unknown OCR provider: {provider}. Use: auto, pymupdf, tesseract, easyocr")
 
     try:
-        text = ocr_extract(content, provider=provider)
+        # Route heavy OCR to dedicated Celery worker when available
+        text = ocr_extract_via_celery(content, provider=provider)
 
         # Determine which provider was actually used (by logging)
         provider_used = "unknown"
@@ -1064,6 +1398,135 @@ async def ocr_extract_endpoint(file: UploadFile = File(...), provider: str = For
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"OCR extraction failed: {str(e)}")
+
+
+# ── Google Drive Auto-Sync ────────────────────────────────────────────────────
+
+class GoogleDriveSyncRequest(BaseModel):
+    google_drive_folder_id: str
+    excel_output_path: str
+    invoice_type: str = "both"  # "sales", "purchase", or "both"
+    model_config: Optional[dict] = None
+
+
+@app.post("/api/google-drive-sync/trigger")
+async def trigger_google_drive_sync(
+    req: GoogleDriveSyncRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    background_tasks: BackgroundTasks = None
+):
+    """
+    Manually trigger Google Drive sync for current user's tenant.
+    Returns task ID for status polling.
+
+    This is useful for:
+      - Testing the sync pipeline
+      - Manual one-time syncs
+      - Syncs outside the scheduled monthly window
+
+    The sync runs asynchronously via Celery.
+    """
+    from celery_app import google_drive_sync_task
+
+    try:
+        # Get user's tenant
+        tenant = db.query(Tenant).filter(Tenant.id == current_user.tenant_id).first()
+        if not tenant:
+            raise HTTPException(status_code=404, detail="Tenant not found")
+
+        # Validate invoice type
+        if req.invoice_type not in ["sales", "purchase", "both"]:
+            raise HTTPException(status_code=400, detail="invoice_type must be 'sales', 'purchase', or 'both'")
+
+        # Dispatch async task
+        task = google_drive_sync_task.delay(
+            tenant_id=current_user.tenant_id,
+            google_drive_folder_id=req.google_drive_folder_id,
+            excel_output_path=req.excel_output_path,
+            invoice_type=req.invoice_type,
+            model_config=req.model_config
+        )
+
+        return JSONResponse(content={
+            "status": "sync_started",
+            "task_id": task.id,
+            "tenant_id": current_user.tenant_id,
+            "message": "Google Drive sync started. Check status with /api/google-drive-sync/status/{task_id}"
+        })
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to start sync: {str(e)}")
+
+
+@app.get("/api/google-drive-sync/status/{task_id}")
+async def get_sync_status(task_id: str):
+    """
+    Check the status of a running Google Drive sync task.
+
+    Returns:
+      {
+        "task_id": "...",
+        "status": "PENDING|PROGRESS|SUCCESS|FAILURE",
+        "result": {...} or None,
+        "error": error message if failed
+      }
+    """
+    from celery_app import celery_app
+
+    try:
+        task_result = celery_app.AsyncResult(task_id)
+
+        return JSONResponse(content={
+            "task_id": task_id,
+            "status": task_result.status,
+            "result": task_result.result if task_result.status == "SUCCESS" else None,
+            "error": str(task_result.info) if task_result.status == "FAILURE" else None
+        })
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get task status: {str(e)}")
+
+
+@app.get("/api/google-drive-sync/history")
+async def get_sync_history(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    limit: int = 10
+):
+    """
+    Get sync history for current user's tenant.
+    Returns last N sync jobs with statistics.
+    """
+    try:
+        sync_jobs = db.query(GoogleDriveSyncJob).filter(
+            GoogleDriveSyncJob.tenant_id == current_user.tenant_id
+        ).order_by(GoogleDriveSyncJob.sync_timestamp.desc()).limit(limit).all()
+
+        return JSONResponse(content={
+            "tenant_id": current_user.tenant_id,
+            "sync_jobs": [
+                {
+                    "id": job.id,
+                    "sync_timestamp": job.sync_timestamp.isoformat(),
+                    "total_files_found": job.total_files_found,
+                    "new_files": job.new_files,
+                    "updated_files": job.updated_files,
+                    "processed_files": job.processed_files,
+                    "failed_files": job.failed_files,
+                    "status": job.status,
+                    "excel_output_path": job.excel_output_path,
+                    "completed_at": job.completed_at.isoformat() if job.completed_at else None
+                }
+                for job in sync_jobs
+            ]
+        })
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get sync history: {str(e)}")
+
 
 if __name__ == "__main__":
     import uvicorn
@@ -1099,6 +1562,61 @@ async def reconcile_gstr2b(req: ReconcileRequest):
         result = recon_match(req.items, gstr2b_records)
         return JSONResponse(content=result)
 
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Reconciliation error: {e}")
+
+
+class BatchReconcileRequest(BaseModel):
+    gstr2b: Any   # raw GSTR-2B JSON from portal
+
+
+@app.post("/api/reconcile/from-batch/{batch_id}")
+async def reconcile_from_batch(
+    batch_id: str,
+    req: BatchReconcileRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Run GSTR-2B reconciliation using a batch's extracted purchase items as the
+    books source — no manual JSON export needed.
+    Returns the same response shape as POST /api/reconcile.
+    """
+    from services.gstr2b_reconciler import parse_gstr2b, reconcile as recon_match
+
+    batch = db.query(BatchJob).filter(BatchJob.id == batch_id).first()
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch not found")
+    require_same_tenant(batch.tenant_id, current_user)
+
+    tasks = db.query(InvoiceTask).filter(InvoiceTask.batch_id == batch_id).all()
+    purchase_items = []
+    for t in tasks:
+        for item in (getattr(t, "purchase_items", None) or []):
+            purchase_items.append(
+                {c.name: getattr(item, c.name) for c in item.__table__.columns}
+            )
+
+    if not purchase_items:
+        raise HTTPException(
+            status_code=400,
+            detail="No purchase items found in this batch. Run purchase extraction first.",
+        )
+
+    try:
+        raw_2b = req.gstr2b
+        if isinstance(raw_2b, str):
+            raw_2b = json.loads(raw_2b)
+        gstr2b_records = parse_gstr2b(raw_2b)
+        if not gstr2b_records:
+            raise HTTPException(
+                status_code=422,
+                detail="No B2B invoice records found in the GSTR-2B JSON.",
+            )
+        result = recon_match(purchase_items, gstr2b_records)
+        return JSONResponse(content=result)
     except HTTPException:
         raise
     except Exception as e:
@@ -1256,3 +1774,200 @@ async def export_reconciliation(req: ReconcileRequest):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Export error: {e}")
+
+
+# ── Session Persistence Layer ─────────────────────────────────────────────────
+
+class SessionUpsertRequest(BaseModel):
+    active_batch_id:       Optional[str] = None
+    active_task_id:        Optional[str] = None
+    active_page:           Optional[str] = None
+    selected_invoice_type: Optional[str] = None
+    selected_model:        Optional[str] = None
+    scroll_position:       Optional[int] = 0
+    context_blob:          Optional[str] = None  # JSON string
+
+class PreferencesRequest(BaseModel):
+    theme:                Optional[str] = None
+    default_invoice_type: Optional[str] = None
+    default_model:        Optional[str] = None
+    default_export_schema:Optional[str] = None
+
+class AnnotationRequest(BaseModel):
+    field_name:      str
+    note:            Optional[str] = None
+    original_value:  Optional[str] = None
+    corrected_value: Optional[str] = None
+
+
+@app.get("/api/me/session")
+async def get_session(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Returns the user's last persisted session so the frontend can resume work."""
+    session = db.query(UserSession).filter(UserSession.user_id == current_user.id).first()
+    if not session:
+        return {"session": None}
+
+    # Enrich with batch status so the frontend can decide whether to show a resume prompt
+    batch_status = None
+    batch_total = None
+    if session.active_batch_id:
+        batch = db.query(BatchJob).filter(BatchJob.id == session.active_batch_id).first()
+        if batch:
+            batch_status = batch.status.value
+            batch_total = batch.total_files
+
+    return {
+        "session": {
+            "active_batch_id":       session.active_batch_id,
+            "active_task_id":        session.active_task_id,
+            "active_page":           session.active_page,
+            "selected_invoice_type": session.selected_invoice_type,
+            "selected_model":        session.selected_model,
+            "scroll_position":       session.scroll_position,
+            "context_blob":          session.context_blob,
+            "updated_at":            session.updated_at.isoformat() if session.updated_at else None,
+            "batch_status":          batch_status,
+            "batch_total_files":     batch_total,
+        }
+    }
+
+
+@app.post("/api/me/session")
+async def upsert_session(
+    req: SessionUpsertRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Upserts the user's session state. Called on every meaningful UI action (debounced on frontend)."""
+    session = db.query(UserSession).filter(UserSession.user_id == current_user.id).first()
+    if session:
+        if req.active_batch_id  is not None: session.active_batch_id       = req.active_batch_id
+        if req.active_task_id   is not None: session.active_task_id        = req.active_task_id
+        if req.active_page      is not None: session.active_page           = req.active_page
+        if req.selected_invoice_type is not None: session.selected_invoice_type = req.selected_invoice_type
+        if req.selected_model   is not None: session.selected_model        = req.selected_model
+        if req.scroll_position  is not None: session.scroll_position       = req.scroll_position
+        if req.context_blob     is not None: session.context_blob          = req.context_blob
+        session.updated_at = datetime.utcnow()
+    else:
+        session = UserSession(
+            user_id=current_user.id,
+            **{k: v for k, v in req.dict().items() if v is not None}
+        )
+        db.add(session)
+    db.commit()
+    return {"ok": True}
+
+
+@app.delete("/api/me/session")
+async def clear_session(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Clears the active session (e.g., when user explicitly starts a new audit)."""
+    db.query(UserSession).filter(UserSession.user_id == current_user.id).delete()
+    db.commit()
+    return {"ok": True}
+
+
+@app.get("/api/me/preferences")
+async def get_preferences(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Returns user preferences (theme, defaults). Returns defaults if not yet saved."""
+    prefs = db.query(UserPreferences).filter(UserPreferences.user_id == current_user.id).first()
+    if not prefs:
+        return {
+            "theme": "dark",
+            "default_invoice_type": "both",
+            "default_model": "auto",
+            "default_export_schema": "standard",
+        }
+    return {
+        "theme":                prefs.theme,
+        "default_invoice_type": prefs.default_invoice_type,
+        "default_model":        prefs.default_model,
+        "default_export_schema":prefs.default_export_schema,
+    }
+
+
+@app.put("/api/me/preferences")
+async def save_preferences(
+    req: PreferencesRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Upserts user preferences."""
+    prefs = db.query(UserPreferences).filter(UserPreferences.user_id == current_user.id).first()
+    if prefs:
+        if req.theme                 is not None: prefs.theme                  = req.theme
+        if req.default_invoice_type  is not None: prefs.default_invoice_type   = req.default_invoice_type
+        if req.default_model         is not None: prefs.default_model           = req.default_model
+        if req.default_export_schema is not None: prefs.default_export_schema   = req.default_export_schema
+        prefs.updated_at = datetime.utcnow()
+    else:
+        prefs = UserPreferences(
+            user_id=current_user.id,
+            **{k: v for k, v in req.dict().items() if v is not None}
+        )
+        db.add(prefs)
+    db.commit()
+    return {"ok": True}
+
+
+@app.post("/api/tasks/{task_id}/annotate")
+async def annotate_task(
+    task_id: str,
+    req: AnnotationRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Saves a field-level auditor note or correction on an invoice task."""
+    task = db.query(InvoiceTask).filter(InvoiceTask.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    annotation = UserAnnotation(
+        user_id=current_user.id,
+        task_id=task_id,
+        field_name=req.field_name,
+        note=req.note,
+        original_value=req.original_value,
+        corrected_value=req.corrected_value,
+    )
+    db.add(annotation)
+    db.commit()
+    return {"ok": True, "annotation_id": annotation.id}
+
+
+@app.get("/api/tasks/{task_id}/annotations")
+async def get_task_annotations(
+    task_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Returns all annotations for a task (all reviewers, sorted by time)."""
+    annotations = (
+        db.query(UserAnnotation)
+        .filter(UserAnnotation.task_id == task_id)
+        .order_by(UserAnnotation.created_at.asc())
+        .all()
+    )
+    return {
+        "annotations": [
+            {
+                "id":              a.id,
+                "field_name":      a.field_name,
+                "note":            a.note,
+                "original_value":  a.original_value,
+                "corrected_value": a.corrected_value,
+                "created_at":      a.created_at.isoformat(),
+                "user_id":         a.user_id,
+            }
+            for a in annotations
+        ]
+    }

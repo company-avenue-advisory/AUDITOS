@@ -31,29 +31,29 @@ def extract_totals(text: str, candidates: List[Candidate], client, model_name: s
     """
     Calls the LLM to extract overall tax totals and summary using resolved candidates.
     """
-    candidates_summary = "\n".join([
-        f"- Field: {c.field}, Value: {c.value}, Method: {c.method}, Confidence: {c.confidence}"
-        for c in candidates
-    ])
+    # Keep only the top-10 totals-relevant candidates to save tokens
+    top_candidates = sorted(candidates, key=lambda c: c.confidence, reverse=True)[:10]
+    candidates_summary = _truncate("\n".join([
+        f"- {c.field}: {c.value} (conf={c.confidence:.2f})"
+        for c in top_candidates
+    ]), 400)
 
-    prompt = f"""
-Extract overall tax totals matching the schema:
+    prompt = f"""Extract overall tax totals as JSON matching this schema:
 {json.dumps(TOTALS_SCHEMA)}
 
-Here is the totals region:
+Totals region:
 {_truncate(text, 2000)}
 
-Here are the deterministically detected candidates:
+Detected candidates:
 {candidates_summary}
 
 RULES:
-1. overall_taxable_value = gross taxable BEFORE any advance deduction. GST is computed on this.
-2. overall_advance_amount = the advance/previous payment deducted (positive number). 0 if absent.
-3. overall_total_invoice_value = net amount payable = taxable + tax + round_off - advance.
-4. If you see "Less: Advance", "Advance received", "Previous payment", or similar lines, extract that amount as overall_advance_amount.
+1. overall_taxable_value = gross taxable BEFORE advance deduction. GST base.
+2. overall_advance_amount = advance/previous payment deducted (positive). 0 if absent.
+3. overall_total_invoice_value = taxable + tax + round_off - advance.
+4. "Less: Advance" / "Advance received" / "Previous payment" → overall_advance_amount.
 
-Resolve any conflicts and return the correct overall values in JSON matching the schema.
-"""
+Return JSON only."""
     try:
         res_text = llm_call(client, model_name, prompt)
         return safe_json_loads(res_text)

@@ -729,46 +729,50 @@ def ocr_extract_tesseract(pdf_bytes: bytes, timeout: int = 30) -> str:
         print(f"  [Tesseract] Error: {e}")
         return ""
 
-def ocr_extract_easyocr(pdf_bytes: bytes, timeout: int = 60) -> str:
+def ocr_extract_easyocr(pdf_bytes: bytes, timeout: int = 90) -> str:
     """
     Tier 3 (Heavyweight): EasyOCR with GPU fallback to CPU.
     Best accuracy, ~2-5s per page, lazy-loaded.
+    Wrapped in a ThreadPoolExecutor with a hard timeout to prevent hanging.
     """
+    import concurrent.futures
+
+    def _run_easyocr(pdf_bytes: bytes) -> str:
+        try:
+            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+            full_text = ""
+            for page_num in range(len(doc)):
+                page = doc[page_num]
+                pix = page.get_pixmap(dpi=150)
+                img_data = pix.tobytes("png")
+                nparr = np.frombuffer(img_data, np.uint8)
+                img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                if img is None:
+                    print(f"  [EasyOCR] Page {page_num + 1}: failed to decode image")
+                    continue
+                try:
+                    results = get_ocr_reader().readtext(img, detail=0)
+                    page_text = "\n".join(results) if results else ""
+                    if page_text.strip():
+                        full_text += f"--- Page {page_num + 1} ---\n{page_text}\n"
+                except Exception as e:
+                    print(f"  [EasyOCR] Page {page_num + 1} failed: {e}")
+                    continue
+            doc.close()
+            return full_text.strip()
+        except Exception as e:
+            print(f"  [EasyOCR] Error: {e}")
+            return ""
+
     try:
-        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-        full_text = ""
-
-        for page_num in range(len(doc)):
-            page = doc[page_num]
-
-            # Render to image
-            pix = page.get_pixmap(dpi=150)
-            img_data = pix.tobytes("png")
-
-            # Decode to OpenCV
-            nparr = np.frombuffer(img_data, np.uint8)
-            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-
-            if img is None:
-                print(f"  [EasyOCR] Page {page_num + 1}: failed to decode image")
-                continue
-
-            try:
-                results = get_ocr_reader().readtext(img, detail=0)
-                page_text = "\n".join(results) if results else ""
-
-                if page_text.strip():
-                    full_text += f"--- Page {page_num + 1} ---\n{page_text}\n"
-
-            except Exception as e:
-                print(f"  [EasyOCR] Page {page_num + 1} failed: {e}")
-                continue
-
-        doc.close()
-        return full_text.strip() if full_text.strip() else ""
-
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(_run_easyocr, pdf_bytes)
+            return future.result(timeout=timeout)
+    except concurrent.futures.TimeoutError:
+        print(f"  [EasyOCR] Timed out after {timeout}s — returning empty string.")
+        return ""
     except Exception as e:
-        print(f"  [EasyOCR] Error: {e}")
+        print(f"  [EasyOCR] Unexpected error: {e}")
         return ""
 
 def ocr_extract_with_fallback(pdf_bytes: bytes, provider: str = "auto") -> str:
@@ -847,14 +851,35 @@ def compress_pdf(pdf_bytes: bytes, quality: int = 50) -> bytes:
 
 def ocr_extract(pdf_bytes: bytes, provider: str = "auto") -> str:
     """
-    Legacy wrapper for OCR extraction.
-    Delegates to ocr_extract_with_fallback() with provider parameter.
-
-    Args:
-        pdf_bytes: PDF file bytes
-        provider: "auto" (default), "pymupdf", "tesseract", "easyocr"
-
-    Returns:
-        Extracted text string (may be empty if all tiers fail)
+    OCR extraction with tiered fallback (PyMuPDF → Tesseract → EasyOCR).
+    When Celery is active and the document needs EasyOCR (heavy tier),
+    dispatches to the dedicated 'ocr' Celery queue instead of running inline.
     """
     return ocr_extract_with_fallback(pdf_bytes, provider)
+
+
+def ocr_extract_via_celery(pdf_bytes: bytes, provider: str = "auto", wait_timeout: int = 180) -> str:
+    """
+    Routes OCR to the dedicated Celery 'ocr' queue when Celery is active.
+    Falls back to inline execution if Celery is unavailable.
+
+    Use this from the Document Utilities endpoint so heavy OCR jobs don't
+    tie up the FastAPI request thread.
+    """
+    broker_url = os.getenv("CELERY_BROKER_URL", "")
+    if not broker_url:
+        return ocr_extract(pdf_bytes, provider)
+
+    try:
+        import base64
+        from celery_app import ocr_extract_task
+        pdf_b64 = base64.b64encode(pdf_bytes).decode()
+        result = ocr_extract_task.apply_async(
+            args=[pdf_b64, provider],
+            queue="ocr",
+        )
+        text = result.get(timeout=wait_timeout)
+        return text or ""
+    except Exception as e:
+        print(f"[OCR Dispatch] Celery OCR task failed ({e}), running inline.")
+        return ocr_extract(pdf_bytes, provider)

@@ -1,0 +1,64 @@
+{
+  "gstin": "27ACDFM3235E1ZI",
+  "name": "MARQUECOM AGENCY LLP",
+  "invoice_number_prefix": "MARQ-",
+  "decimal_format": "european_when_foreign_currency",
+  "sac_codes": [
+    "9971",
+    "998311",
+    "998313",
+    "998316",
+    "999613"
+  ],
+  "currencies": [
+    "EUR",
+    "INR",
+    "USD"
+  ],
+  "export_rule": "lut_zero_rated",
+  "domestic_tax_rate": 18,
+  "gstr1_categories": {
+    "domestic_with_gstin": "B2B",
+    "domestic_without_gstin": "B2CS",
+    "foreign_buyer": "EXPORT"
+  },
+  "prompt_hints": [
+    "KNOWN VENDOR: MARQUECOM AGENCY LLP (GSTIN 27ACDFM3235E1ZI)",
+    "European decimal format in EUR/USD invoices: '1.200,00' = 1200.00, '4.200,00' = 4200.00 (period=thousands, comma=decimal)",
+    "If invoice says 'EXPORT INVOICE', 'LUT', 'Letter of Undertaking', or Place of Supply is a foreign country → gstr1_category=EXPORT, cgst=0, sgst=0, igst=0",
+    "SAC codes used: 9971, 998311, 998313, 998316, 999613 — 998316=design/branding, 998313=web dev, 998314=SEO/digital, 9971=misc",
+    "Domestic invoices (INR): CGST+SGST at 18% (9% each); B2B if buyer has GSTIN, B2CS if no GSTIN"
+  ],
+  "few_shot_examples": [
+    {
+      "invoice_type": "domestic_b2b",
+      "filename": "MARQ-2025-07001.pdf",
+      "output": {
+        "particulars": "Part 1 – Fitstatic website development",
+        "taxable_value": 85000.0,
+        "cgst_amount": 7650.0,
+        "sgst_amount": 7650.0,
+        "igst_amount": 0.0,
+        "total_invoice_value": 100300.0,
+        "hsn": "9971",
+        "gstr1_category": "B2B"
+      }
+    },
+    {
+      "invoice_type": "export_export",
+      "filename": "Marquecom_Invoice_2026_US002.pdf",
+      "output": {
+        "particulars": "Marketing Consultancy Services",
+        "taxable_value": 250.0,
+        "cgst_amount": 0.0,
+        "sgst_amount": 0.0,
+        "igst_amount": 0.0,
+        "total_invoice_value": 250.0,
+        "hsn": "998311",
+        "gstr1_category": "EXPORT"
+      }
+    }
+  ],
+  "trained_at": "2026-06-30T09:12:02.454655Z",
+  "invoice_count": 28
+}

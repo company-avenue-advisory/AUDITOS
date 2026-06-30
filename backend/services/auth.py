@@ -17,9 +17,27 @@ from database import get_db
 from models import User
 
 # Load settings
-JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "audit-os-super-secret-key-development")
+_DEFAULT_SECRET = "audit-os-super-secret-key-development"
+JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", _DEFAULT_SECRET)
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))  # 24 hours default
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))
+
+_env = os.getenv("ENVIRONMENT", "development").lower()
+
+if JWT_SECRET_KEY == _DEFAULT_SECRET:
+    if _env == "production":
+        raise RuntimeError(
+            "\n\n[SECURITY] JWT_SECRET_KEY is set to the default development value in a production environment.\n"
+            "This means ANY token signed anywhere is valid on your server — a critical auth bypass.\n"
+            "Set a strong random secret in your environment variables before starting:\n\n"
+            "    python -c \"import secrets; print(secrets.token_hex(64))\"\n\n"
+            "Then add it to Render → Environment → JWT_SECRET_KEY\n"
+        )
+    else:
+        print(
+            "[AUTH WARNING] JWT_SECRET_KEY is using the default development secret. "
+            "Set ENVIRONMENT=production and a strong JWT_SECRET_KEY before going live."
+        )
 
 # OAuth2PasswordBearer resolves the token from 'Authorization: Bearer <token>' header
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/auth/login", auto_error=False)
@@ -55,6 +73,7 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     """
     FastAPI dependency that extracts the authenticated user from the database.
     Raises 401 Unauthorized if token is missing, expired, or invalid.
+    The returned User object includes tenant_id for row-level tenant isolation.
     """
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -70,7 +89,7 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
             raise credentials_exception
     except jwt.PyJWTError:
         raise credentials_exception
-        
+
     user = db.query(User).filter(User.email == email).first()
     if user is None:
         raise credentials_exception
@@ -80,6 +99,20 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
             detail="Inactive user account",
         )
     return user
+
+
+def require_same_tenant(resource_tenant_id: str, current_user: User):
+    """
+    Raises 403 if the resource belongs to a different tenant than the requesting user.
+    Use this to guard any endpoint that fetches a resource by its UUID directly.
+    """
+    if not resource_tenant_id or not current_user.tenant_id:
+        return  # graceful: unenrolled tenants (legacy data) are not blocked
+    if resource_tenant_id != current_user.tenant_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied: resource belongs to a different organisation.",
+        )
 
 class RoleChecker:
     """

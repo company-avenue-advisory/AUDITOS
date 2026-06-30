@@ -10,6 +10,9 @@ from backend.core.resolver import resolve_all_candidates
 from backend.core.extraction.extractor import run_ai_extraction
 from backend.core.mappers.gemini_mapper import map_gemini_to_canonical
 from backend.core.extraction.session import ExtractionSession
+from backend.services.vendor_profile import VendorProfileService
+
+_vendor_profile_svc = VendorProfileService()
 
 def process_document(document_path: str, context: ProcessingContext) -> DocumentBundle:
     """
@@ -45,24 +48,32 @@ def process_document(document_path: str, context: ProcessingContext) -> Document
     elif context.provider == "ollama":
         base_url = os.getenv("OLLAMA_API_BASE", "http://localhost:11434/v1")
         api_key = os.getenv("OLLAMA_API_KEY", "ollama")
-    else: # Default gemini open-ai native proxy wrapper
-        if os.getenv("GROQ_API_KEY"):
-            base_url = "https://api.groq.com/openai/v1"
-            api_key = os.getenv("GROQ_API_KEY")
-        else:
+    else: # Default: Gemini primary, Groq fallback
+        if os.getenv("GEMINI_API_KEY"):
             base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
-            api_key = os.getenv("GEMINI_API_KEY", "")
+            api_key = os.getenv("GEMINI_API_KEY")
+            context = context.model_copy(update={"model": "gemini-2.5-flash", "provider": "gemini"})
+        else:
+            base_url = "https://api.groq.com/openai/v1"
+            api_key = os.getenv("GROQ_API_KEY", "")
+            context = context.model_copy(update={"model": "llama-3.3-70b-versatile", "provider": "groq"})
 
     client = OpenAI(api_key=api_key, base_url=base_url)
-    
+
     # 6. AI Extraction
     invoice_type = context.configuration.get("invoice_type", "both")
+    full_text = "\n".join(page.raw_text for page in ocr_doc.pages)
+    vendor_profile = _vendor_profile_svc.detect(full_text)
+    if vendor_profile:
+        print(f"[VendorProfile] Matched: {vendor_profile.get('name', '?')}")
+    vendor_hints = _vendor_profile_svc.build_prompt_hints(vendor_profile, full_text) if vendor_profile else ""
     raw_extracted = run_ai_extraction(
-        layout_analysis, 
-        candidates, 
-        client, 
-        context.model, 
-        invoice_type=invoice_type
+        layout_analysis,
+        candidates,
+        client,
+        context.model,
+        invoice_type=invoice_type,
+        vendor_hints=vendor_hints,
     )
     
     # 7. Canonical Mapping
