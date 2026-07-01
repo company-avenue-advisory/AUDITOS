@@ -25,9 +25,12 @@ AuditOS is a highly specialized, enterprise-grade AI pipeline designed to automa
 - **Duplicate Invoice Detection:** Cross-batch deduplication using composite key hashing (GSTIN + invoice number + date + amount) to prevent double-booking.
 
 ### Google Drive Auto-Sync
-- Polls a configured Google Drive folder, downloads new PDFs, and queues them for extraction automatically via Celery.
-- Supports real-time webhook-based sync for instant processing, with a full sync history log.
-- ZIP ingestion: upload a ZIP of invoices to Drive and have them auto-extracted and processed.
+- **One-click pull:** Configure a Drive folder once (folder URL or ID), then trigger a sync from the UI — no CLI needed.
+- Per-tenant config persisted in the database (`GoogleDriveSyncConfig`); subsequent triggers reuse the saved folder without re-entering it.
+- Sync jobs run via Celery, downloading PDFs, deduplicating by MD5, extracting via the standard pipeline, and writing to Excel.
+- Deterministic `batch_id` (`sync_{tenant}_{YYYYMMDD}`) links each sync run to the existing Excel export endpoint — download with one click from the history table.
+- Celery Beat schedules (monthly by default) stored in `backend/data/beat_schedules.json` and registered on worker startup; never committed (excluded by `.gitignore`).
+- Supports real-time webhook-based sync for instant processing.
 
 ### Multi-Tenant & Auth
 - Full multi-tenant data isolation — each firm's data is scoped to their tenant, enforced at the API layer.
