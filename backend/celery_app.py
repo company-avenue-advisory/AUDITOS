@@ -1,5 +1,6 @@
 import os
 import sys
+import json
 import asyncio
 from celery import Celery
 from dotenv import load_dotenv
@@ -40,8 +41,54 @@ if broker_url:
         task_routes={
             "tasks.ocr_extract_task": {"queue": "ocr"},
             "tasks.process_batch_task": {"queue": "default"},
+            "tasks.google_drive_sync_task": {"queue": "default"},
         },
     )
+
+
+def _load_beat_schedules() -> dict:
+    """
+    Load persistent beat schedules from backend/data/beat_schedules.json.
+    Each entry written by setup_google_drive_sync.py becomes a live crontab schedule.
+    """
+    from celery.schedules import crontab
+
+    schedule_file = os.path.join(backend_dir, "data", "beat_schedules.json")
+    if not os.path.exists(schedule_file):
+        return {}
+
+    try:
+        with open(schedule_file, encoding="utf-8") as f:
+            registry = json.load(f)
+    except Exception as e:
+        print(f"[CeleryBeat] Warning: could not load beat_schedules.json — {e}")
+        return {}
+
+    schedules = {}
+    for name, entry in registry.items():
+        parts = entry.get("cron", "0 0 1 * *").split()
+        if len(parts) != 5:
+            print(f"[CeleryBeat] Skipping '{name}': invalid cron '{entry.get('cron')}'")
+            continue
+        minute, hour, dom, month, dow = parts
+        schedules[name] = {
+            "task": entry["task"],
+            "schedule": crontab(
+                minute=minute,
+                hour=hour,
+                day_of_month=dom,
+                month_of_year=month,
+                day_of_week=dow,
+            ),
+            "kwargs": entry.get("kwargs", {}),
+            "options": entry.get("options", {}),
+        }
+        print(f"[CeleryBeat] Registered schedule '{name}' — cron: {entry.get('cron')}")
+
+    return schedules
+
+
+celery_app.conf.beat_schedule = _load_beat_schedules()
 
 
 @celery_app.task(name="tasks.process_batch_task", bind=True, max_retries=2)
@@ -88,10 +135,9 @@ def google_drive_sync_task(self, tenant_id: str, google_drive_folder_id: str,
     Scheduled sync task — monitors Google Drive for new/updated invoices,
     processes them, and appends results to Excel.
 
-    Runs monthly (configurable via Celery Beat schedule).
+    Runs on the schedule registered via setup_google_drive_sync.py.
     Respects dedup via Google Drive file ID + md5Checksum.
     """
-    import json
     from services.google_drive_sync import GoogleDriveSyncPipeline
 
     try:

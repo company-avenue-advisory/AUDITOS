@@ -323,9 +323,11 @@ class GoogleDriveSyncPipeline:
             raise
 
     def _build_summary(self, sync_job) -> Dict:
-        """Build summary of sync results."""
+        """Build summary of sync results, including batch_id for Excel download."""
+        batch_id = f"sync_{sync_job.tenant_id}_{sync_job.sync_timestamp.strftime('%Y%m%d')}"
         return {
             "sync_job_id": sync_job.id,
+            "batch_id": batch_id,
             "status": sync_job.status,
             "total_files_found": sync_job.total_files_found,
             "new_files": sync_job.new_files,
@@ -333,5 +335,5 @@ class GoogleDriveSyncPipeline:
             "processed_files": sync_job.processed_files,
             "failed_files": sync_job.failed_files,
             "excel_output_path": sync_job.excel_output_path,
-            "duration_seconds": (sync_job.completed_at - sync_job.sync_timestamp).total_seconds() if sync_job.completed_at else None
+            "duration_seconds": (sync_job.completed_at - sync_job.sync_timestamp).total_seconds() if sync_job.completed_at else None,
         }

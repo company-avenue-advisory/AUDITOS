@@ -268,6 +268,23 @@ class GoogleDriveSyncJob(Base):
     completed_at     = Column(DateTime, nullable=True)
 
 
+class GoogleDriveSyncConfig(Base):
+    """
+    Per-tenant Google Drive sync configuration.
+    One row per tenant — upserted via POST /api/google-drive-sync/config.
+    Stores the folder the user wants to pull invoices from so they never
+    have to paste the URL again after the first setup.
+    """
+    __tablename__ = "google_drive_sync_configs"
+
+    tenant_id    = Column(String, ForeignKey("tenants.id"), primary_key=True)
+    folder_id    = Column(String, nullable=False)
+    invoice_type = Column(String, default="both")  # sales | purchase | both
+    schedule     = Column(String, default="0 0 1 * *")  # cron expression
+    created_at   = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at   = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class GoogleDriveWebhookChannel(Base):
     """
     Track active Google Drive watch channels for real-time sync.

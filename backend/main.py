@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from database import get_db, engine, Base, SessionLocal
-from models import BatchJob, InvoiceTask, TaskStatus, SalesLineItem, PurchaseLineItem, ObservabilityLog, UserSession, UserPreferences, UserAnnotation, Tenant, GoogleDriveSyncJob
+from models import BatchJob, InvoiceTask, TaskStatus, SalesLineItem, PurchaseLineItem, ObservabilityLog, UserSession, UserPreferences, UserAnnotation, Tenant, GoogleDriveSyncJob, GoogleDriveSyncConfig
 from async_tasks import process_batch
 from ws_manager import manager
 
@@ -1402,130 +1402,215 @@ async def ocr_extract_endpoint(file: UploadFile = File(...), provider: str = For
 
 # ── Google Drive Auto-Sync ────────────────────────────────────────────────────
 
-class GoogleDriveSyncRequest(BaseModel):
-    google_drive_folder_id: str
-    excel_output_path: str
-    invoice_type: str = "both"  # "sales", "purchase", or "both"
-    model_config: Optional[dict] = None
+class GoogleDriveSyncConfigRequest(BaseModel):
+    folder_id: str
+    invoice_type: str = "both"
+    schedule: str = "0 0 1 * *"
+
+
+class GoogleDriveSyncTriggerRequest(BaseModel):
+    # All fields optional — if omitted, saved config is used
+    folder_id: Optional[str] = None
+    invoice_type: Optional[str] = None
+    llm_config: Optional[dict] = None
+
+
+@app.get("/api/google-drive-sync/config")
+async def get_drive_sync_config(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return the saved Google Drive sync config for the current tenant."""
+    if not current_user.tenant_id:
+        return JSONResponse(content={"configured": False, "config": None, "no_tenant": True})
+    cfg = db.query(GoogleDriveSyncConfig).filter(
+        GoogleDriveSyncConfig.tenant_id == current_user.tenant_id
+    ).first()
+    if not cfg:
+        return JSONResponse(content={"configured": False, "config": None})
+    return JSONResponse(content={
+        "configured": True,
+        "config": {
+            "folder_id": cfg.folder_id,
+            "invoice_type": cfg.invoice_type,
+            "schedule": cfg.schedule,
+            "updated_at": cfg.updated_at.isoformat() if cfg.updated_at else None,
+        }
+    })
+
+
+@app.post("/api/google-drive-sync/config")
+async def save_drive_sync_config(
+    req: GoogleDriveSyncConfigRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RoleChecker(["owner", "developer"])),
+):
+    """
+    Save (or update) the Google Drive sync config for this tenant.
+    Also writes the Celery Beat schedule to beat_schedules.json so the
+    periodic sync picks up after a celery beat restart.
+    """
+    # Auto-create a tenant for this user if they don't have one yet
+    if not current_user.tenant_id:
+        email_slug = current_user.email.split("@")[0].lower().replace(".", "-")[:30]
+        existing_slug = db.query(Tenant).filter(Tenant.slug == email_slug).first()
+        slug = email_slug if not existing_slug else f"{email_slug}-{str(uuid.uuid4())[:6]}"
+        new_tenant = Tenant(name=current_user.email, slug=slug)
+        db.add(new_tenant)
+        db.flush()
+        current_user.tenant_id = new_tenant.id
+        db.commit()
+        db.refresh(current_user)
+
+    if req.invoice_type not in ["sales", "purchase", "both"]:
+        raise HTTPException(status_code=400, detail="invoice_type must be sales, purchase, or both")
+
+    # Upsert config row
+    cfg = db.query(GoogleDriveSyncConfig).filter(
+        GoogleDriveSyncConfig.tenant_id == current_user.tenant_id
+    ).first()
+    if cfg:
+        cfg.folder_id    = req.folder_id
+        cfg.invoice_type = req.invoice_type
+        cfg.schedule     = req.schedule
+    else:
+        cfg = GoogleDriveSyncConfig(
+            tenant_id=current_user.tenant_id,
+            folder_id=req.folder_id,
+            invoice_type=req.invoice_type,
+            schedule=req.schedule,
+        )
+        db.add(cfg)
+    db.commit()
+
+    # Register Celery Beat schedule
+    import json as _json
+    beat_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "beat_schedules.json")
+    try:
+        registry = _json.load(open(beat_file, encoding="utf-8")) if os.path.exists(beat_file) else {}
+        registry[f"google_drive_sync_{current_user.tenant_id}"] = {
+            "task": "tasks.google_drive_sync_task",
+            "cron": req.schedule,
+            "kwargs": {
+                "tenant_id": current_user.tenant_id,
+                "google_drive_folder_id": req.folder_id,
+                "excel_output_path": f"/data/sync_{current_user.tenant_id}.xlsx",
+                "invoice_type": req.invoice_type,
+                "model_config": None,
+            },
+            "options": {"queue": "default"},
+            "registered_at": datetime.utcnow().isoformat(),
+        }
+        with open(beat_file, "w", encoding="utf-8") as f:
+            _json.dump(registry, f, indent=2)
+    except Exception as e:
+        logger.warning("Could not update beat_schedules.json: %s", e)
+
+    return JSONResponse(content={"ok": True, "folder_id": cfg.folder_id, "invoice_type": cfg.invoice_type})
 
 
 @app.post("/api/google-drive-sync/trigger")
 async def trigger_google_drive_sync(
-    req: GoogleDriveSyncRequest,
+    req: GoogleDriveSyncTriggerRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
-    background_tasks: BackgroundTasks = None
 ):
     """
-    Manually trigger Google Drive sync for current user's tenant.
-    Returns task ID for status polling.
-
-    This is useful for:
-      - Testing the sync pipeline
-      - Manual one-time syncs
-      - Syncs outside the scheduled monthly window
-
-    The sync runs asynchronously via Celery.
+    Trigger an immediate Google Drive sync for the current tenant.
+    Uses saved config if folder_id / invoice_type are not provided in the request.
     """
     from celery_app import google_drive_sync_task
 
-    try:
-        # Get user's tenant
-        tenant = db.query(Tenant).filter(Tenant.id == current_user.tenant_id).first()
-        if not tenant:
-            raise HTTPException(status_code=404, detail="Tenant not found")
+    if not current_user.tenant_id:
+        raise HTTPException(status_code=400, detail="No tenant assigned to this user")
 
-        # Validate invoice type
-        if req.invoice_type not in ["sales", "purchase", "both"]:
-            raise HTTPException(status_code=400, detail="invoice_type must be 'sales', 'purchase', or 'both'")
+    # Resolve folder_id and invoice_type: request overrides saved config
+    folder_id    = req.folder_id
+    invoice_type = req.invoice_type
+    if not folder_id or not invoice_type:
+        cfg = db.query(GoogleDriveSyncConfig).filter(
+            GoogleDriveSyncConfig.tenant_id == current_user.tenant_id
+        ).first()
+        if not cfg:
+            raise HTTPException(
+                status_code=400,
+                detail="No Drive folder configured. Save config first via POST /api/google-drive-sync/config"
+            )
+        folder_id    = folder_id    or cfg.folder_id
+        invoice_type = invoice_type or cfg.invoice_type
 
-        # Dispatch async task
-        task = google_drive_sync_task.delay(
-            tenant_id=current_user.tenant_id,
-            google_drive_folder_id=req.google_drive_folder_id,
-            excel_output_path=req.excel_output_path,
-            invoice_type=req.invoice_type,
-            model_config=req.model_config
-        )
+    excel_path = f"/data/sync_{current_user.tenant_id}.xlsx"
 
-        return JSONResponse(content={
-            "status": "sync_started",
-            "task_id": task.id,
-            "tenant_id": current_user.tenant_id,
-            "message": "Google Drive sync started. Check status with /api/google-drive-sync/status/{task_id}"
-        })
+    task = google_drive_sync_task.delay(
+        tenant_id=current_user.tenant_id,
+        google_drive_folder_id=folder_id,
+        excel_output_path=excel_path,
+        invoice_type=invoice_type,
+        model_config=req.llm_config,
+    )
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to start sync: {str(e)}")
+    return JSONResponse(content={
+        "status": "sync_started",
+        "task_id": task.id,
+        "folder_id": folder_id,
+        "invoice_type": invoice_type,
+    })
 
 
 @app.get("/api/google-drive-sync/status/{task_id}")
 async def get_sync_status(task_id: str):
-    """
-    Check the status of a running Google Drive sync task.
+    """Poll status of a running sync task. Returns result including batch_id on SUCCESS."""
+    from celery_app import celery_app as _celery
 
-    Returns:
-      {
-        "task_id": "...",
-        "status": "PENDING|PROGRESS|SUCCESS|FAILURE",
-        "result": {...} or None,
-        "error": error message if failed
-      }
-    """
-    from celery_app import celery_app
+    task_result = _celery.AsyncResult(task_id)
+    result = None
+    if task_result.status == "SUCCESS" and isinstance(task_result.result, dict):
+        result = task_result.result
 
-    try:
-        task_result = celery_app.AsyncResult(task_id)
-
-        return JSONResponse(content={
-            "task_id": task_id,
-            "status": task_result.status,
-            "result": task_result.result if task_result.status == "SUCCESS" else None,
-            "error": str(task_result.info) if task_result.status == "FAILURE" else None
-        })
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get task status: {str(e)}")
+    return JSONResponse(content={
+        "task_id": task_id,
+        "status": task_result.status,
+        "result": result,
+        "error": str(task_result.info) if task_result.status == "FAILURE" else None,
+    })
 
 
 @app.get("/api/google-drive-sync/history")
 async def get_sync_history(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
-    limit: int = 10
+    limit: int = 20,
 ):
     """
-    Get sync history for current user's tenant.
-    Returns last N sync jobs with statistics.
+    Return sync job history for this tenant.
+    Each job includes a batch_id computed from tenant + date so the frontend
+    can construct a direct download URL using GET /api/export/{batch_id}.
     """
-    try:
-        sync_jobs = db.query(GoogleDriveSyncJob).filter(
-            GoogleDriveSyncJob.tenant_id == current_user.tenant_id
-        ).order_by(GoogleDriveSyncJob.sync_timestamp.desc()).limit(limit).all()
+    sync_jobs = db.query(GoogleDriveSyncJob).filter(
+        GoogleDriveSyncJob.tenant_id == current_user.tenant_id
+    ).order_by(GoogleDriveSyncJob.sync_timestamp.desc()).limit(limit).all()
 
-        return JSONResponse(content={
-            "tenant_id": current_user.tenant_id,
-            "sync_jobs": [
-                {
-                    "id": job.id,
-                    "sync_timestamp": job.sync_timestamp.isoformat(),
-                    "total_files_found": job.total_files_found,
-                    "new_files": job.new_files,
-                    "updated_files": job.updated_files,
-                    "processed_files": job.processed_files,
-                    "failed_files": job.failed_files,
-                    "status": job.status,
-                    "excel_output_path": job.excel_output_path,
-                    "completed_at": job.completed_at.isoformat() if job.completed_at else None
-                }
-                for job in sync_jobs
-            ]
-        })
+    def _batch_id(job):
+        # Deterministic: matches what GoogleDriveSyncPipeline._process_invoice() computes
+        return f"sync_{job.tenant_id}_{job.sync_timestamp.strftime('%Y%m%d')}"
 
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get sync history: {str(e)}")
+    return JSONResponse(content={
+        "sync_jobs": [
+            {
+                "id": job.id,
+                "batch_id": _batch_id(job),
+                "sync_timestamp": job.sync_timestamp.isoformat(),
+                "total_files_found": job.total_files_found,
+                "new_files": job.new_files,
+                "updated_files": job.updated_files,
+                "processed_files": job.processed_files,
+                "failed_files": job.failed_files,
+                "status": job.status,
+                "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+            }
+            for job in sync_jobs
+        ]
+    })
 
 
 if __name__ == "__main__":

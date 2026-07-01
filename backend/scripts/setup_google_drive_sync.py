@@ -81,69 +81,70 @@ def setup_celery_beat(tenant_id: str, google_drive_folder_id: str,
                       excel_output_path: str, invoice_type: str,
                       cron_expression: str = "0 0 1 * *"):
     """
-    Set up Celery Beat schedule for periodic sync.
+    Register a Celery Beat schedule for periodic sync.
+
+    Writes to backend/data/beat_schedules.json — celery_app.py reads this file
+    on startup and registers all entries as live crontab schedules.
 
     Args:
-        cron_expression: Standard 5-field cron expression
+        cron_expression: Standard 5-field cron expression.
                         Default: "0 0 1 * *" (monthly on 1st at 00:00 UTC)
     """
-    logger.info("Setting up Celery Beat schedule...")
+    logger.info("Registering Celery Beat schedule...")
 
+    # Validate cron expression (5 space-separated fields)
+    parts = cron_expression.strip().split()
+    if len(parts) != 5:
+        logger.error(f"Invalid cron expression (expected 5 fields): {cron_expression}")
+        return False
+
+    schedule_name = f"google_drive_sync_{tenant_id}"
+    entry = {
+        "task": "tasks.google_drive_sync_task",
+        "cron": cron_expression,
+        "kwargs": {
+            "tenant_id": tenant_id,
+            "google_drive_folder_id": google_drive_folder_id,
+            "excel_output_path": excel_output_path,
+            "invoice_type": invoice_type,
+            "model_config": None,
+        },
+        "options": {
+            "queue": "default",
+            "priority": 10,
+        },
+        "registered_at": datetime.utcnow().isoformat(),
+    }
+
+    registry_path = os.path.join(backend_dir, "data", "beat_schedules.json")
     try:
-        # Import Celery and beat scheduler
-        from celery import schedule
-        from celery_app import celery_app
+        if os.path.exists(registry_path):
+            with open(registry_path, encoding="utf-8") as f:
+                registry = json.load(f)
+        else:
+            registry = {}
 
-        # Parse cron expression
-        from croniter import croniter
-        if not croniter.is_valid(cron_expression):
-            logger.error(f"Invalid cron expression: {cron_expression}")
-            return False
+        registry[schedule_name] = entry
 
-        task_name = f"google_drive_sync_{tenant_id}"
+        with open(registry_path, "w", encoding="utf-8") as f:
+            json.dump(registry, f, indent=2, ensure_ascii=False)
 
-        # Add to Celery beat schedule
-        # This requires modifying celerybeat schedule (file or database)
-        # For now, we'll log the configuration
-
-        schedule_config = {
-            "task": "tasks.google_drive_sync_task",
-            "schedule": cron_expression,
-            "args": [],
-            "kwargs": {
-                "tenant_id": tenant_id,
-                "google_drive_folder_id": google_drive_folder_id,
-                "excel_output_path": excel_output_path,
-                "invoice_type": invoice_type,
-                "model_config": None
-            },
-            "options": {
-                "queue": "default",
-                "priority": 10
-            }
-        }
-
-        logger.info("Celery Beat schedule configuration:")
-        logger.info(json.dumps(schedule_config, indent=2))
-
-        logger.info("""
-To enable this schedule, add to your celerybeat configuration file or database:
-
-Option 1: Add to celerybeat-schedule (file-based):
-  {
-    "google_drive_sync_tenant_%s": %s
-  }
-
-Option 2: Use celery-beat-scheduler or similar tool to register the schedule.
-
-Option 3: For development, manually trigger with:
-  python -c "from celery_app import google_drive_sync_task; google_drive_sync_task.delay('%s', '%s', '%s', '%s')"
-        """ % (tenant_id, json.dumps(schedule_config, indent=2), tenant_id, google_drive_folder_id, excel_output_path, invoice_type))
-
+        logger.info(f"✓ Schedule '{schedule_name}' written to {registry_path}")
+        logger.info(f"  Cron: {cron_expression}  |  Invoice type: {invoice_type}")
+        logger.info("")
+        logger.info("Restart celery beat for the schedule to take effect:")
+        logger.info("  celery -A celery_app beat --loglevel=info")
+        logger.info("")
+        logger.info("To trigger an immediate on-demand sync:")
+        logger.info(
+            f"  python -c \"from celery_app import google_drive_sync_task; "
+            f"google_drive_sync_task.delay('{tenant_id}', '{google_drive_folder_id}', "
+            f"'{excel_output_path}', '{invoice_type}')\""
+        )
         return True
 
     except Exception as e:
-        logger.error(f"Error setting up Celery Beat: {e}")
+        logger.error(f"Error writing beat schedule to registry: {e}")
         return False
 
 

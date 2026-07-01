@@ -130,14 +130,20 @@ def main():
             continue
 
         items = res.sales_items or []
-        # Prefer overall_* fields (set by deterministic gst_table parser) over item sums.
-        # gst_table reads the printed GST summary row and is authoritative for totals,
-        # especially when the LLM picks wrong rows or misses the discount column.
-        ext_taxable = res.overall_taxable_value or sum(i.taxable_value or 0 for i in items) or 0
-        ext_cgst    = res.overall_cgst_amount   or sum(i.cgst_amount   or 0 for i in items) or 0
-        ext_sgst    = res.overall_sgst_amount   or sum(i.sgst_amount   or 0 for i in items) or 0
-        ext_igst    = res.overall_igst_amount   or sum(i.igst_amount   or 0 for i in items) or 0
-        ext_total   = res.overall_total_invoice_value or sum(i.total_invoice_value or 0 for i in items) or 0
+        # Golden was produced by the old script which summed per-row billing table values.
+        # Per-item sums are the correct source; gst_table (invoice summary) reflects
+        # post-advance/aggregated totals that differ from the per-row billing entries.
+        # Total = gross billing amount + taxes = sum(taxable + discount + cgst + sgst + igst)
+        # because the golden's TOTAL AMOUNT column = Amount(gross) + taxes, discount separate.
+        ext_taxable = sum(i.taxable_value or 0 for i in items) or res.overall_taxable_value or 0
+        ext_cgst    = sum(i.cgst_amount   or 0 for i in items) or res.overall_cgst_amount   or 0
+        ext_sgst    = sum(i.sgst_amount   or 0 for i in items) or res.overall_sgst_amount   or 0
+        ext_igst    = sum(i.igst_amount   or 0 for i in items) or res.overall_igst_amount   or 0
+        ext_total   = sum(
+            (i.taxable_value or 0) + (i.discount or 0) +
+            (i.cgst_amount or 0) + (i.sgst_amount or 0) + (i.igst_amount or 0)
+            for i in items
+        ) or res.overall_total_invoice_value or 0
 
         checks = {
             'taxable': ok(ext_taxable, g['taxable']),
@@ -166,6 +172,7 @@ def main():
                 'sgst': round(ext_sgst,2),       'igst': round(ext_igst,2),
                 'total': round(ext_total,2),
                 'items': [{'particulars': i.particulars, 'taxable': i.taxable_value,
+                           'discount': i.discount,
                            'cgst': i.cgst_amount, 'sgst': i.sgst_amount,
                            'igst': i.igst_amount, 'total': i.total_invoice_value,
                            'hsn': i.hsn, 'category': i.gstr1_category} for i in items],
@@ -226,18 +233,22 @@ def main():
         'name':             'ONE STACK SOLUTION PRIVATE LIMITED',
         'state':            'Haryana',
         'state_code':       '06',
+        'is_domestic_only': True,
         'invoice_number_prefix': ['MH260510', 'HR260510'],
         'hsn_codes':        sorted(hsn_codes),
         'tax_rule':         'interstate_igst_18_intrastate_cgst_sgst_18',
         'domestic_tax_rate': 18,
         'product_type':     'SaaS / Banking Software',
         'prompt_hints': [
-            'KNOWN VENDOR: ONE STACK SOLUTION PRIVATE LIMITED (GSTIN 06AAGCR4375J2Z1, Haryana)',
-            'Products: SaaS Mobile Application, UPI QR, Soundbox, Transactional/Promotional Messages, PAN/Aadhaar Verification',
-            'HSN 9971 = SaaS/Mobile App/UPI QR/Additional Users; HSN 998599 = SMS/Messages; HSN 998529 = Verification services',
-            'Interstate (buyer state != 06) → IGST 18%. Intrastate (buyer state = 06 Haryana) → CGST 9% + SGST 9%',
-            'Discount column = waiver/credit on gross amount. taxable_value = AMOUNT - DISCOUNT',
-            'Advances column = previous payment deducted. total_invoice_value = taxable + tax - advance',
+            'KNOWN VENDOR: ONE STACK SOLUTION PRIVATE LIMITED (GSTIN 06AAGCR4375J2Z1, Haryana) — DOMESTIC B2B INVOICE ONLY. Never set gstr1_category to EXPORT or EXP.',
+            'Products: SaaS Mobile Application, UPI QR, SoundBox, Transactional/Promotional Messages, PAN/Aadhaar/GST Verification, Late Fees Charges',
+            'HSN 9971 = SaaS/Mobile App/UPI QR/Additional Users; HSN 997319 = SoundBox; HSN 998599 = SMS/App Notifications/Messages; HSN 998529 = PAN/Aadhaar/Verification; HSN 998311 = Late Fees Charges',
+            'BILLING TABLE: Extract ONLY from the main billing/invoice table (sections A through G, each with Particulars, HSN, Amount, Discount, CGST, SGST, IGST columns). Do NOT extract from plan-description headers, usage-statistics sections (user count / transaction count rows), or balance-due summary rows.',
+            'TAXABLE VALUE: Use the "Sub Total" shown at the end of each billing section as taxable_value. If the section shows "Amount" and "Discount on Application", taxable_value = Amount − Discount (may be zero or negative). The plan label like "Rs. 5000 per month" is a plan name — use the printed Amount column value, not a computed plan price.',
+            'DISCOUNT FIELD: Set discount = the Discount column value for that billing row (e.g. if "Discount on Application = 2500", set discount=2500). If no discount row, discount = 0.',
+            'TAX AMOUNTS — OVERRIDE RULES 7 AND 9: Read the EXACT CGST, SGST, IGST amounts printed in the tax columns for each billing row. Do NOT compute tax amounts from taxable × rate. Do NOT infer intra/interstate from GSTIN state codes — just read whatever amounts are printed in the CGST / SGST / IGST columns for that row.',
+            'ADVANCES: "Less: Advance", "Previous Payment", or "Application Charges" in the balance-due summary section is NOT a billing row. Do not extract it as an item or use its value as any item amount or taxable value.',
+            'COMBINED ROWS: Some invoices combine all services into one line (e.g. "SaaS Mobile Application, UPI QR, Transactional Messages, Late Fees Charges"). Treat as one item.',
         ],
         'few_shot_examples': examples,
         'trained_on':       TRAINING_REFS,

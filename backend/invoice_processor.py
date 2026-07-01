@@ -297,29 +297,31 @@ def _extract_gst_summary_table(full_text: str) -> dict:
 
     result = {}
 
-    # ── GST summary data row ─────────────────────────────────────────────────
-    # Anchor to AFTER the "Taxable Value...Central Tax" header row so we don't
-    # accidentally match line-item numbers that happen to fit the numeric pattern.
+    # ── GST summary data row(s) ───────────────────────────────────────────────
+    # Anchor on the broad "Taxable Value...Central Tax" header (same text the old
+    # single-row regex used, so it matches all One Stack Solution invoices).  Then
+    # use finditer on the 2000-char window after the header to capture ALL data rows
+    # and sum them — this handles mixed CGST+SGST + IGST invoices where intrastate
+    # and interstate items appear on separate rows in the GST summary table.
     # Rate digits may be absent (shown as bare "%"), so the digit group is optional.
-    m = re.search(
-        r'Taxable Value.{0,300}?Central Tax.{0,600}?'   # anchor: must be in GST table
+    row_re = re.compile(
         r'([\d,]+\.[\d]{2})\s+'    # taxable value
         r'(\d*\.?\d*)\s*%\s+'      # CGST rate (may be blank → 0)
         r'([\d,]+\.[\d]{2})\s+'    # CGST amount
         r'(\d*\.?\d*)\s*%\s+'      # SGST rate
         r'([\d,]+\.[\d]{2})\s+'    # SGST amount
         r'(\d*\.?\d*)\s*%\s+'      # IGST rate
-        r'([\d,]+\.[\d]{2})',       # IGST amount
-        text, re.DOTALL
+        r'([\d,]+\.[\d]{2})'       # IGST amount
     )
-    if m:
-        result['taxable_value']  = _f(m.group(1))
-        result['cgst_rate']      = float(m.group(2)) if m.group(2) else 0.0
-        result['cgst_amount']    = _f(m.group(3))
-        result['sgst_rate']      = float(m.group(4)) if m.group(4) else 0.0
-        result['sgst_amount']    = _f(m.group(5))
-        result['igst_rate']      = float(m.group(6)) if m.group(6) else 0.0
-        result['igst_amount']    = _f(m.group(7))
+    header_m = re.search(r'Taxable Value.{0,300}?Central Tax', text, re.DOTALL)
+    if header_m:
+        after_header = text[header_m.end():]
+        rows = list(row_re.finditer(after_header[:2000]))
+        if rows:
+            result['taxable_value'] = round(sum(_f(r.group(1)) for r in rows), 2)
+            result['cgst_amount']   = round(sum(_f(r.group(3)) for r in rows), 2)
+            result['sgst_amount']   = round(sum(_f(r.group(5)) for r in rows), 2)
+            result['igst_amount']   = round(sum(_f(r.group(7)) for r in rows), 2)
 
     # ── Final Total — the post-advance GST base ───────────────────────────────
     ft = re.search(r'Final Total\s*\([^)]*\)\s+([\d,]+\.[\d]{2})', text)
@@ -542,17 +544,21 @@ def process_pdf(pdf_path, model_override=None, invoice_type="both", logger=None)
         if 'advance_amount' in gst_table:
             all_res.overall_advance_amount = gst_table['advance_amount']
 
-    # Guard: if the printed GST summary table shows non-zero taxes, the invoice is
-    # domestic — not an export/LUT invoice — regardless of any text-based detection.
-    # The GST table is deterministically parsed and is the legal ground truth.
-    if gst_table:
-        _gst_table_taxes = (
-            gst_table.get('cgst_amount', 0.0) +
-            gst_table.get('sgst_amount', 0.0) +
-            gst_table.get('igst_amount', 0.0)
-        )
-        if _gst_table_taxes > 0.0:
-            _is_export_invoice = False
+    # Guard: if the printed GST summary table OR the LLM-extracted overall amounts show
+    # non-zero taxes, the invoice is domestic — not export/LUT — regardless of any
+    # text-based export phrase detection (which can false-positive on vendor/product names).
+    _gst_table_taxes = (
+        gst_table.get('cgst_amount', 0.0) +
+        gst_table.get('sgst_amount', 0.0) +
+        gst_table.get('igst_amount', 0.0)
+    ) if gst_table else 0.0
+    _overall_taxes = (
+        (all_res.overall_cgst_amount or 0.0) +
+        (all_res.overall_sgst_amount or 0.0) +
+        (all_res.overall_igst_amount or 0.0)
+    )
+    if _gst_table_taxes > 0.0 or _overall_taxes > 0.0:
+        _is_export_invoice = False
 
     total_prompt_tokens = 0
     total_completion_tokens = 0
