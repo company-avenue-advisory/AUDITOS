@@ -31,6 +31,13 @@ code-level defects total.** Files touched in total:
 `frontend/src/app/google-drive-sync/page.tsx`,
 `backend/tests/test_security_phase1.py` (new).
 
+**Committed:** `aebbf4f` — "security: Phase 1 critical fixes + adversarial/review
+hardening". The commit contains only the 6 files listed above; the repository
+had substantial unrelated, pre-existing uncommitted work (Google Drive sync
+batching/subfolder features) at the time, which was carefully separated out
+hunk-by-hunk and left untouched in the working tree rather than folded into
+this commit.
+
 ---
 
 ## Verification methodology

@@ -195,3 +195,4 @@ frontend/src/
 - `backend/data/` and `data/` directories are in `.gitignore` — they contain client-specific data.
 - Use `.env.example` as the only committed env reference; replace all placeholder values before running.
 - Vendor profiles (per-client GSTIN extraction hints) are stored locally in `backend/data/vendor_profiles/` and must not be committed.
+- See [`SECURITY_REMEDIATION_PHASE1.md`](SECURITY_REMEDIATION_PHASE1.md) for the current state of the security audit: Critical findings fixed to date, remaining High/Medium/Low findings deferred to later phases, and the authorization model (`require_same_tenant`, `RoleChecker`) each protected endpoint follows.
