@@ -33,8 +33,8 @@ AuditOS is a highly specialized, enterprise-grade AI pipeline designed to automa
 - Supports real-time webhook-based sync for instant processing.
 
 ### Multi-Tenant & Auth
-- Full multi-tenant data isolation — each firm's data is scoped to their tenant, enforced at the API layer.
-- JWT-based authentication with bcrypt, role-based access control (RBAC), and `require_same_tenant` middleware.
+- Multi-tenant data isolation — each firm's data is scoped to their tenant via the `require_same_tenant` check, enforced per-endpoint at the API layer. As of Phase 1 (see [`SECURITY_REMEDIATION_PHASE1.md`](SECURITY_REMEDIATION_PHASE1.md)) this covers all Critical-severity endpoints; a small number of lower-severity endpoints are still pending this check and are tracked there.
+- JWT-based authentication with bcrypt and role-based access control (RBAC).
 - User session persistence and per-user preferences stored server-side.
 
 ### CA Audit Workspace
