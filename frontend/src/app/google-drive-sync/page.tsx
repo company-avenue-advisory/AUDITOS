@@ -216,14 +216,25 @@ export default function GoogleDriveSyncPage() {
     }
   };
 
-  const downloadExcel = (batchId: string, type: string) => {
+  const downloadExcel = async (batchId: string, type: string) => {
     const token = typeof window !== "undefined" ? localStorage.getItem("token") : "";
-    // Trigger download via anchor — token passed as query param since it's a GET download
-    const url = `${API_BASE}/api/export/${batchId}?type=${type}&token=${token}`;
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `sync_${batchId}.xlsx`;
-    a.click();
+    try {
+      const res = await fetch(`${API_BASE}/api/export/${batchId}?type=${type}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error("Export failed");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `sync_${batchId}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error("Failed to download export", e);
+    }
   };
 
   const derivedFolderId = extractFolderIdFromUrl(folderInput);

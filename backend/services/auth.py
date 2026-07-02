@@ -106,8 +106,13 @@ def require_same_tenant(resource_tenant_id: str, current_user: User):
     Raises 403 if the resource belongs to a different tenant than the requesting user.
     Use this to guard any endpoint that fetches a resource by its UUID directly.
     """
-    if not resource_tenant_id or not current_user.tenant_id:
-        return  # graceful: unenrolled tenants (legacy data) are not blocked
+    if not resource_tenant_id:
+        return  # graceful: legacy/global resources with no tenant are not blocked
+    # A resource DOES belong to a tenant here. A caller with no tenant of their
+    # own (e.g. a freshly self-registered, not-yet-assigned account) must never
+    # match it — only the "resource has no tenant" case above is a legitimate
+    # graceful pass. Falling through here previously let any unassigned user
+    # access every tenanted resource in the system.
     if resource_tenant_id != current_user.tenant_id:
         raise HTTPException(
             status_code=403,

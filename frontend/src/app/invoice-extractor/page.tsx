@@ -144,7 +144,10 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
     try {
       await fetch(`${API_BASE_URL}/api/items/${currentEdit.itemId}?type=${currentEdit.type}`, {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${localStorage.getItem("token")}`,
+        },
         body: JSON.stringify({ field: currentEdit.field, value: currentEdit.value })
       });
     } catch (e) {
@@ -167,7 +170,10 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
       try {
         await fetch(`${API_BASE_URL}/api/items/${row.id}?type=sales`, {
           method: "PUT",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${localStorage.getItem("token")}`,
+          },
           body: JSON.stringify({ field: "gstr1_category", value: newVal })
         });
       } catch (err) {
@@ -436,7 +442,9 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
     }
     
     try {
-      const res = await fetch(`${API_BASE_URL}/api/export/${batchId}?type=${downloadType}&schema=${exportSchema}`);
+      const res = await fetch(`${API_BASE_URL}/api/export/${batchId}?type=${downloadType}&schema=${exportSchema}`, {
+        headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+      });
 
       if (!res.ok) throw new Error("Export failed");
 

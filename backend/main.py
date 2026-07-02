@@ -147,8 +147,10 @@ async def register(req: UserRegisterRequest, db: Session = Depends(get_db)):
     if existing_user:
         raise HTTPException(status_code=400, detail="Email is already registered")
     
-    # Validate role
-    allowed_roles = ["owner", "hr", "auditor", "developer", "other"]
+    # Validate role. "developer" is a platform-wide RBAC bypass (see RoleChecker
+    # in services/auth.py) and must never be self-assignable at signup — it can
+    # only be granted via direct database provisioning.
+    allowed_roles = ["owner", "hr", "auditor", "other"]
     user_role = req.role.lower() if req.role else "auditor"
     if user_role not in allowed_roles:
         raise HTTPException(status_code=400, detail=f"Invalid role. Supported: {allowed_roles}")
@@ -228,6 +230,14 @@ async def create_tenant(
     db.add(tenant)
     db.commit()
     db.refresh(tenant)
+    # Atomically claim the tenant for its creator when a self-serve owner
+    # (not yet in any firm) creates one — this is the only legitimate way an
+    # owner should ever end up assigned to a tenant they didn't already
+    # belong to. "developer" accounts provisioning tenants on behalf of a
+    # client are deliberately NOT auto-assigned.
+    if current_user.role == "owner" and current_user.tenant_id is None:
+        current_user.tenant_id = tenant.id
+        db.commit()
     return {"tenant_id": tenant.id, "name": tenant.name, "slug": tenant.slug}
 
 @app.get("/api/admin/tenants")
@@ -246,7 +256,19 @@ async def assign_user_to_tenant(
     current_user: User = Depends(RoleChecker(["owner", "developer"])),
     db: Session = Depends(get_db),
 ):
-    """Assigns an existing user to a tenant."""
+    """
+    Assigns an existing user to a tenant.
+
+    Frontend call pattern (see firm-settings/page.tsx): an owner who already
+    belongs to a tenant invites a colleague (a different user) into that same
+    tenant. Tenant *creation* now atomically self-assigns the creating owner
+    (see create_tenant above), so this endpoint no longer needs — or allows —
+    a "claim a tenant I have no relationship to yet" bootstrap path. Without
+    this check, any self-registered "owner" could assign themselves (or
+    anyone) into any existing, populated tenant.
+    """
+    if current_user.role == "owner" and current_user.tenant_id != tenant_id:
+        raise HTTPException(status_code=403, detail="You can only assign members to your own firm.")
     tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found.")
@@ -476,15 +498,35 @@ async def get_all_jobs(db: Session = Depends(get_db), current_user: User = Depen
     } for b in batches]
 
 @app.get("/api/jobs/{batch_id}/files/{filename:path}")
-async def get_pdf_file(batch_id: str, filename: str, current_user: User = Depends(get_current_user)):
+async def get_pdf_file(
+    batch_id: str,
+    filename: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     import os, tempfile
-    
+
+    # Tenant isolation, matching the same pattern as get_job_status /
+    # export_to_excel: fetch the owning batch, 404 if it doesn't exist,
+    # 403 if it belongs to a different tenant.
+    batch = db.query(BatchJob).filter(BatchJob.id == batch_id).first()
+    if not batch:
+        raise HTTPException(status_code=404, detail="Job not found")
+    require_same_tenant(batch.tenant_id, current_user)
+
     with open("pdf_debug.log", "a", encoding="utf-8") as f:
         f.write(f"Requested batch_id: {batch_id}, filename: {filename}\n")
-    
+
     # Check direct in batch_id dir
     batch_dir = os.path.join(tempfile.gettempdir(), f"batch_{batch_id}")
+    batch_dir_real = os.path.realpath(batch_dir)
     file_path = os.path.join(batch_dir, filename)
+    file_path_real = os.path.realpath(file_path)
+    # Reject any filename ("../", absolute paths, etc.) that resolves outside
+    # the batch's own temp directory — prevents path traversal to arbitrary
+    # files on the host (e.g. the backend's .env).
+    if file_path_real != batch_dir_real and not file_path_real.startswith(batch_dir_real + os.sep):
+        raise HTTPException(status_code=400, detail="Invalid filename")
     if os.path.exists(file_path):
         return FileResponse(file_path, media_type="application/pdf")
         
@@ -872,13 +914,19 @@ async def websocket_endpoint(websocket: WebSocket, batch_id: str):
 
 
 @app.get("/api/export/{batch_id}")
-async def export_to_excel(batch_id: str, type: str, schema: str = "suvit", db: Session = Depends(get_db)):
+async def export_to_excel(
+    batch_id: str,
+    type: str,
+    schema: str = "suvit",
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     batch = db.query(BatchJob).filter(BatchJob.id == batch_id).first()
     if not batch:
         raise HTTPException(status_code=404, detail="Batch not found")
-        
-    tasks = db.query(InvoiceTask).filter(InvoiceTask.batch_id == batch_id).all()
-    
+
+    require_same_tenant(batch.tenant_id, current_user)
+
     from invoice_processor import SuvitSalesItem, SuvitPurchaseItem
     
     extraction_response = InvoiceExtractionResponse()
@@ -1279,18 +1327,33 @@ class ItemUpdateRequest(BaseModel):
     value: Any
 
 @app.put("/api/items/{item_id}")
-async def update_item(item_id: int, type: str, req: ItemUpdateRequest, db: Session = Depends(get_db)):
+async def update_item(
+    item_id: int,
+    type: str,
+    req: ItemUpdateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RoleChecker(["owner", "auditor"])),
+):
     if type == "sales":
         item = db.query(SalesLineItem).filter(SalesLineItem.id == item_id).first()
     elif type == "purchase":
         item = db.query(PurchaseLineItem).filter(PurchaseLineItem.id == item_id).first()
     else:
         raise HTTPException(status_code=400, detail="Invalid type")
-        
+
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
-        
-    if not hasattr(item, req.field):
+
+    # Tenant isolation: a line item's tenant is derived via task -> batch.
+    resource_tenant_id = item.task.batch.tenant_id if item.task and item.task.batch else None
+    require_same_tenant(resource_tenant_id, current_user)
+
+    # Primary/foreign-key columns must never be client-writable: rewriting
+    # `task_id` lets an in-tenant caller re-parent their own item onto a
+    # different (potentially cross-tenant) task, bypassing the tenant check
+    # above entirely after the fact.
+    NON_EDITABLE_FIELDS = {"id", "task_id"}
+    if req.field in NON_EDITABLE_FIELDS or not hasattr(item, req.field):
         raise HTTPException(status_code=400, detail="Invalid field")
         
     old_value = getattr(item, req.field)
