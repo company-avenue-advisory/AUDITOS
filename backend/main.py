@@ -86,16 +86,34 @@ logger = logging.getLogger("auditOS")
 app = FastAPI(title="AI Invoice Extractor API")
 
 # Configure CORS
+# ALLOWED_ORIGINS must be an explicit comma-separated list in production —
+# "*" combined with allow_credentials=True is a contradictory, insecure
+# configuration: it lets any website issue authenticated-looking requests
+# against every endpoint, including the ones that (as found in Phase 2)
+# had no auth check at all. Same fail-closed pattern as JWT_SECRET_KEY below.
+_environment = os.getenv("ENVIRONMENT", "development").lower()
 allowed_origins_str = os.getenv("ALLOWED_ORIGINS", "*")
-if allowed_origins_str == "*":
-    origins = ["*"]
-else:
-    origins = [origin.strip() for origin in allowed_origins_str.split(",") if origin.strip()]
+origins = [origin.strip() for origin in allowed_origins_str.split(",") if origin.strip()] or ["*"]
+_has_wildcard_origin = "*" in origins
+if _has_wildcard_origin and _environment == "production":
+    raise RuntimeError(
+        "\n\n[SECURITY] ALLOWED_ORIGINS includes '*' (unset defaults to this) in a "
+        "production environment. Combined with credentialed requests, this allows any "
+        "website to call this API. Set ALLOWED_ORIGINS to an explicit comma-separated "
+        "list of your frontend origin(s), with no '*' entry, before starting in "
+        "production.\n"
+    )
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
-    allow_credentials=True,
+    # Wildcard + credentials is a contradictory combination browsers already
+    # refuse to honor for credentialed requests, but Starlette will still
+    # advertise `Access-Control-Allow-Credentials: true` if told to. Only
+    # allow credentialed CORS once real origins are configured (no '*' entry,
+    # not just an exact ["*"] list -- an operator could otherwise smuggle a
+    # wildcard in among an explicit CSV list, e.g. "https://a.com,*").
+    allow_credentials=(not _has_wildcard_origin),
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -712,7 +730,11 @@ async def get_duplicate_invoices(
 
 
 @app.get("/api/tasks/{task_id}/review")
-async def get_task_review(task_id: str, db: Session = Depends(get_db)):
+async def get_task_review(
+    task_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """
     Phase 4A: Returns the full deterministic reconciliation audit report for a specific invoice task.
     Used to power the Review Panel UI with correction proposals, variance breakdowns, and status.
@@ -721,6 +743,7 @@ async def get_task_review(task_id: str, db: Session = Depends(get_db)):
     task = db.query(InvoiceTask).filter(InvoiceTask.id == task_id).first()
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
+    require_same_tenant(task.batch.tenant_id if task.batch else None, current_user)
 
     recon_data = None
     if task.recon_report_json:
@@ -746,15 +769,26 @@ async def accept_correction(task_id: str, db: Session = Depends(get_db), current
     task = db.query(InvoiceTask).filter(InvoiceTask.id == task_id).first()
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
+    require_same_tenant(task.batch.tenant_id if task.batch else None, current_user)
     task.recon_status = "HUMAN_CORRECTED"
     db.commit()
     return JSONResponse(content={"task_id": task_id, "recon_status": "HUMAN_CORRECTED", "accepted_by": current_user.email})
 
 @app.get("/api/tasks/{task_id}/observability")
-async def get_task_observability(task_id: str, db: Session = Depends(get_db)):
+async def get_task_observability(
+    task_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """
     Returns step-by-step pipeline execution logs for a specific file.
     """
+    from models import InvoiceTask
+    task = db.query(InvoiceTask).filter(InvoiceTask.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    require_same_tenant(task.batch.tenant_id if task.batch else None, current_user)
+
     logs = db.query(ObservabilityLog).filter(
         ObservabilityLog.file_id == task_id
     ).order_by(ObservabilityLog.timestamp_utc.asc()).all()
@@ -784,17 +818,35 @@ async def get_task_observability(task_id: str, db: Session = Depends(get_db)):
 async def get_observability_stats(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """
     Aggregates metrics and flags across the workspace for the landing dashboard.
+
+    Tenant-scoped: every aggregate below (batch/file counts, quality scores,
+    LLM cost totals, flags) is restricted to the caller's own tenant via a
+    join through BatchJob.tenant_id -- ObservabilityLog.tenant_id itself is
+    nullable and not reliably populated at every write site, so batch_id
+    (always set, per BatchJob's two creation paths) is the trustworthy join
+    key, matching the pattern the `recent_jobs` section below already used.
+
+    Deliberately unconditional (no "if current_user.tenant_id" branch): a
+    caller with no tenant of their own must see only legacy/untenanted
+    batches (SQLAlchemy's `== None` compiles to `IS NULL`), never every
+    tenant's data -- the same "unassigned caller is not a blanket pass"
+    correction Phase 1 already applied to `require_same_tenant`.
     """
     from models import BatchJob, InvoiceTask
-    
-    total_batches = db.query(BatchJob).count()
-    total_files = db.query(InvoiceTask).count()
-    
+
+    tenant_batch_ids = {
+        b.id for b in db.query(BatchJob.id).filter(BatchJob.tenant_id == current_user.tenant_id).all()
+    }
+
+    total_batches = db.query(BatchJob).filter(BatchJob.tenant_id == current_user.tenant_id).count()
+    total_files = db.query(InvoiceTask).filter(InvoiceTask.batch_id.in_(tenant_batch_ids)).count()
+    log_q = db.query(ObservabilityLog).filter(ObservabilityLog.batch_id.in_(tenant_batch_ids))
+
     # Query all quality scores
-    score_logs = db.query(ObservabilityLog).filter(
+    score_logs = log_q.filter(
         ObservabilityLog.event_type == "extraction_quality_score"
     ).all()
-    
+
     scores_by_file = {}
     scores = []
     for log in score_logs:
@@ -807,14 +859,14 @@ async def get_observability_stats(db: Session = Depends(get_db), current_user: U
                     scores.append(float(val))
             except:
                 pass
-            
+
     avg_score = round(sum(scores) / len(scores), 3) if scores else 1.0
-    
+
     # Query total cost from file metrics
-    metric_logs = db.query(ObservabilityLog).filter(
+    metric_logs = log_q.filter(
         ObservabilityLog.event_type == "file_metrics"
     ).all()
-    
+
     total_cost = 0.0
     for log in metric_logs:
         try:
@@ -822,9 +874,9 @@ async def get_observability_stats(db: Session = Depends(get_db), current_user: U
             total_cost += float(payload.get("model_cost", {}).get("total_cost_inr", 0.0))
         except:
             pass
-            
+
     # Query system flags
-    flag_logs = db.query(ObservabilityLog).filter(
+    flag_logs = log_q.filter(
         ObservabilityLog.event_type == "system_flag"
     ).order_by(ObservabilityLog.timestamp_utc.desc()).all()
     
@@ -844,11 +896,10 @@ async def get_observability_stats(db: Session = Depends(get_db), current_user: U
         except:
             pass
             
-    # Query recent jobs
-    batch_q = db.query(BatchJob)
-    if current_user.tenant_id:
-        batch_q = batch_q.filter(BatchJob.tenant_id == current_user.tenant_id)
-    batches = batch_q.order_by(BatchJob.created_at.desc()).limit(10).all()
+    # Query recent jobs (same tenant scoping as the aggregates above)
+    batches = db.query(BatchJob).filter(
+        BatchJob.tenant_id == current_user.tenant_id
+    ).order_by(BatchJob.created_at.desc()).limit(10).all()
     
     recent_jobs = []
     for b in batches:
@@ -931,6 +982,12 @@ async def export_to_excel(
     
     extraction_response = InvoiceExtractionResponse()
     
+    from sqlalchemy import or_
+    tasks = db.query(InvoiceTask).filter(
+        InvoiceTask.batch_id == batch_id,
+        or_(InvoiceTask.recon_status.is_(None), InvoiceTask.recon_status.notin_(["BLOCKED", "DUPLICATE"])),
+    ).all()
+
     if type in ["sales", "both"]:
         sales = []
         for t in tasks:
@@ -1059,7 +1116,11 @@ async def export_gstr1_json(
 
     require_same_tenant(batch.tenant_id, current_user)
 
-    tasks = db.query(InvoiceTask).filter(InvoiceTask.batch_id == batch_id).all()
+    from sqlalchemy import or_
+    tasks = db.query(InvoiceTask).filter(
+        InvoiceTask.batch_id == batch_id,
+        or_(InvoiceTask.recon_status.is_(None), InvoiceTask.recon_status.notin_(["BLOCKED", "DUPLICATE"])),
+    ).all()
     sales_items = []
     for t in tasks:
         if getattr(t, "sales_items", None):
@@ -1476,6 +1537,16 @@ class GoogleDriveSyncTriggerRequest(BaseModel):
     folder_id: Optional[str] = None
     invoice_type: Optional[str] = None
     llm_config: Optional[dict] = None
+    # Cap on new/changed files processed in this run. Extraction is LLM-bound
+    # (~80-90s/file) and the underlying Celery task has a 1-hour hard time
+    # limit, so large folders MUST be processed in bounded batches across
+    # multiple triggers rather than one unbounded run. None = no cap (only
+    # safe for small folders / small remaining backlogs).
+    max_files: Optional[int] = None
+    # Restrict this run to one Drive subfolder (e.g. a specific month), instead
+    # of scanning the whole configured folder tree. Get the id from
+    # GET /api/google-drive-sync/subfolders.
+    subfolder_id: Optional[str] = None
 
 
 @app.get("/api/google-drive-sync/config")
@@ -1572,6 +1643,33 @@ async def save_drive_sync_config(
     return JSONResponse(content={"ok": True, "folder_id": cfg.folder_id, "invoice_type": cfg.invoice_type})
 
 
+@app.get("/api/google-drive-sync/subfolders")
+async def list_drive_subfolders(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    List the immediate subfolders of the tenant's configured Drive folder —
+    used to populate a "which month?" picker, since clients commonly organize
+    invoices into month/year subfolders. Syncing one month at a time is a
+    natural, cost-bounded unit of work.
+    """
+    cfg = db.query(GoogleDriveSyncConfig).filter(
+        GoogleDriveSyncConfig.tenant_id == current_user.tenant_id
+    ).first()
+    if not cfg:
+        raise HTTPException(status_code=400, detail="No Drive folder configured yet.")
+
+    from services.google_drive import GoogleDriveConnector
+    try:
+        connector = GoogleDriveConnector(cfg.folder_id)
+        subfolders = connector.list_subfolders()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Could not list Drive subfolders: {e}")
+
+    return JSONResponse(content={"folder_id": cfg.folder_id, "subfolders": subfolders})
+
+
 @app.post("/api/google-drive-sync/trigger")
 async def trigger_google_drive_sync(
     req: GoogleDriveSyncTriggerRequest,
@@ -1610,13 +1708,16 @@ async def trigger_google_drive_sync(
         excel_output_path=excel_path,
         invoice_type=invoice_type,
         model_config=req.llm_config,
+        max_files=req.max_files,
+        subfolder_id=req.subfolder_id,
     )
 
     return JSONResponse(content={
         "status": "sync_started",
         "task_id": task.id,
-        "folder_id": folder_id,
+        "folder_id": req.subfolder_id or folder_id,
         "invoice_type": invoice_type,
+        "max_files": req.max_files,
     })
 
 
