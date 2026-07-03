@@ -15,7 +15,6 @@ import time
 from typing import List, Dict, Any, Tuple, Optional
 from enum import Enum
 from difflib import SequenceMatcher
-import easyocr
 
 # ────── Configuration & Limits ──────
 MAX_PDF_SIZE_MB = 50  # Max file size for bank statements
@@ -297,6 +296,7 @@ ocr_reader = None
 def get_ocr_reader():
     global ocr_reader
     if ocr_reader is None:
+        import easyocr  # optional dependency (see requirements.txt) — import only when Tier 3 OCR is actually used
         print("Initializing global EasyOCR Reader (lazy loading)...")
         ocr_reader = easyocr.Reader(['en'], gpu=False)
     return ocr_reader

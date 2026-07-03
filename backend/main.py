@@ -131,7 +131,7 @@ async def log_requests(request: Request, call_next):
     response = await call_next(request)
     latency_ms = round((_time.perf_counter() - t0) * 1000)
     # Skip noisy health-check paths to keep logs clean
-    if request.url.path not in ("/", "/docs", "/openapi.json"):
+    if request.url.path not in ("/", "/health", "/docs", "/openapi.json"):
         logger.info(
             '"method":"%s","path":"%s","status":%d,"latency_ms":%d',
             request.method,
@@ -368,6 +368,17 @@ async def get_my_tenant(
     if not tenant:
         return {"tenant": None}
     return {"tenant": {"id": tenant.id, "name": tenant.name, "slug": tenant.slug}}
+
+
+@app.get("/health")
+async def health():
+    """
+    Bare liveness probe: process is up and serving requests. No DB, Celery,
+    or Redis dependency, so it stays green during local dev even before those
+    are running. Used by the container HEALTHCHECK; use /api/health/workers
+    for task-queue readiness.
+    """
+    return {"status": "ok"}
 
 
 @app.get("/api/health/workers")
