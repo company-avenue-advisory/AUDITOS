@@ -157,6 +157,41 @@ The app will be at `http://localhost:3000`.
 - **Windows:** `START_ALL_WINDOWS.bat`
 - **Linux/macOS:** `START_ALL_LINUX.sh`
 
+### Quality Gates
+
+Install dev tooling and the pre-commit hook once per clone:
+
+```bash
+pip install -r backend/requirements-dev.txt
+pre-commit install
+```
+
+From then on, every `git commit` automatically lints, checks for secrets, and
+fixes trivial whitespace issues — no manual "remember to run the linter" step.
+
+CI (`.github/workflows/`) runs on every push/PR:
+
+| Check | Backend | Frontend | Blocking? |
+|---|---|---|---|
+| Tests + coverage | `pytest --cov` | — | Yes (coverage floor: 36%) |
+| Correctness lint | `ruff check` (core rules) | `eslint` | Backend: yes · Frontend: advisory |
+| Type check | `mypy` | `tsc --noEmit` | Backend: advisory · Frontend: yes |
+| Build | — | `next build` | Yes |
+| Dependency audit | `pip-audit` | `npm audit --audit-level=high` | Yes (backend: any known vuln · frontend: high/critical only) |
+| Secret scan | `gitleaks` | `gitleaks` | Yes |
+| SAST | CodeQL (Python + TS) | CodeQL (Python + TS) | Advisory (Security tab) |
+
+Backend lint and type-check run in two tiers: a small "core" rule set (real
+bugs — undefined names, syntax errors) is enforced and blocks merges; the
+full lint/type baseline runs alongside as an advisory report, since the
+codebase has ~250 pre-existing style findings and no repo-wide type
+coverage yet — both are visible in CI output for incremental cleanup rather
+than a one-time bulk fix. Frontend eslint is advisory for the same reason
+(71 pre-existing findings); `tsc --noEmit` is a clean, blocking baseline.
+
+Dependabot opens weekly PRs for outdated/vulnerable pip, npm, and GitHub
+Actions dependencies automatically.
+
 ---
 
 ## Project Structure

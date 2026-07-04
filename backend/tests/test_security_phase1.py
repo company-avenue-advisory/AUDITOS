@@ -57,11 +57,46 @@ os.environ.setdefault("SENTRY_DSN", "")
 
 import main  # noqa: E402  (import after env setup, by design)
 from fastapi.testclient import TestClient  # noqa: E402
-from database import SessionLocal  # noqa: E402
+from sqlalchemy import create_engine  # noqa: E402
+from sqlalchemy.orm import sessionmaker  # noqa: E402
+import database  # noqa: E402
+from database import get_db  # noqa: E402
 from models import User, Tenant, BatchJob, InvoiceTask, SalesLineItem, TaskStatus  # noqa: E402
 from services.auth import hash_password  # noqa: E402
 
 client = TestClient(main.app)
+
+# This module's own engine/session, isolated from every other test module.
+#
+# `database`/`main` are cached in sys.modules process-wide, and pytest
+# imports (collects) every test module before running any of them. A prior
+# version of this isolation rebound the *shared* `database.SessionLocal`
+# object in place at import time -- but since collection imports all test
+# files first, whichever file was collected *last* won that rebind, and
+# BOTH suites then ran against that one engine during execution regardless
+# of which file's tests were actually running. Overriding the `get_db`
+# FastAPI dependency in setUpModule/tearDownModule (which run at execution
+# time, immediately before/after this module's own tests) avoids that
+# collection-order hazard entirely.
+_test_engine = create_engine(f"sqlite:///{_TEST_DB_PATH}", connect_args={"check_same_thread": False})
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=_test_engine)
+
+
+def _override_get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+def setUpModule():
+    database.Base.metadata.create_all(bind=_test_engine)
+    main.app.dependency_overrides[get_db] = _override_get_db
+
+
+def tearDownModule():
+    main.app.dependency_overrides.pop(get_db, None)
 
 
 def _unique_email(prefix="user"):

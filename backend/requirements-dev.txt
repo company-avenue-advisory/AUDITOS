@@ -1,0 +1,8 @@
+# Developer/CI tooling only -- not required to run the application.
+# Install with: pip install -r requirements.txt -r requirements-dev.txt
+ruff==0.15.20
+mypy==2.1.0
+pytest==9.1.1
+pytest-cov==7.1.0
+pip-audit==2.10.1
+pre-commit==4.6.0
