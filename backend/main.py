@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from database import get_db, engine, Base, SessionLocal
-from models import BatchJob, InvoiceTask, TaskStatus, SalesLineItem, PurchaseLineItem, ObservabilityLog, UserSession, UserPreferences, UserAnnotation, Tenant, GoogleDriveSyncJob, GoogleDriveSyncConfig, SalesPeriodReview
+from models import BatchJob, InvoiceTask, TaskStatus, SalesLineItem, PurchaseLineItem, ObservabilityLog, UserSession, UserPreferences, UserAnnotation, Tenant, GoogleDriveSyncJob, GoogleDriveSyncConfig, SalesPeriodReview, PurchaseGstr2bReview
 from async_tasks import process_batch
 from ws_manager import manager
 
@@ -1293,6 +1293,135 @@ async def reject_period_review_endpoint(
 
     try:
         rejected = reject_period_review(db, review_id, current_user.id, notes=req.notes or "")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except ReviewStateError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return get_review_detail(rejected)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Purchase / GSTR-2B Reconciliation Review Gate (Phase A automation) —
+# mirrors the Sales Period Review Gate above; see services/purchase_review.py
+# and models.PurchaseGstr2bReview.
+# ─────────────────────────────────────────────────────────────────────────
+
+class Gstr2bReviewDecisionRequest(BaseModel):
+    notes: Optional[str] = None
+
+
+@app.post("/api/purchase/gstr2b-reviews/generate")
+async def generate_gstr2b_review(
+    background_tasks: BackgroundTasks,
+    period: str = Form(...),        # "YYYY-MM"
+    gstin: str = Form(...),         # which OneStack registration this 2B was issued for
+    gstr2b_file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RoleChecker(["owner", "auditor"])),
+):
+    """
+    Runs GSTR-2B reconciliation (gstr2b_reconciler.py) for this tenant's
+    given period/GSTIN against an uploaded GSTR-2B JSON, and persists the
+    result as a PENDING_REVIEW PurchaseGstr2bReview row. Always creates a
+    fresh review (skip_if_pending=False), matching the Sales manual
+    endpoint's reasoning - a human hitting "generate" wants the current
+    state now. The scheduled Drive-drop chain (celery_app.py's
+    gstr2b_ingestion_task) calls the same generate_review_for_tenant with
+    skip_if_pending=True instead.
+    """
+    from services.purchase_review import generate_review_for_tenant, get_review_detail
+
+    if not current_user.tenant_id:
+        raise HTTPException(status_code=400, detail="Current user has no tenant assigned")
+
+    tmp_dir = tempfile.mkdtemp(prefix="gstr2b_review_")
+    file_path = os.path.join(tmp_dir, gstr2b_file.filename)
+    with open(file_path, "wb") as f:
+        shutil.copyfileobj(gstr2b_file.file, f)
+
+    try:
+        review, _created = generate_review_for_tenant(
+            db, current_user.tenant_id, period, gstin, file_path, skip_if_pending=False
+        )
+    except (ValueError, json.JSONDecodeError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return get_review_detail(review)
+
+
+@app.get("/api/purchase/gstr2b-reviews")
+async def list_gstr2b_reviews(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Lists this tenant's GSTR-2B reviews, most recent first."""
+    if not current_user.tenant_id:
+        return []
+    reviews = (
+        db.query(PurchaseGstr2bReview)
+        .filter(PurchaseGstr2bReview.tenant_id == current_user.tenant_id)
+        .order_by(PurchaseGstr2bReview.created_at.desc())
+        .all()
+    )
+    return [{
+        "id": r.id, "period": r.period, "gstin": r.gstin, "status": r.status,
+        "created_at": r.created_at.isoformat() if r.created_at else None,
+        "reviewed_at": r.reviewed_at.isoformat() if r.reviewed_at else None,
+    } for r in reviews]
+
+
+@app.get("/api/purchase/gstr2b-reviews/{review_id}")
+async def get_gstr2b_review(
+    review_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    from services.purchase_review import get_review_detail
+
+    review = db.query(PurchaseGstr2bReview).filter(PurchaseGstr2bReview.id == review_id).first()
+    if not review:
+        raise HTTPException(status_code=404, detail="GSTR-2B review not found")
+    require_same_tenant(review.tenant_id, current_user)
+    return get_review_detail(review)
+
+
+@app.post("/api/purchase/gstr2b-reviews/{review_id}/approve")
+async def approve_gstr2b_review_endpoint(
+    review_id: str,
+    req: Gstr2bReviewDecisionRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RoleChecker(["owner", "auditor"])),
+):
+    from services.purchase_review import approve_review, get_review_detail, ReviewStateError
+
+    review = db.query(PurchaseGstr2bReview).filter(PurchaseGstr2bReview.id == review_id).first()
+    if not review:
+        raise HTTPException(status_code=404, detail="GSTR-2B review not found")
+    require_same_tenant(review.tenant_id, current_user)
+
+    try:
+        approved = approve_review(db, review_id, current_user.id, notes=req.notes)
+    except ReviewStateError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return get_review_detail(approved)
+
+
+@app.post("/api/purchase/gstr2b-reviews/{review_id}/reject")
+async def reject_gstr2b_review_endpoint(
+    review_id: str,
+    req: Gstr2bReviewDecisionRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RoleChecker(["owner", "auditor"])),
+):
+    from services.purchase_review import reject_review, get_review_detail, ReviewStateError
+
+    review = db.query(PurchaseGstr2bReview).filter(PurchaseGstr2bReview.id == review_id).first()
+    if not review:
+        raise HTTPException(status_code=404, detail="GSTR-2B review not found")
+    require_same_tenant(review.tenant_id, current_user)
+
+    try:
+        rejected = reject_review(db, review_id, current_user.id, notes=req.notes or "")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except ReviewStateError as e:

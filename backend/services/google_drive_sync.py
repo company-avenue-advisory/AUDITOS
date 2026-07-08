@@ -36,7 +36,10 @@ from models import (
     Tenant, InvoiceTask, BatchJob, TaskStatus, SalesLineItem, PurchaseLineItem,
     GoogleDriveFileTracker, GoogleDriveSyncJob
 )
-from services.drive_classifier import walk_and_classify, DocumentType, ClassifiedFile
+from services.drive_classifier import (
+    walk_and_classify, walk_and_classify_purchase, classify_local_directory_purchase,
+    DocumentType, ClassifiedFile,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -119,12 +122,14 @@ class GoogleDriveSyncPipeline:
             invoice_files = [f for f in classified_files if f.document_type == DocumentType.INVOICE]
             credit_note_files = [f for f in classified_files if f.document_type == DocumentType.CREDIT_NOTE]
             client_sheet_files = [f for f in classified_files if f.document_type == DocumentType.CLIENT_SHEET]
+            archive_files = [f for f in classified_files if f.document_type == DocumentType.ARCHIVE]
             unknown_files = [f for f in classified_files if f.document_type == DocumentType.UNKNOWN]
 
             logger.info(
                 f"[GoogleDriveSync] Classified {len(classified_files)} files: "
                 f"{len(invoice_files)} invoice, {len(credit_note_files)} credit_note, "
-                f"{len(client_sheet_files)} client_sheet, {len(unknown_files)} unknown"
+                f"{len(client_sheet_files)} client_sheet, {len(archive_files)} archive, "
+                f"{len(unknown_files)} unknown"
             )
             for f in unknown_files:
                 logger.warning(f"[GoogleDriveSync] UNKNOWN document type, not processed: {'/'.join(f.path)}/{f.name}")
@@ -132,6 +137,15 @@ class GoogleDriveSyncPipeline:
             # Credit notes now have an extractor - process them.
             temp_dir_cn = tempfile.mkdtemp(prefix="google_drive_sync_cn_")
             cn_processed, cn_failed = self._process_credit_note_files(credit_note_files, temp_dir_cn, sync_job)
+
+            # Archives (.zip) only ever show up in a Purchase sync - a
+            # vendor's own zipped batch (confirmed present in OneStack's
+            # real Purchase tree this session). Extract + process their
+            # contents through the same purchase extraction path.
+            temp_dir_archive = tempfile.mkdtemp(prefix="google_drive_sync_archive_")
+            archive_processed, archive_failed = self._process_archive_files(
+                archive_files, temp_dir_archive, sync_job, model_config
+            )
 
             # Client sheet now has a parser - parse and log a summary. Not
             # persisted to the DB yet: there's no reconciliation engine (a
@@ -155,6 +169,9 @@ class GoogleDriveSyncPipeline:
             self._credit_notes_processed = cn_processed
             self._credit_notes_failed = cn_failed
             self._client_sheets_found = len(client_sheet_files)
+            self._archives_found = len(archive_files)
+            self._archives_processed = archive_processed
+            self._archives_failed = archive_failed
             self._unknown_found = len(unknown_files)
 
             drive_files = invoice_files
@@ -261,9 +278,21 @@ class GoogleDriveSyncPipeline:
         pipeline - only touches self.drive.list_files) so it can be unit
         tested against a fixture lister without live Drive credentials,
         DB, or Celery.
+
+        A pure "purchase" sync uses walk_and_classify_purchase instead of
+        the Sales-tree walker - OneStack's real Purchase Drive tree
+        organizes invoices into the vendor's own expense-category
+        subfolders (HR, Telecom, Rental, ...), which carry no document-
+        type meaning the way Sales' "Credit Note"/"Sales Invoice" folders
+        do (see drive_classifier.classify_purchase_file). "both" still
+        uses the Sales walker since it's a single Drive tree being walked
+        either way - a true multi-root Purchase+Sales sync is two
+        separate pipeline runs (two different root folder IDs), not one.
         """
         def lister(folder_id: str):
             return self.drive.list_files(file_types=None, folder_id=folder_id)
+        if self.invoice_type == "purchase":
+            return walk_and_classify_purchase(lister, self.google_drive_folder_id)
         return walk_and_classify(lister, self.google_drive_folder_id)
 
     def _track_unprocessed(self, files: List[ClassifiedFile], reason: str):
@@ -390,6 +419,76 @@ class GoogleDriveSyncPipeline:
                 logger.error(f"[GoogleDriveSync] Error processing credit note {filename}: {e}")
                 self.file_tracker.mark_as_failed(file_id, str(e))
                 sync_job.failed_files += 1
+                failed += 1
+
+        self.db.commit()
+        return processed, failed
+
+    def _process_archive_files(self, archive_files: List[ClassifiedFile], temp_dir: str,
+                                sync_job, model_config: Dict = None) -> Tuple[int, int]:
+        """
+        Downloads and extracts each classified .zip (only produced by a
+        Purchase sync - see classify_purchase_file), classifies its
+        contents the same extension-only way as the rest of a Purchase
+        sync, and processes every nested invoice found inside through the
+        normal purchase extraction path. Dedup is tracked against the
+        ZIP's own Drive file id/md5 as a single unit (re-processing every
+        file inside only when the zip itself changes), not per nested
+        file, since nested files have no Drive file id of their own.
+
+        Returns (processed_count, failed_count) - counts of nested
+        invoices actually extracted, not archives themselves.
+        """
+        import zipfile
+        from services.drive_classifier import classify_local_directory_purchase as _classify_purchase_dir
+
+        processed = 0
+        failed = 0
+        for cf in archive_files:
+            file_id = cf.id
+            filename = cf.name
+            md5 = cf.md5_checksum or ""
+            modified_time = cf.modified_time or ""
+
+            if self.file_tracker.is_file_processed(file_id, md5):
+                continue
+
+            try:
+                self.file_tracker.mark_as_processing(file_id, self.tenant_id, filename, md5, modified_time)
+
+                zip_local_path = os.path.join(temp_dir, filename)
+                if not self.drive.download_file(file_id, filename, zip_local_path):
+                    raise Exception(f"Failed to download {filename}")
+
+                extract_dir = os.path.join(temp_dir, f"extracted_{uuid4().hex[:8]}")
+                os.makedirs(extract_dir, exist_ok=True)
+                with zipfile.ZipFile(zip_local_path, "r") as zf:
+                    zf.extractall(extract_dir)
+
+                nested = _classify_purchase_dir(extract_dir)
+                for nf in nested:
+                    if nf.document_type != DocumentType.INVOICE:
+                        logger.warning(
+                            f"[GoogleDriveSync] {filename}: found but not processed "
+                            f"({nf.document_type.value}): {'/'.join(nf.path)}/{nf.name}"
+                        )
+                        continue
+                    nested_path = nf.id  # local_directory_lister sets id to the real file path
+                    task_id = self._process_invoice(nested_path, nf.name, model_config)
+                    if task_id:
+                        self._append_to_excel(task_id, f"{filename}::{nf.name}")
+                        sync_job.processed_files += 1
+                        processed += 1
+                    else:
+                        logger.error(f"[GoogleDriveSync] Failed to extract invoice from {filename}::{nf.name}")
+                        sync_job.failed_files += 1
+                        failed += 1
+
+                self.file_tracker.mark_as_completed(file_id, None)
+
+            except Exception as e:
+                logger.error(f"[GoogleDriveSync] Error processing archive {filename}: {e}")
+                self.file_tracker.mark_as_failed(file_id, str(e))
                 failed += 1
 
         self.db.commit()
@@ -550,6 +649,9 @@ class GoogleDriveSyncPipeline:
             "credit_notes_processed": getattr(self, "_credit_notes_processed", 0),
             "credit_notes_failed": getattr(self, "_credit_notes_failed", 0),
             "client_sheets_found": getattr(self, "_client_sheets_found", 0),
+            "archives_found": getattr(self, "_archives_found", 0),
+            "archives_processed": getattr(self, "_archives_processed", 0),
+            "archives_failed": getattr(self, "_archives_failed", 0),
             "unknown_found": getattr(self, "_unknown_found", 0),
             "period_review": getattr(self, "_period_review_result", {"attempted": False}),
         }
