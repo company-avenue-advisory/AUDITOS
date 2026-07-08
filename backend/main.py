@@ -444,6 +444,18 @@ async def upload_batch(background_tasks: BackgroundTasks, files: List[UploadFile
                     classified = classify_local_directory(extract_dir)
 
                     for cf in classified:
+                        if cf.document_type == DocumentType.CREDIT_NOTE:
+                            from services.credit_note_ingest import ingest_credit_note_pdf
+                            try:
+                                cn_task_id = ingest_credit_note_pdf(
+                                    db, current_user.tenant_id, batch_id, cf.id, cf.name
+                                )
+                                if not cn_task_id:
+                                    print(f"[upload_batch] {cf.name} classified as credit_note but 'Credit Note Number' not found in text")
+                            except Exception as e:
+                                print(f"[upload_batch] Error processing credit note {cf.name}: {e}")
+                            continue
+
                         if cf.document_type != DocumentType.INVOICE:
                             location = "/".join(cf.path) if cf.path else "(zip root)"
                             print(f"[upload_batch] Found but not yet processed ({cf.document_type.value}, no extractor for this type yet): {location}/{cf.name}")

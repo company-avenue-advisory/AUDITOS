@@ -6,11 +6,15 @@ Workflow:
      (invoice / credit_note / client_sheet / ignore / unknown) - see
      drive_classifier.py. Folder location is the classification signal,
      never the filename (proven unreliable against OneStack's real tree).
-  2. Only INVOICE files go through the existing extraction pipeline for
-     now. CREDIT_NOTE and CLIENT_SHEET are tracked (so they're never
-     silently lost) but deliberately not extracted yet - their extractors
-     don't exist yet and running the invoice extractor on a credit note
-     would misparse it the same way the discount-line bug did.
+  2. INVOICE files go through the existing extraction pipeline. CREDIT_NOTE
+     files go through invoice_processor.extract_credit_note (a separate,
+     deterministic path - never through the invoice extractor, which would
+     misparse them the same way the discount-line bug did). Buyer GSTIN is
+     resolved by looking up the credit note's Original Invoice Number
+     against this tenant's own past invoices; if that invoice isn't on
+     record, the credit note is still stored (GSTIN left blank) rather than
+     lost, flagged for manual resolution - never a fabricated GSTIN.
+     CLIENT_SHEET is still just tracked - no parser exists yet.
   3. Check dedup database (track by id + md5Checksum)
   4. Download new/changed files
   5. Process through existing extraction pipeline
@@ -113,15 +117,17 @@ class GoogleDriveSyncPipeline:
             for f in unknown_files:
                 logger.warning(f"[GoogleDriveSync] UNKNOWN document type, not processed: {'/'.join(f.path)}/{f.name}")
 
-            # Credit notes and the client sheet are tracked (never silently
-            # lost) but not extracted yet - no credit-note or client-sheet
-            # parser exists. Only INVOICE files go through the pipeline below.
-            self._track_unprocessed(credit_note_files, reason="credit_note extractor not yet built")
+            # Credit notes now have an extractor - process them. The client
+            # sheet still doesn't have a parser, so it's still just tracked.
+            temp_dir_cn = tempfile.mkdtemp(prefix="google_drive_sync_cn_")
+            cn_processed, cn_failed = self._process_credit_note_files(credit_note_files, temp_dir_cn, sync_job)
             self._track_unprocessed(client_sheet_files, reason="client_sheet parser not yet built")
 
             # stashed on self so _build_summary() can include them from every
             # return point in this method without threading them through each one
             self._credit_notes_found = len(credit_note_files)
+            self._credit_notes_processed = cn_processed
+            self._credit_notes_failed = cn_failed
             self._client_sheets_found = len(client_sheet_files)
             self._unknown_found = len(unknown_files)
 
@@ -245,6 +251,64 @@ class GoogleDriveSyncPipeline:
         for f in files:
             location = "/".join(f.path) if f.path else "(month root)"
             logger.info(f"[GoogleDriveSync] Found but not yet processed ({reason}): {location}/{f.name}")
+
+    def _process_credit_note_files(self, credit_note_files: List[ClassifiedFile],
+                                    temp_dir: str, sync_job) -> Tuple[int, int]:
+        """
+        Downloads and stores each classified credit-note file via the
+        shared credit_note_ingest module (also used by main.py's zip
+        upload path, so GSTIN resolution and SalesLineItem construction
+        don't drift between the two entry points). Returns
+        (processed_count, failed_count).
+
+        voucher_type="Credit Note" is what classify_gstr1_item already
+        keys off to route these into CDNR/CDNUR in gstr1_generator.py -
+        no new downstream plumbing needed for the ones with a resolvable
+        GSTIN.
+        """
+        from services.credit_note_ingest import ingest_credit_note_pdf
+
+        processed = 0
+        failed = 0
+        for cf in credit_note_files:
+            file_id = cf.id
+            filename = cf.name
+            md5 = cf.md5_checksum or ""
+            modified_time = cf.modified_time or ""
+
+            if self.file_tracker.is_file_processed(file_id, md5):
+                continue
+
+            try:
+                self.file_tracker.mark_as_processing(file_id, self.tenant_id, filename, md5, modified_time)
+
+                local_path = os.path.join(temp_dir, filename)
+                if not self.drive.download_file(file_id, filename, local_path):
+                    raise Exception(f"Failed to download {filename}")
+
+                batch_id = f"sync_{self.tenant_id}_{datetime.now().strftime('%Y%m%d')}"
+                batch = self.db.query(BatchJob).filter(BatchJob.id == batch_id).first()
+                if not batch:
+                    batch = BatchJob(id=batch_id, tenant_id=self.tenant_id, total_files=0, status=TaskStatus.PENDING)
+                    self.db.add(batch)
+                    self.db.commit()
+
+                task_id = ingest_credit_note_pdf(self.db, self.tenant_id, batch_id, local_path, filename)
+                if not task_id:
+                    raise Exception(f"{filename} classified as credit_note but 'Credit Note Number' not found in text")
+
+                self.file_tracker.mark_as_completed(file_id, task_id)
+                sync_job.processed_files += 1
+                processed += 1
+
+            except Exception as e:
+                logger.error(f"[GoogleDriveSync] Error processing credit note {filename}: {e}")
+                self.file_tracker.mark_as_failed(file_id, str(e))
+                sync_job.failed_files += 1
+                failed += 1
+
+        self.db.commit()
+        return processed, failed
 
     def _process_invoice(self, file_path: str, filename: str, model_config: Dict = None) -> str:
         """
@@ -398,6 +462,8 @@ class GoogleDriveSyncPipeline:
             # not persisted on GoogleDriveSyncJob (no migration for this yet) -
             # in-memory only, so these don't survive a server restart mid-run
             "credit_notes_found": getattr(self, "_credit_notes_found", 0),
+            "credit_notes_processed": getattr(self, "_credit_notes_processed", 0),
+            "credit_notes_failed": getattr(self, "_credit_notes_failed", 0),
             "client_sheets_found": getattr(self, "_client_sheets_found", 0),
             "unknown_found": getattr(self, "_unknown_found", 0),
         }

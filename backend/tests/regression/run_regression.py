@@ -87,6 +87,10 @@ SUITES = {
         "label": "Sales Line-Item Extraction (deterministic, OneStack template)",
         "module": "backend.tests.regression.test_sales_line_item_extraction",
     },
+    "credit_notes": {
+        "label": "Credit Note Extraction (deterministic, OneStack template)",
+        "module": "backend.tests.regression.test_credit_note_extraction",
+    },
 }
 
 

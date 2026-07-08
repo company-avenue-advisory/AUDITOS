@@ -516,6 +516,122 @@ def extract_deterministic_line_items(full_text: str, taxable_value_total: float,
     return items
 
 
+_CREDIT_NOTE_KNOWN_HSN = ("9971", "997319", "998599", "998529", "998313")
+
+_CREDIT_NOTE_FIELD_RE = {
+    "credit_note_no": re.compile(r'Credit Note Number\s*:?\s*\n?\s*(\S+)'),
+    "date": re.compile(r'Credit Note Number\s*:?\s*\S+\s*Date:\s*\n?\s*(\d{1,2}-\d{1,2}-\d{2,4})'),
+    "party_name": re.compile(r'Bill To:\s*\n?\s*([^\n]+)'),
+    "original_invoice_no": re.compile(r'Original Invoice Number\s*:?\s*\n?\s*(\S+)'),
+    "original_invoice_date": re.compile(r'Original Invoice Date:\s*\n?\s*(\d{1,2}-\d{1,2}-\d{2,4})'),
+    "reason": re.compile(r'Reason for Credit Note:\s*\n?\s*([^\n]+)'),
+    "subtotal": re.compile(r'Subtotal:\s*\n?\s*([\d,]+\.\d{2})'),
+    "rounding": re.compile(r'Rounding off\s*:?\s*\n?\s*(-?[\d,]+\.\d{2})'),
+}
+_CREDIT_NOTE_RATE_RE = re.compile(
+    r'(CGST|SGST|IGST)\s*@\s*([\d.]+)%\s*\n?\s*(-|[\d,]+\.\d{2})'
+)
+# the actual total-credited amount is only reliably printed once, right
+# before the amount-in-words line - "Total Amount Credited:" itself is
+# often left blank on the template
+_CREDIT_NOTE_TOTAL_RE = re.compile(r'([\d,]+\.\d{2})\s*\n?\s*Indian Rupees')
+
+
+def extract_credit_note(full_text: str) -> Optional[dict]:
+    """
+    Deterministically parses a OneStack credit note (regex, no LLM).
+    Returns None if full_text doesn't contain a "Credit Note Number" -
+    callers use that to tell a credit note apart from a regular invoice.
+
+    Fields returned, all directly printed on the document:
+      credit_note_no, date, party_name, original_invoice_no,
+      original_invoice_date, reason, taxable, cgst_rate, cgst, sgst_rate,
+      sgst, igst_rate, igst, round_off, total, hsn
+
+    Values are POSITIVE (the note's own value) - NOT the negative sign
+    convention used internally by the manual Sales Register this session.
+    gstr1_generator.py's _build_cdnr/_build_cdnur already expect positive
+    totals and use ntty='C'/'D' to distinguish credit vs debit, so this
+    matches the existing downstream contract rather than introducing a
+    second sign convention.
+
+    party_gstin is deliberately NOT returned - no real credit note prints
+    the buyer's GSTIN directly (verified across all 14 real credit notes
+    this session). Resolving it means looking up original_invoice_no
+    against past invoices' records - a DB concern, out of scope for a
+    pure text-extraction function. Callers must resolve GSTIN separately
+    before this can be filed (see resolve_credit_note_gstin below).
+    """
+    if "Credit Note Number" not in full_text:
+        return None
+
+    def _f(s):
+        if s is None or s.strip() == "-":
+            return 0.0
+        return float(s.replace(',', ''))
+
+    result = {}
+    for field, pattern in _CREDIT_NOTE_FIELD_RE.items():
+        m = pattern.search(full_text)
+        result[field] = m.group(1).strip() if m else None
+
+    result["taxable"] = _f(result.pop("subtotal"))
+    result["round_off"] = _f(result.pop("rounding"))
+
+    rates = {"cgst_rate": 0.0, "cgst": 0.0, "sgst_rate": 0.0, "sgst": 0.0, "igst_rate": 0.0, "igst": 0.0}
+    for tax, rate_str, amt_str in _CREDIT_NOTE_RATE_RE.findall(full_text):
+        key = tax.lower()
+        rates[f"{key}_rate"] = float(rate_str)
+        rates[key] = _f(amt_str)
+    result.update(rates)
+
+    total_m = _CREDIT_NOTE_TOTAL_RE.search(full_text)
+    result["total"] = _f(total_m.group(1)) if total_m else round(
+        result["taxable"] + rates["cgst"] + rates["sgst"] + rates["igst"] + result["round_off"], 2
+    )
+
+    # look for a known HSN code printed anywhere between the particulars
+    # table and the Subtotal line - falls back to NOT_SPECIFIED_HSN (some
+    # credit notes, e.g. Pochampally's, print no per-line HSN at all)
+    subtotal_idx = full_text.find("Subtotal")
+    table_window = full_text[:subtotal_idx] if subtotal_idx > 0 else full_text
+    result["hsn"] = next((h for h in _CREDIT_NOTE_KNOWN_HSN if h in table_window), NOT_SPECIFIED_HSN)
+
+    if result["party_name"]:
+        # when the PDF has no line break between "Bill To:" and "Original
+        # Invoice Number", the raw capture runs the party name, full
+        # address, and that next label together with no delimiter - trim
+        # the obvious leakage. This is still best-effort: on a single-line
+        # layout the address itself stays glued to the name (there's no
+        # regex-detectable boundary between them). Treat this field as a
+        # fallback label only - resolve_credit_note_gstin's original-
+        # invoice-number lookup is the authoritative source for both name
+        # and GSTIN, since it looks up the buyer's own regular invoice.
+        result["party_name"] = re.split(r'\s*Original Invoice Number', result["party_name"])[0]
+        result["party_name"] = re.sub(r'\s+', ' ', result["party_name"]).strip()
+
+    return result
+
+
+def resolve_credit_note_gstin(original_invoice_no: str, lookup_fn) -> Optional[str]:
+    """
+    Resolves a credit note's buyer GSTIN via its Original Invoice Number,
+    since the credit note document itself never prints one.
+
+    lookup_fn(invoice_no) -> gstin string or None; injected so this stays
+    a pure function testable without a live DB (same dependency-injection
+    pattern as drive_classifier.walk_and_classify's list_children_fn) -
+    the real caller passes a function that queries SalesLineItem by
+    invoice_no. Returns None (not a guess) if the original invoice can't
+    be found - e.g. Pochampally's credit notes reference a March/April
+    invoice that was never in this tool's own records, and no GSTIN
+    should ever be fabricated for a GST filing.
+    """
+    if not original_invoice_no:
+        return None
+    return lookup_fn(original_invoice_no)
+
+
 def process_pdf(pdf_path, model_override=None, invoice_type="both", logger=None):
     import pdfplumber
     import time
