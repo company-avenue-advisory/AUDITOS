@@ -42,7 +42,20 @@ if broker_url:
             "tasks.ocr_extract_task": {"queue": "ocr"},
             "tasks.process_batch_task": {"queue": "default"},
             "tasks.google_drive_sync_task": {"queue": "default"},
+            "tasks.sales_ingestion_task": {"queue": "drive_sync"},
         },
+    )
+    # Explicitly declare every queue task_routes references. Without this,
+    # a worker started with no -Q flag (both render.yaml and
+    # START_ALL_WINDOWS.bat run plain "celery -A celery_app worker") only
+    # ever consumes the implicit default "celery" queue - task_routes alone
+    # does NOT make a worker consume "default"/"ocr"/"drive_sync". Any task
+    # routed to one of those queues would sit in Redis forever, never
+    # picked up. Confirmed by inspecting both worker start commands: neither
+    # passes -Q, and this file previously declared no task_queues at all.
+    from kombu import Queue
+    celery_app.conf.task_queues = (
+        Queue("celery"), Queue("default"), Queue("ocr"), Queue("drive_sync"),
     )
 
 
@@ -159,3 +172,70 @@ def google_drive_sync_task(self, tenant_id: str, google_drive_folder_id: str,
         traceback.print_exc()
         print(f"[Celery:google_drive_sync] Sync failed: {e}")
         raise self.retry(exc=e, countdown=300)  # Retry in 5 minutes
+
+
+@celery_app.task(name="tasks.sales_ingestion_task", bind=True, max_retries=1, time_limit=3600)
+def sales_ingestion_task(self, tenant_id: str, tenant_slug: str,
+                          excel_output_path: str, invoice_type: str = "sales",
+                          model_config: dict = None) -> dict:
+    """
+    Self-resolving Sales ingestion sync — unlike google_drive_sync_task
+    above (which takes a single google_drive_folder_id baked into the
+    schedule forever), this resolves the CURRENT month's Drive folder at
+    run time via drive_path_resolver.py + the tenant's
+    data/drive_paths/{tenant_slug}.json config. A tenant onboarded this
+    way never needs their schedule re-registered when a new month's
+    folder is created - only initial setup (see
+    scripts/setup_sales_ingestion_schedule.py) is a one-time step.
+
+    Scheduled DAILY, not monthly: invoices trickle into Drive throughout
+    the month (confirmed against real timestamps this session - June
+    invoices arrived from the 2nd through the 30th, not all on day one),
+    so ingestion needs to run frequently to stay current. "Monthly" only
+    describes when a FILING happens after a period closes - that's a
+    separate concern (reconciliation + GSTR-1 generation), not yet wired
+    to run automatically after this task. That chaining depends on a
+    review gate (a later phase) existing to check the output first -
+    deliberately not done here to avoid auto-filing unreviewed data.
+
+    If this month's folder doesn't exist in Drive yet (e.g. the client
+    hasn't created it), this is logged clearly and treated as "nothing to
+    ingest yet", not an error - the same convention
+    drive_path_resolver.resolve_month_folder_id already establishes by
+    returning None rather than raising.
+    """
+    from datetime import date
+    from services.drive_path_resolver import load_tenant_path_config, resolve_month_folder_id
+    from services.google_drive import GoogleDriveConnector
+    from services.google_drive_sync import GoogleDriveSyncPipeline
+
+    try:
+        print(f"[Celery:sales_ingestion] Resolving current month's Drive folder for tenant '{tenant_slug}'...")
+        cfg = load_tenant_path_config(tenant_slug)
+        connector = GoogleDriveConnector(cfg.sales_root_folder_id)
+
+        def lister(folder_id):
+            return connector.list_files(file_types=None, folder_id=folder_id)
+
+        folder_id = resolve_month_folder_id(lister, cfg, date.today())
+        if not folder_id:
+            msg = f"No Drive folder found yet for '{tenant_slug}'s current month - nothing to ingest."
+            print(f"[Celery:sales_ingestion] {msg}")
+            return {"status": "SKIPPED", "reason": msg}
+
+        print(f"[Celery:sales_ingestion] Resolved folder {folder_id} - starting sync for tenant {tenant_id}")
+        pipeline = GoogleDriveSyncPipeline(
+            tenant_id=tenant_id,
+            google_drive_folder_id=folder_id,
+            excel_output_path=excel_output_path,
+            invoice_type=invoice_type,
+        )
+        result = pipeline.run(model_config=model_config)
+        print(f"[Celery:sales_ingestion] Sync completed for '{tenant_slug}': {json.dumps(result, default=str)}")
+        return result
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"[Celery:sales_ingestion] Failed for '{tenant_slug}': {e}")
+        raise self.retry(exc=e, countdown=300)

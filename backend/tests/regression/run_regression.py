@@ -103,6 +103,10 @@ SUITES = {
         "label": "GSTR-1 Filing Orchestration (reconciliation-gated, multi-GSTIN)",
         "module": "backend.tests.regression.test_gstr1_filing",
     },
+    "celery_scheduling": {
+        "label": "Celery Beat Scheduling (self-resolving monthly ingestion)",
+        "module": "backend.tests.regression.test_celery_scheduling",
+    },
 }
 
 

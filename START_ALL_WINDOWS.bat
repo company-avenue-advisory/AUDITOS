@@ -86,17 +86,29 @@ REM Set environment variable for all child processes
 set GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON=%GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON%
 
 REM Start Celery Worker in new window
-echo [1/3] Starting Celery Worker...
+echo [1/4] Starting Celery Worker...
 start "Celery Worker" cmd /k ^
   cd /d "%BACKEND_DIR%" ^& ^
   echo Celery Worker starting... ^& ^
-  celery -A celery_app worker --loglevel=info
+  celery -A celery_app worker --loglevel=info -Q celery,default,ocr,drive_sync
 
 REM Wait a moment for Celery to start
 timeout /t 3 /nobreak
 
+REM Start Celery Beat in new window — dispatches scheduled sync jobs from
+REM beat_schedules.json. Without this running, no scheduled task ever fires,
+REM regardless of what's registered (the worker only runs tasks it's handed).
+echo [2/4] Starting Celery Beat...
+start "Celery Beat" cmd /k ^
+  cd /d "%BACKEND_DIR%" ^& ^
+  echo Celery Beat starting... ^& ^
+  celery -A celery_app beat --loglevel=info
+
+REM Wait a moment for Beat to start
+timeout /t 3 /nobreak
+
 REM Start FastAPI Backend in new window
-echo [2/3] Starting FastAPI Backend...
+echo [3/4] Starting FastAPI Backend...
 start "FastAPI Backend" cmd /k ^
   cd /d "%BACKEND_DIR%" ^& ^
   echo FastAPI Backend starting... ^& ^
@@ -106,7 +118,7 @@ REM Wait a moment for FastAPI to start
 timeout /t 3 /nobreak
 
 REM Start Frontend in new window
-echo [3/3] Starting Next.js Frontend...
+echo [4/4] Starting Next.js Frontend...
 start "Next.js Frontend" cmd /k ^
   cd /d "%FRONTEND_DIR%" ^& ^
   echo Next.js Frontend starting... ^& ^
