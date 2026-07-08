@@ -29,7 +29,7 @@ from services.period_review import (
     approve_period_review, reject_period_review, get_review_detail, ReviewStateError,
     generate_period_review_for_tenant, month_matches_period, get_latest_review,
 )
-from services.sales_reconciliation import ReconEntry, ReconStatus
+from services.sales_reconciliation import ReconEntry, ReconStatus, reconcile_period_totals
 
 
 def _entry(doc_no, status, note=""):
@@ -50,6 +50,22 @@ class TestBuildSummaries(unittest.TestCase):
         self.assertEqual(summary["counts"]["CLIENT_SHEET_ERROR"], 1)
         self.assertEqual(len(summary["needs_attention"]), 2)
         self.assertNotIn("MH1", [n["doc_no"] for n in summary["needs_attention"]])
+
+    def test_recon_summary_includes_totals_match_when_given(self):
+        entries = [_entry("MH1", ReconStatus.PASS)]
+        os_rows = [{"doc_type": "Invoice", "taxable": 5000.0}, {"doc_type": "Credit Note", "taxable": 1000.0}]
+        client_rows = [{"doc_type": "Invoice", "taxable": 5000.0}, {"doc_type": "Credit Note", "taxable": 1000.0}]
+        totals_match = reconcile_period_totals(os_rows, client_rows, {"total_taxable": 6000.0})
+
+        summary = build_recon_summary(entries, totals_match)
+        self.assertIn("totals_match", summary)
+        self.assertFalse(summary["totals_match"]["matches"])
+        self.assertEqual(summary["totals_match"]["os_net_taxable"], 4000.0)
+        self.assertEqual(summary["totals_match"]["gstr1_net_taxable"], 6000.0)
+
+    def test_recon_summary_omits_totals_match_when_not_given(self):
+        summary = build_recon_summary([_entry("MH1", ReconStatus.PASS)])
+        self.assertNotIn("totals_match", summary)
 
     def test_filings_summary_shape(self):
         filings = {
@@ -244,6 +260,54 @@ class TestGeneratePeriodReviewForTenant(unittest.TestCase):
         )
         self.assertTrue(created2)
         self.assertNotEqual(review1.id, review2.id)
+
+    def test_persisted_review_includes_matching_totals_match_sheet(self):
+        # single clean invoice, no credit notes - OS/client/GSTR1 net
+        # taxable totals should all agree (the "3-way total match" the
+        # user asked to see reflected in the review a human actually reads).
+        review, _ = generate_period_review_for_tenant(
+            self.db, "t1", "2026-06", self.sheet_path, skip_if_pending=False
+        )
+        detail = get_review_detail(review)
+        totals_match = detail["recon_summary"]["totals_match"]
+        self.assertTrue(totals_match["matches"])
+        self.assertEqual(totals_match["os_net_taxable"], 76.61)
+        self.assertEqual(totals_match["gstr1_net_taxable"], 76.61)
+
+    def test_persisted_review_flags_totals_mismatch_from_uncategorized_credit_note(self):
+        # reproduces the real MH bug end-to-end: a credit note ingested
+        # the way credit_note_ingest.py actually does it (gstr1_category
+        # left unset) must no longer corrupt the filed net taxable total -
+        # net should be 76.61 - 20.00 = 56.61, not 76.61 + 20.00 = 96.61.
+        self.db.add(InvoiceTask(id="task2", batch_id="b1", file_name="CR1.pdf", status=TaskStatus.COMPLETED))
+        self.db.add(SalesLineItem(
+            task_id="task2", voucher_date="20-06-2026", voucher_type="Credit Note",
+            invoice_no="CR1", party_ledger_name="Krushiseva", party_gstin="27AAAAA0000A1Z5",
+            taxable_value=20.00, cgst_amount=1.80, sgst_amount=1.80, igst_amount=0.0,
+            total_invoice_value=23.60, gstr1_category=None,
+            particulars="Credit Note - Sales Return (against MH1)",
+        ))
+        self.db.commit()
+
+        # client sheet also carries the credit note, so OS/client/GSTR1
+        # should all agree at 56.61 once the filing math is netted correctly.
+        sheet_with_cn = os.path.join(self.tmp_dir, "sheet_with_cn.xlsx")
+        _build_client_sheet(sheet_with_cn, [
+            [1, "Invoice", "MH1", "15-06-2026", "Krushiseva", "27AAAAA0000A1Z5",
+             "B2B", "27", "Intrastate", 76.61, 0.0, 6.89, 6.89, 90.39],
+            [2, "Credit Note", "CR1", "20-06-2026", "Krushiseva", "27AAAAA0000A1Z5",
+             "B2B", "27", "Intrastate", 20.00, 0.0, 1.80, 1.80, 23.60],
+        ])
+
+        review, _ = generate_period_review_for_tenant(
+            self.db, "t1", "2026-06", sheet_with_cn, skip_if_pending=False
+        )
+        detail = get_review_detail(review)
+        totals_match = detail["recon_summary"]["totals_match"]
+        self.assertEqual(totals_match["os_net_taxable"], 56.61)
+        self.assertEqual(totals_match["client_net_taxable"], 56.61)
+        self.assertEqual(totals_match["gstr1_net_taxable"], 56.61)
+        self.assertTrue(totals_match["matches"])
 
     def test_manual_endpoint_style_call_always_creates_fresh_review(self):
         # skip_if_pending=False (what main.py's endpoint uses) must always

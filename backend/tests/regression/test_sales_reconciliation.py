@@ -32,6 +32,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../.
 
 from backend.services.sales_reconciliation import (
     reconcile_document, reconcile_period, ReconStatus, summarize,
+    compute_net_taxable_total, reconcile_period_totals,
 )
 
 
@@ -169,6 +170,74 @@ class TestReconcilePeriod(unittest.TestCase):
         self.assertEqual(counts["CLIENT_SHEET_ERROR"], 1)
         self.assertEqual(counts["CLIENT_MISSING"], 1)
         self.assertEqual(counts["MISSING_SOURCE_PDF"], 1)
+
+
+class TestNetTaxableTotal(unittest.TestCase):
+
+    def test_credit_notes_subtract_not_add(self):
+        rows = [
+            {"doc_type": "Invoice", "taxable": 5000.0},
+            {"doc_type": "Credit Note", "taxable": 1000.0},
+        ]
+        self.assertEqual(compute_net_taxable_total(rows), 4000.0)
+
+    def test_debit_notes_also_subtract(self):
+        rows = [
+            {"doc_type": "Invoice", "taxable": 5000.0},
+            {"doc_type": "Debit Note", "taxable": 200.0},
+        ]
+        self.assertEqual(compute_net_taxable_total(rows), 4800.0)
+
+    def test_missing_doc_type_defaults_to_invoice(self):
+        rows = [{"taxable": 100.0}]
+        self.assertEqual(compute_net_taxable_total(rows), 100.0)
+
+
+class TestReconcilePeriodTotals(unittest.TestCase):
+    """
+    The 3-way total-match check found against a real MH filing this
+    session: a clean per-document PASS on every row doesn't guarantee the
+    aggregate GSTR-1 total is right - a credit note miscategorized during
+    filing generation (gstr1_generator.py's B2CS-default bug) produced a
+    negative B2CS bucket even though every individual document reconciled
+    fine. This is the check that catches that class of bug.
+    """
+
+    def test_matches_when_all_three_agree(self):
+        os_rows = [{"doc_type": "Invoice", "taxable": 5000.0},
+                   {"doc_type": "Credit Note", "taxable": 1000.0}]
+        client_rows = [{"doc_type": "Invoice", "taxable": 5000.0},
+                       {"doc_type": "Credit Note", "taxable": 1000.0}]
+        result = reconcile_period_totals(os_rows, client_rows, {"total_taxable": 4000.0})
+        self.assertTrue(result.matches)
+        self.assertEqual(result.os_net_taxable, 4000.0)
+        self.assertEqual(result.gstr1_net_taxable, 4000.0)
+
+    def test_flags_mismatch_when_gstr1_total_wasnt_netted(self):
+        # reproduces the real pre-fix bug: gstr1_generator summed the
+        # credit note instead of subtracting it (6000 instead of 4000)
+        os_rows = [{"doc_type": "Invoice", "taxable": 5000.0},
+                   {"doc_type": "Credit Note", "taxable": 1000.0}]
+        client_rows = [{"doc_type": "Invoice", "taxable": 5000.0},
+                       {"doc_type": "Credit Note", "taxable": 1000.0}]
+        result = reconcile_period_totals(os_rows, client_rows, {"total_taxable": 6000.0})
+        self.assertFalse(result.matches)
+        self.assertEqual(result.deltas["os_vs_gstr1"], -2000.0)
+        self.assertIn("mismatch", result.note.lower())
+
+    def test_flags_mismatch_between_os_and_client_even_without_gstr1(self):
+        os_rows = [{"doc_type": "Invoice", "taxable": 5000.0}]
+        client_rows = [{"doc_type": "Invoice", "taxable": 4800.0}]
+        result = reconcile_period_totals(os_rows, client_rows, None)
+        self.assertFalse(result.matches)
+        self.assertIsNone(result.gstr1_net_taxable)
+        self.assertEqual(result.deltas["os_vs_client"], 200.0)
+
+    def test_within_tolerance_still_matches(self):
+        os_rows = [{"doc_type": "Invoice", "taxable": 5000.0}]
+        client_rows = [{"doc_type": "Invoice", "taxable": 5001.0}]
+        result = reconcile_period_totals(os_rows, client_rows, {"total_taxable": 5000.5})
+        self.assertTrue(result.matches)
 
 
 if __name__ == "__main__":

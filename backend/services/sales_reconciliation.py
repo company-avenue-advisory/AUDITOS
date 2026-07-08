@@ -251,3 +251,78 @@ def summarize(entries: List[ReconEntry]) -> dict:
     for e in entries:
         counts[e.status.value] = counts.get(e.status.value, 0) + 1
     return counts
+
+
+def compute_net_taxable_total(rows: List[dict]) -> float:
+    """
+    Net taxable total for a set of documents (os_rows/client_rows shape -
+    each dict has "taxable" and "doc_type"). Invoices ADD, credit/debit
+    notes SUBTRACT - a credit note reduces net taxable turnover, it is not
+    a second independent line to sum alongside invoices. Both os_rows and
+    client_rows store credit-note taxable values as positive (the note's
+    own printed value - see invoice_processor.extract_credit_note's
+    docstring), so the sign has to be applied here, not assumed already
+    baked into the stored figure.
+    """
+    total = 0.0
+    for r in rows:
+        doc_type = str(r.get("doc_type") or "Invoice").lower()
+        sign = -1 if ("credit" in doc_type or "debit" in doc_type) else 1
+        total += sign * (r.get("taxable") or 0.0)
+    return round(total, 2)
+
+
+@dataclass
+class TotalsMatchResult:
+    os_net_taxable: float
+    client_net_taxable: float
+    gstr1_net_taxable: Optional[float]
+    matches: bool
+    deltas: Dict[str, float]
+    note: str
+
+
+def reconcile_period_totals(os_rows: List[dict], client_rows: List[dict],
+                             gstr1_summary: Optional[dict] = None,
+                             tolerance: float = DEFAULT_TOLERANCE) -> TotalsMatchResult:
+    """
+    The 3-way total check: net taxable total (invoices minus credit/debit
+    notes) must match across all three sheets - our own extraction (OS),
+    the client's reconciliation sheet, and the actual GSTR-1 filing
+    output about to be submitted. Per-document reconcile_period above
+    already catches document-level mismatches; this catches a DIFFERENT
+    class of bug that per-document checks can't see - an aggregate
+    miscount that happens during filing generation itself (e.g. a credit
+    note silently getting summed into B2CS instead of netted out via
+    CDNR/CDNUR, confirmed against a real MH filing this session where a
+    B2CS bucket went negative for exactly this reason). A clean per-
+    document PASS on every row does not guarantee the aggregate GSTR-1
+    total is right - this is the check that does.
+
+    gstr1_summary is generate_gstr1_json's "_summary" dict (needs
+    "total_taxable"); pass None to only compare OS vs client (e.g. before
+    a filing has been generated yet).
+    """
+    os_total = compute_net_taxable_total(os_rows)
+    client_total = compute_net_taxable_total(client_rows)
+    gstr1_total = gstr1_summary.get("total_taxable") if gstr1_summary else None
+
+    deltas = {"os_vs_client": round(os_total - client_total, 2)}
+    matches = _within_tolerance(os_total, client_total, tolerance)
+
+    if gstr1_total is not None:
+        deltas["os_vs_gstr1"] = round(os_total - gstr1_total, 2)
+        matches = matches and _within_tolerance(os_total, gstr1_total, tolerance)
+
+    if matches:
+        note = f"Net taxable total matches across all sheets within Rs.{tolerance} tolerance."
+    else:
+        parts = [f"OS=Rs.{os_total}", f"Client=Rs.{client_total}"]
+        if gstr1_total is not None:
+            parts.append(f"GSTR1={gstr1_total}")
+        note = f"Net taxable total mismatch: {', '.join(parts)} (deltas: {deltas})."
+
+    return TotalsMatchResult(
+        os_net_taxable=os_total, client_net_taxable=client_total,
+        gstr1_net_taxable=gstr1_total, matches=matches, deltas=deltas, note=note,
+    )
