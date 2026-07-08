@@ -47,7 +47,8 @@ class GoogleDriveSyncPipeline:
     """
 
     def __init__(self, tenant_id: str, google_drive_folder_id: str,
-                 excel_output_path: str, invoice_type: str = "both"):
+                 excel_output_path: str, invoice_type: str = "both",
+                 period: str = None):
         """
         Initialize sync pipeline.
 
@@ -56,6 +57,16 @@ class GoogleDriveSyncPipeline:
             google_drive_folder_id: Google Drive folder ID containing invoices
             excel_output_path: Path where Excel file should be saved
             invoice_type: "sales", "purchase", or "both"
+            period: "YYYY-MM" for the month this folder represents. When
+                set (only passed by sales_ingestion_task's scheduled runs -
+                the legacy google_drive_sync_task still passes None), a
+                SalesPeriodReview is generated automatically at the end of
+                run() once a client sheet is found, via the same
+                generate_period_review_for_tenant() the manual
+                /api/sales/period-reviews/generate endpoint uses. Left None
+                to skip - a folder without a known period (or a
+                purchase-only sync, where reconciliation doesn't apply)
+                shouldn't try to auto-generate a review.
         """
         from services.google_drive import GoogleDriveConnector, GoogleDriveFileTracker as DBTracker
         from services.excel_sync import ExcelSyncService
@@ -64,6 +75,7 @@ class GoogleDriveSyncPipeline:
         self.google_drive_folder_id = google_drive_folder_id
         self.excel_output_path = excel_output_path
         self.invoice_type = invoice_type
+        self.period = period
 
         self.drive = GoogleDriveConnector(google_drive_folder_id)
         self.db = SessionLocal()
@@ -128,6 +140,14 @@ class GoogleDriveSyncPipeline:
             # now. Parsing here at least proves the parser against the real
             # file every run and surfaces its shape immediately.
             self._log_client_sheet_summary(client_sheet_files)
+
+            # Auto-generate a period review now (not persisted purely by
+            # side effect of ingestion - see _maybe_generate_period_review)
+            # so it reflects this run's newly-ingested rows too, and runs
+            # regardless of whether there are new invoice files below (a
+            # client sheet arriving after all invoices were already synced
+            # is exactly the case this needs to still catch).
+            self._period_review_result = self._maybe_generate_period_review()
 
             # stashed on self so _build_summary() can include them from every
             # return point in this method without threading them through each one
@@ -261,13 +281,16 @@ class GoogleDriveSyncPipeline:
     def _log_client_sheet_summary(self, client_sheet_files: List[ClassifiedFile]):
         """
         Downloads and parses each classified client-sheet file, logging a
-        summary (row counts, doc-type split) - not persisted to the DB yet,
-        see the comment at the call site in run(). Not marked "seen" in the
-        dedup tracker for the same reason: once a reconciliation engine
-        exists to consume this, every run must still re-surface it.
+        summary (row counts, doc-type split), and stashes the local path of
+        the last one successfully parsed on self._client_sheet_local_path
+        for _maybe_generate_period_review() to reconcile against. Not
+        marked "seen" in the dedup tracker: every run must still re-surface
+        the client sheet, since it's the reconciliation input, not a
+        document to ingest once and forget.
         """
         from services.client_sheet_parser import parse_client_sheet
 
+        self._client_sheet_local_path = None
         for cf in client_sheet_files:
             location = "/".join(cf.path) if cf.path else "(month root)"
             try:
@@ -280,11 +303,39 @@ class GoogleDriveSyncPipeline:
                 credit_notes = sum(1 for r in rows if r["doc_type"] == "Credit Note")
                 logger.info(
                     f"[GoogleDriveSync] Parsed client sheet {location}/{cf.name}: "
-                    f"{len(rows)} rows ({invoices} invoice, {credit_notes} credit note) - "
-                    f"not yet persisted, no reconciliation engine to consume it"
+                    f"{len(rows)} rows ({invoices} invoice, {credit_notes} credit note)"
                 )
+                self._client_sheet_local_path = local_path
             except Exception as e:
                 logger.error(f"[GoogleDriveSync] Error parsing client sheet {cf.name}: {e}")
+
+    def _maybe_generate_period_review(self) -> dict:
+        """
+        Generates a SalesPeriodReview for self.period if a client sheet was
+        found this run and a period was given at construction time (only
+        true for the scheduled sales_ingestion_task path - see __init__).
+        skip_if_pending=True: a daily scheduled sync shouldn't pile up a
+        fresh unreviewed row every day while a human hasn't acted on
+        yesterday's yet.
+        """
+        if not self.period or not getattr(self, "_client_sheet_local_path", None):
+            return {"attempted": False}
+
+        from services.period_review import generate_period_review_for_tenant
+
+        try:
+            review, created = generate_period_review_for_tenant(
+                self.db, self.tenant_id, self.period,
+                self._client_sheet_local_path, skip_if_pending=True,
+            )
+            logger.info(
+                f"[GoogleDriveSync] Period review for {self.period}: "
+                f"{'created new' if created else 'skipped, already pending'} review {review.id}"
+            )
+            return {"attempted": True, "created": created, "review_id": review.id}
+        except Exception as e:
+            logger.error(f"[GoogleDriveSync] Failed to auto-generate period review for {self.period}: {e}")
+            return {"attempted": True, "created": False, "error": str(e)}
 
     def _process_credit_note_files(self, credit_note_files: List[ClassifiedFile],
                                     temp_dir: str, sync_job) -> Tuple[int, int]:
@@ -500,4 +551,5 @@ class GoogleDriveSyncPipeline:
             "credit_notes_failed": getattr(self, "_credit_notes_failed", 0),
             "client_sheets_found": getattr(self, "_client_sheets_found", 0),
             "unknown_found": getattr(self, "_unknown_found", 0),
+            "period_review": getattr(self, "_period_review_result", {"attempted": False}),
         }

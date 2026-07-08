@@ -130,6 +130,87 @@ def reject_period_review(db, review_id: str, user_id: str, notes: str) -> SalesP
     return review
 
 
+def month_matches_period(voucher_date: Optional[str], period: str) -> bool:
+    """period is 'YYYY-MM'; voucher_date is 'DD-MM-YYYY' (this pipeline's
+    consistent date format - see invoice_processor.py's _extract_invoice_header
+    and _parse_date in gstr1_generator.py). Returns False, not an error, for
+    a date that doesn't parse - an unparseable date shouldn't crash a whole
+    period's review generation, it should just not match into any period."""
+    if not voucher_date:
+        return False
+    try:
+        year, month = period.split("-")
+        parts = str(voucher_date).strip().split("-")
+        return len(parts) == 3 and parts[1] == month and parts[2] == year
+    except (ValueError, IndexError):
+        return False
+
+
+def get_latest_review(db, tenant_id: str, period: str) -> Optional[SalesPeriodReview]:
+    return (
+        db.query(SalesPeriodReview)
+        .filter(SalesPeriodReview.tenant_id == tenant_id, SalesPeriodReview.period == period)
+        .order_by(SalesPeriodReview.created_at.desc())
+        .first()
+    )
+
+
+def generate_period_review_for_tenant(db, tenant_id: str, period: str, client_sheet_path: str,
+                                       skip_if_pending: bool = False):
+    """
+    Runs client-sheet parsing + reconciliation (sales_reconciliation.py) +
+    GSTR-1 filing generation (gstr1_filing.py) for a tenant/period and
+    persists the result as a new PENDING_REVIEW - the single code path
+    used by both main.py's manual "generate" endpoint and the scheduled
+    ingestion chain (celery_app.py's sales_ingestion_task), so the two
+    never drift.
+
+    skip_if_pending=True (used by the scheduled chain, not the manual
+    endpoint) skips creating a new review if the latest one for this
+    (tenant, period) is still PENDING_REVIEW - a daily scheduled sync
+    shouldn't pile up a fresh unreviewed row every day while a human
+    hasn't acted on yesterday's yet. The manual endpoint always creates a
+    fresh review (skip_if_pending=False) since a human clicking "generate"
+    is an explicit request for the current state, e.g. after correcting
+    the client sheet.
+
+    Returns (review, created) where created is False when an existing
+    PENDING_REVIEW was returned instead of a new one being made.
+    """
+    from services.client_sheet_parser import parse_client_sheet
+    from services.sales_reconciliation import reconcile_period
+    from services.gstr1_filing import generate_gstr1_filings, ONESTACK_REGISTRATION_MAP
+    from models import SalesLineItem, InvoiceTask, BatchJob
+
+    if skip_if_pending:
+        latest = get_latest_review(db, tenant_id, period)
+        if latest and latest.status == "PENDING_REVIEW":
+            return latest, False
+
+    client_rows = parse_client_sheet(client_sheet_path)
+
+    items = (
+        db.query(SalesLineItem)
+        .join(InvoiceTask, InvoiceTask.id == SalesLineItem.task_id)
+        .join(BatchJob, BatchJob.id == InvoiceTask.batch_id)
+        .filter(BatchJob.tenant_id == tenant_id)
+        .all()
+    )
+    period_items = [i for i in items if month_matches_period(i.voucher_date, period)]
+
+    os_rows = [{
+        "doc_no": i.invoice_no, "doc_type": "Credit Note" if "credit" in str(i.voucher_type or "").lower() else "Invoice",
+        "taxable": abs(i.taxable_value or 0), "igst": abs(i.igst_amount or 0),
+        "cgst": abs(i.cgst_amount or 0), "sgst": abs(i.sgst_amount or 0),
+        "total": abs(i.total_invoice_value or 0), "party_gstin": i.party_gstin,
+    } for i in period_items]
+
+    recon_entries = reconcile_period(os_rows, client_rows)
+    filings = generate_gstr1_filings(period_items, recon_entries, ONESTACK_REGISTRATION_MAP)
+    review = create_period_review(db, tenant_id, period, recon_entries, filings)
+    return review, True
+
+
 def get_review_detail(review: SalesPeriodReview) -> dict:
     """Deserializes a SalesPeriodReview row into an API-ready dict."""
     return {
