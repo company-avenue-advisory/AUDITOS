@@ -99,6 +99,10 @@ SUITES = {
         "label": "Sales 3-Way Reconciliation (OS vs Client Sheet)",
         "module": "backend.tests.regression.test_sales_reconciliation",
     },
+    "gstr1_filing": {
+        "label": "GSTR-1 Filing Orchestration (reconciliation-gated, multi-GSTIN)",
+        "module": "backend.tests.regression.test_gstr1_filing",
+    },
 }
 
 
