@@ -2,8 +2,15 @@
 Google Drive auto-sync pipeline — the orchestrator.
 
 Workflow:
-  1. List files from Google Drive folder
-  2. Filter PDFs only (mime type: application/pdf)
+  1. Recursively walk the Drive folder and classify every file
+     (invoice / credit_note / client_sheet / ignore / unknown) - see
+     drive_classifier.py. Folder location is the classification signal,
+     never the filename (proven unreliable against OneStack's real tree).
+  2. Only INVOICE files go through the existing extraction pipeline for
+     now. CREDIT_NOTE and CLIENT_SHEET are tracked (so they're never
+     silently lost) but deliberately not extracted yet - their extractors
+     don't exist yet and running the invoice extractor on a credit note
+     would misparse it the same way the discount-line bug did.
   3. Check dedup database (track by id + md5Checksum)
   4. Download new/changed files
   5. Process through existing extraction pipeline
@@ -25,6 +32,7 @@ from models import (
     Tenant, InvoiceTask, BatchJob, TaskStatus, SalesLineItem, PurchaseLineItem,
     GoogleDriveFileTracker, GoogleDriveSyncJob
 )
+from services.drive_classifier import walk_and_classify, DocumentType, ClassifiedFile
 
 logger = logging.getLogger(__name__)
 
@@ -86,14 +94,41 @@ class GoogleDriveSyncPipeline:
 
             logger.info(f"[GoogleDriveSync] Starting sync job {sync_job_id} for tenant {self.tenant_id}")
 
-            # Step 1: List files from Google Drive (PDFs only)
-            logger.info("[GoogleDriveSync] Listing files from Google Drive...")
-            drive_files = self.drive.list_files(file_types=["application/pdf"])
-            sync_job.total_files_found = len(drive_files)
+            # Step 1: Recursively walk the Drive folder and classify every file
+            logger.info("[GoogleDriveSync] Walking and classifying Drive folder tree...")
+            classified_files = self._discover_and_classify()
+            sync_job.total_files_found = len(classified_files)
             self.db.commit()
 
+            invoice_files = [f for f in classified_files if f.document_type == DocumentType.INVOICE]
+            credit_note_files = [f for f in classified_files if f.document_type == DocumentType.CREDIT_NOTE]
+            client_sheet_files = [f for f in classified_files if f.document_type == DocumentType.CLIENT_SHEET]
+            unknown_files = [f for f in classified_files if f.document_type == DocumentType.UNKNOWN]
+
+            logger.info(
+                f"[GoogleDriveSync] Classified {len(classified_files)} files: "
+                f"{len(invoice_files)} invoice, {len(credit_note_files)} credit_note, "
+                f"{len(client_sheet_files)} client_sheet, {len(unknown_files)} unknown"
+            )
+            for f in unknown_files:
+                logger.warning(f"[GoogleDriveSync] UNKNOWN document type, not processed: {'/'.join(f.path)}/{f.name}")
+
+            # Credit notes and the client sheet are tracked (never silently
+            # lost) but not extracted yet - no credit-note or client-sheet
+            # parser exists. Only INVOICE files go through the pipeline below.
+            self._track_unprocessed(credit_note_files, reason="credit_note extractor not yet built")
+            self._track_unprocessed(client_sheet_files, reason="client_sheet parser not yet built")
+
+            # stashed on self so _build_summary() can include them from every
+            # return point in this method without threading them through each one
+            self._credit_notes_found = len(credit_note_files)
+            self._client_sheets_found = len(client_sheet_files)
+            self._unknown_found = len(unknown_files)
+
+            drive_files = invoice_files
+
             if not drive_files:
-                logger.warning("[GoogleDriveSync] No PDF files found in Google Drive folder")
+                logger.warning("[GoogleDriveSync] No invoice files found in Google Drive folder")
                 sync_job.status = "completed"
                 sync_job.completed_at = datetime.utcnow()
                 self.db.commit()
@@ -103,8 +138,8 @@ class GoogleDriveSyncPipeline:
             logger.info("[GoogleDriveSync] Checking which files are new or updated...")
             files_to_process = []
             for drive_file in drive_files:
-                file_id = drive_file["id"]
-                md5 = drive_file.get("md5Checksum", "")
+                file_id = drive_file.id
+                md5 = drive_file.md5_checksum or ""
 
                 if not self.file_tracker.is_file_processed(file_id, md5):
                     files_to_process.append(drive_file)
@@ -131,10 +166,10 @@ class GoogleDriveSyncPipeline:
 
             for drive_file in files_to_process:
                 try:
-                    file_id = drive_file["id"]
-                    filename = drive_file["name"]
-                    md5 = drive_file.get("md5Checksum", "")
-                    modified_time = drive_file.get("modifiedTime", "")
+                    file_id = drive_file.id
+                    filename = drive_file.name
+                    md5 = drive_file.md5_checksum or ""
+                    modified_time = drive_file.modified_time or ""
 
                     logger.info(f"[GoogleDriveSync] Processing {filename}...")
 
@@ -186,6 +221,30 @@ class GoogleDriveSyncPipeline:
 
         finally:
             self.db.close()
+
+    def _discover_and_classify(self) -> List[ClassifiedFile]:
+        """
+        Recursively walks self.google_drive_folder_id and classifies every
+        file found. Kept as its own method (pure w.r.t. the rest of the
+        pipeline - only touches self.drive.list_files) so it can be unit
+        tested against a fixture lister without live Drive credentials,
+        DB, or Celery.
+        """
+        def lister(folder_id: str):
+            return self.drive.list_files(file_types=None, folder_id=folder_id)
+        return walk_and_classify(lister, self.google_drive_folder_id)
+
+    def _track_unprocessed(self, files: List[ClassifiedFile], reason: str):
+        """
+        Logs credit_note/client_sheet files found this run without writing
+        anything to the dedup tracker DB. Deliberately not marking them
+        "seen" - once the credit-note extractor and client-sheet parser
+        exist, they must still be picked up on the next run, not silently
+        skipped because an earlier run already saw the file.
+        """
+        for f in files:
+            location = "/".join(f.path) if f.path else "(month root)"
+            logger.info(f"[GoogleDriveSync] Found but not yet processed ({reason}): {location}/{f.name}")
 
     def _process_invoice(self, file_path: str, filename: str, model_config: Dict = None) -> str:
         """
@@ -336,4 +395,9 @@ class GoogleDriveSyncPipeline:
             "failed_files": sync_job.failed_files,
             "excel_output_path": sync_job.excel_output_path,
             "duration_seconds": (sync_job.completed_at - sync_job.sync_timestamp).total_seconds() if sync_job.completed_at else None,
+            # not persisted on GoogleDriveSyncJob (no migration for this yet) -
+            # in-memory only, so these don't survive a server restart mid-run
+            "credit_notes_found": getattr(self, "_credit_notes_found", 0),
+            "client_sheets_found": getattr(self, "_client_sheets_found", 0),
+            "unknown_found": getattr(self, "_unknown_found", 0),
         }

@@ -432,30 +432,43 @@ async def upload_batch(background_tasks: BackgroundTasks, files: List[UploadFile
                     extract_dir = os.path.join(batch_dir, f"extracted_{uuid.uuid4().hex[:8]}")
                     os.makedirs(extract_dir, exist_ok=True)
                     zip_ref.extractall(extract_dir)
-                    
-                    # Iterate through extracted files
-                    for root, _, extracted_files in os.walk(extract_dir):
-                        for extracted_file in extracted_files:
-                            if extracted_file.lower().endswith(".pdf"):
-                                extracted_path = os.path.join(root, extracted_file)
-                                
-                                if gcs_storage.is_active():
-                                    gcs_storage.upload_file(extracted_path, f"batches/{batch_id}/{extracted_file}")
-                                
-                                task_id = str(uuid.uuid4())
-                                invoice_task = InvoiceTask(
-                                    id=task_id,
-                                    batch_id=batch_id,
-                                    file_name=extracted_file,
-                                    status=TaskStatus.PENDING,
-                                    invoice_type=type
-                                )
-                                db.add(invoice_task)
-                                
-                                tasks_to_process.append({
-                                    "id": task_id,
-                                    "file_path": extracted_path
-                                })
+
+                    # Classify by folder structure (Sales Invoice / Other
+                    # Invoices / Credit Note / Sale Analysis, same rules as
+                    # the Drive sync path) instead of blindly treating every
+                    # PDF in the zip as a regular invoice - a zip that
+                    # mirrors the real folder tree (e.g. someone zipping up
+                    # "Sales Invoice" + "Credit Note" together) would
+                    # otherwise misparse credit notes as invoices.
+                    from services.drive_classifier import classify_local_directory, DocumentType
+                    classified = classify_local_directory(extract_dir)
+
+                    for cf in classified:
+                        if cf.document_type != DocumentType.INVOICE:
+                            location = "/".join(cf.path) if cf.path else "(zip root)"
+                            print(f"[upload_batch] Found but not yet processed ({cf.document_type.value}, no extractor for this type yet): {location}/{cf.name}")
+                            continue
+
+                        extracted_path = cf.id  # local_directory_lister sets id to the real file path
+                        extracted_file = cf.name
+
+                        if gcs_storage.is_active():
+                            gcs_storage.upload_file(extracted_path, f"batches/{batch_id}/{extracted_file}")
+
+                        task_id = str(uuid.uuid4())
+                        invoice_task = InvoiceTask(
+                            id=task_id,
+                            batch_id=batch_id,
+                            file_name=extracted_file,
+                            status=TaskStatus.PENDING,
+                            invoice_type=type
+                        )
+                        db.add(invoice_task)
+
+                        tasks_to_process.append({
+                            "id": task_id,
+                            "file_path": extracted_path
+                        })
                 # Remove the original zip file after extraction
                 try:
                     os.remove(file_path)
