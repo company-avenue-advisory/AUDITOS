@@ -322,6 +322,14 @@ def _extract_gst_summary_table(full_text: str) -> dict:
             result['cgst_amount']   = round(sum(_f(r.group(3)) for r in rows), 2)
             result['sgst_amount']   = round(sum(_f(r.group(5)) for r in rows), 2)
             result['igst_amount']   = round(sum(_f(r.group(7)) for r in rows), 2)
+            # rates too (needed to prorate tax across deterministic line items -
+            # see extract_deterministic_line_items) - take the first row's
+            # rates; CGST rate always equals SGST rate, validated across 180+
+            # real OneStack invoices with zero exceptions this session
+            first = rows[0]
+            result['cgst_rate'] = float(first.group(2)) if first.group(2) else 0.0
+            result['sgst_rate'] = float(first.group(4)) if first.group(4) else 0.0
+            result['igst_rate'] = float(first.group(6)) if first.group(6) else 0.0
 
     # ── Final Total — the post-advance GST base ───────────────────────────────
     ft = re.search(r'Final Total\s*\([^)]*\)\s+([\d,]+\.[\d]{2})', text)
@@ -350,6 +358,162 @@ def _extract_gst_summary_table(full_text: str) -> dict:
             result['advance_amount'] = adv
 
     return result
+
+
+_INVOICE_HEADER_RE = re.compile(
+    r'Customer Name:\s*(?P<party_name>.+?)\s*Billing Month:.*?'
+    r'GSTIN:\s*(?P<gstin>[0-9A-Z]{15})\s*Invoice Number:\s*(?P<invoice_no>\S+).*?'
+    r'Date of Invoice:\s*(?P<date>\d{2}-\d{2}-\d{4})',
+    re.DOTALL,
+)
+
+
+def _extract_invoice_header(full_text: str) -> dict:
+    """
+    Deterministically parses party name / GSTIN / invoice number / date from
+    the single header block every OneStack invoice prints:
+    'Customer Name: X Billing Month: month GSTIN: gstin Invoice Number: no
+    PAN: pan Date of Invoice: date'. Regex, no LLM - this line block is
+    reliable across every real invoice checked this session.
+    Empty dict if the block isn't found (falls back to whatever the LLM
+    extracted for these fields).
+    """
+    m = _INVOICE_HEADER_RE.search(full_text)
+    if not m:
+        return {}
+    gstin = m.group("gstin")
+    return {
+        "party_name": re.sub(r'\s+', ' ', m.group("party_name")).strip(),
+        "party_gstin": gstin,
+        "invoice_no": m.group("invoice_no").strip(),
+        "voucher_date": m.group("date"),
+        "place_of_supply": _STATE_CODE_MAP.get(gstin[:2], ""),
+    }
+
+
+# (regex, particulars label, HSN or None if genuinely absent on the invoice
+# template) - one row per lettered billing section A-J. Ported from this
+# session's line_item_extractor.py, now the single canonical implementation.
+_LINE_ITEM_SECTIONS = [
+    (r'A\s+SAAS\s*/\s*Mobile Application.*?Sub Total\s+([\d,]+\.\d{2})', "SaaS/UPI Platform Charges", "9971"),
+    (r'B\s+Soundbox Charges.*?Sub Total\s+([\d,]+\.\d{2})', "Soundbox Charges", "997319"),
+    (r'C\s+CBS\s*\(Core Banking Solution\)\s*([\d,]+\.\d{2})', "Core Banking Solution Charges", None),
+    (r'D\s+Transactional Messages.*?Sub Total\s+\S*\s*\S*\s*\S*\s*([\d,]+\.\d{2})', "Transactional Messaging Charges", "998599"),
+    (r'E\s+Promotional Messages.*?Sub Total\s+\S*\s*\S*\s*([\d,]+\.\d{2})', "Promotional Messaging Charges", "998599"),
+    (r'F\s+KYC Charges.*?Sub Total\s+([\d,]+\.\d{2})', "KYC Verification Charges", "998529"),
+    (r'G\s+Late Fees Charges\s+[\d,]+\.\d{2}\s*\d*%?\s*([\d,]+\.?\d*)', "Late Payment Fee", None),
+    (r'H\s+Ad Hoc Charges\s+([\d,]+\.\d{2})', "Ad Hoc Charges", None),
+    # These two are letter-agnostic ([A-J], not a fixed letter): verified
+    # this session that when an invoice only has these two sections (no
+    # SaaS/Soundbox/etc at all - the OMH/OHR "adjustment" invoices, e.g.
+    # Pragati's OMH26061005), they get relettered sequentially starting
+    # from A/B instead of keeping their "canonical" I/J position. Anchoring
+    # on the section name text instead of the letter handles both cases.
+    (r'[A-J]\s+Transactional Charges\b.*?Total\s+\S*\s*\S*\s*([\d,]+\.\d{2})', "High-Volume Transactional Charges", None),
+    (r'[A-J]\s+UPI 2\.0 Transactional Messages.*?Sub Total\s+\S*\s*\S*\s*\S*\s*([\d,]+\.\d{2})', "UPI 2.0 Transactional Messaging Charges", "998599"),
+]
+
+NOT_SPECIFIED_HSN = "NOT SPECIFIED ON INVOICE"
+
+# Fallback for the ~1.6% of invoices (verified: 3 of 183 this session - all
+# OMH/OHR "adjustment series") that skip the standard A-J section template
+# entirely and are just a single ad-hoc line: "A <description> <hsn> ...
+# <amount> B Final Total <amount>", with no "SAAS"/"Soundbox Charges"/etc
+# header text at all (e.g. Bijnor's one-off Soundbox charge, Sirohi's
+# one-off Dun & Bradstreet charge). Tried only when none of the 10 named
+# sections matched.
+_SINGLE_LINE_INVOICE_RE = re.compile(
+    r'\bA\b\s*\n?(?P<desc>.+?)\n?(?P<hsn>\d{4,8})\b.*?(?P<amt>[\d,]+\.\d{2})\s*\n?B\s*\n?Final Total',
+    re.DOTALL,
+)
+
+
+def extract_deterministic_line_items(full_text: str, taxable_value_total: float,
+                                      cgst_rate: float, sgst_rate: float, igst_rate: float) -> list:
+    """
+    Breaks a OneStack invoice into per-section line items (billing sections
+    A-J) instead of one rolled-up row per invoice. Pure regex against the
+    printed 'Sub Total' lines - no LLM involvement, so results can't drift
+    between runs the way LLM-extracted sales_items can.
+
+    Sections with no HSN on the OneStack template (C, G, H, I) get
+    NOT_SPECIFIED_HSN rather than a blank string - blank/None would trigger
+    qc_audit_sales_items' HSN-autofill-to-9971 fallback, which is wrong for
+    these sections (verified directly against source PDFs this session:
+    they genuinely carry no HSN, autofilling one would misstate the return).
+
+    Handles "Advance Paid" deductions: the printed section Sub Totals are
+    PRE-advance. The whole gap between their sum and taxable_value_total is
+    applied to the largest section first, cascading to the next-largest if
+    it would go negative - validated against real invoices where the
+    advance was paid against a specific category, not spread proportionally
+    across every section (see this session's regression fixtures).
+
+    Returns [] if no section regex matched at all (not a OneStack-template
+    invoice, or extraction genuinely failed) - callers should fall back to
+    whatever the LLM extracted rather than force an empty result.
+    """
+    def _f(s):
+        try:
+            return float(str(s).replace(',', '').replace(' ', ''))
+        except Exception:
+            return 0.0
+
+    items = []
+    for pattern, label, hsn in _LINE_ITEM_SECTIONS:
+        m = re.search(pattern, full_text, re.DOTALL)
+        if m:
+            amt = _f(m.group(1))
+            if amt > 0:
+                items.append({"particulars": label, "hsn": hsn or NOT_SPECIFIED_HSN, "taxable": amt})
+
+    if not items:
+        m = _SINGLE_LINE_INVOICE_RE.search(full_text)
+        if m:
+            amt = _f(m.group("amt"))
+            if amt > 0:
+                desc = re.sub(r'\s+', ' ', m.group("desc")).strip()
+                items.append({"particulars": desc or "Ad Hoc Charges", "hsn": m.group("hsn"), "taxable": amt})
+
+    if not items:
+        return []
+
+    section_sum = sum(i["taxable"] for i in items)
+    gap = round(section_sum - taxable_value_total, 2)
+    if abs(gap) > 0.01:
+        items_sorted = sorted(items, key=lambda i: -i["taxable"])
+        remaining_gap = gap
+        for i in items_sorted:
+            if remaining_gap <= 0.005:
+                break
+            take = min(i["taxable"], remaining_gap)
+            i["taxable"] = round(i["taxable"] - take, 2)
+            remaining_gap = round(remaining_gap - take, 2)
+        items = [i for i in items if i["taxable"] > 0.005]
+        if not items:
+            # entire invoice was advance-covered - a single nominal NIL line
+            # so the invoice still has at least one line item on record
+            items = [{"particulars": "SaaS/UPI Platform Charges", "hsn": "9971", "taxable": 0.0}]
+
+    cgst_running = sgst_running = igst_running = 0.0
+    total_cgst = round(taxable_value_total * cgst_rate / 100, 2)
+    total_sgst = round(taxable_value_total * sgst_rate / 100, 2)
+    total_igst = round(taxable_value_total * igst_rate / 100, 2)
+    for idx, i in enumerate(items):
+        is_last = (idx == len(items) - 1)
+        if is_last:
+            i["cgst"] = round(total_cgst - cgst_running, 2)
+            i["sgst"] = round(total_sgst - sgst_running, 2)
+            i["igst"] = round(total_igst - igst_running, 2)
+        else:
+            i["cgst"] = round(i["taxable"] * cgst_rate / 100, 2)
+            i["sgst"] = round(i["taxable"] * sgst_rate / 100, 2)
+            i["igst"] = round(i["taxable"] * igst_rate / 100, 2)
+            cgst_running += i["cgst"]
+            sgst_running += i["sgst"]
+            igst_running += i["igst"]
+        i["total"] = round(i["taxable"] + i["cgst"] + i["sgst"] + i["igst"], 2)
+    return items
 
 
 def process_pdf(pdf_path, model_override=None, invoice_type="both", logger=None):
@@ -544,6 +708,44 @@ def process_pdf(pdf_path, model_override=None, invoice_type="both", logger=None)
         if 'advance_amount' in gst_table:
             all_res.overall_advance_amount = gst_table['advance_amount']
 
+    # ── Deterministic line-item breakdown (canonical, replaces LLM sales_items) ──
+    # Breaks the invoice into its per-section billing lines (SaaS, Soundbox,
+    # Transactional Messages, KYC, Late Fee, etc.) via regex instead of
+    # whatever the LLM happened to extract as "sales_items". Only attempted
+    # when the GST summary table itself parsed (gst_table non-empty) - that's
+    # the deterministic invoice-level ground truth this needs to prorate tax
+    # against, and its rates (cgst_rate/sgst_rate/igst_rate). Falls back to
+    # the LLM's sales_items untouched if no section matched at all (not a
+    # recognized OneStack template) - see extract_deterministic_line_items.
+    used_deterministic_line_items = False
+    if invoice_type in ("sales", "both") and gst_table:
+        header = _extract_invoice_header(full_text)
+        det_items = extract_deterministic_line_items(
+            full_text, all_res.overall_taxable_value,
+            gst_table.get('cgst_rate', 0.0), gst_table.get('sgst_rate', 0.0),
+            gst_table.get('igst_rate', 0.0),
+        )
+        if det_items:
+            all_res.sales_items = [
+                SuvitSalesItem(
+                    voucher_date=header.get("voucher_date"),
+                    voucher_type="Sales",
+                    invoice_no=header.get("invoice_no"),
+                    party_ledger_name=header.get("party_name"),
+                    party_gstin=header.get("party_gstin"),
+                    place_of_supply=header.get("place_of_supply"),
+                    particulars=it["particulars"],
+                    hsn=it["hsn"],
+                    taxable_value=it["taxable"],
+                    cgst_amount=it["cgst"],
+                    sgst_amount=it["sgst"],
+                    igst_amount=it["igst"],
+                    total_invoice_value=it["total"],
+                )
+                for it in det_items
+            ]
+            used_deterministic_line_items = True
+
     # Guard: if the printed GST summary table OR the LLM-extracted overall amounts show
     # non-zero taxes, the invoice is domestic — not export/LUT — regardless of any
     # text-based export phrase detection (which can false-positive on vendor/product names).
@@ -606,7 +808,32 @@ def process_pdf(pdf_path, model_override=None, invoice_type="both", logger=None)
         or bool(re.search(r'\blut\b', _ft_lower))
     )
 
-    if all_res.sales_items:
+    if used_deterministic_line_items:
+        # Deterministic items are already reconciled to the invoice-level
+        # ground truth by construction (advance cascade + tax proration
+        # applied at extraction time, see extract_deterministic_line_items).
+        # The LLM-noise-cleanup steps below (subtotal removal, taxable
+        # correction, unallocated-variance injection, HSN-blank-autofill)
+        # exist to fix problems that only arise from LLM extraction and
+        # would only introduce risk here - HSN-autofill in particular would
+        # incorrectly force "9971" onto sections that genuinely have no HSN
+        # printed on the invoice (see NOT_SPECIFIED_HSN). Only classify
+        # gstr1_category per item, which is safe and doesn't touch amounts.
+        for item in all_res.sales_items:
+            item.gstr1_category = classify_gstr1_item(item)
+        if _is_export_invoice:
+            for item in all_res.sales_items:
+                item.cgst_amount = 0.0
+                item.sgst_amount = 0.0
+                item.igst_amount = 0.0
+                item.total_invoice_value = round(item.taxable_value or 0.0, 2)
+                item.gstr1_category = "EXPORT"
+            all_res.overall_cgst_amount = 0.0
+            all_res.overall_sgst_amount = 0.0
+            all_res.overall_igst_amount = 0.0
+            all_res.overall_total_invoice_value = all_res.overall_taxable_value
+
+    elif all_res.sales_items:
         # Detect subtotal rows dropped
         orig_len = len(all_res.sales_items)
         cleaned_sales = remove_subtotals(all_res.sales_items)

@@ -83,6 +83,10 @@ SUITES = {
         "label": "GSTR-2B Reconciliation Engine",
         "module": "backend.tests.regression.test_gstr2b_regression",
     },
+    "sales_line_items": {
+        "label": "Sales Line-Item Extraction (deterministic, OneStack template)",
+        "module": "backend.tests.regression.test_sales_line_item_extraction",
+    },
 }
 
 
