@@ -107,6 +107,10 @@ SUITES = {
         "label": "Celery Beat Scheduling (self-resolving monthly ingestion)",
         "module": "backend.tests.regression.test_celery_scheduling",
     },
+    "period_review": {
+        "label": "Sales Period Review Gate (approve/reject before filing)",
+        "module": "backend.tests.regression.test_period_review",
+    },
 }
 
 

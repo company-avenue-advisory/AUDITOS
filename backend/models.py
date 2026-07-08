@@ -285,6 +285,38 @@ class GoogleDriveSyncConfig(Base):
     updated_at   = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+# ── Sales Period Review Gate ──────────────────────────────────────────────
+
+class SalesPeriodReview(Base):
+    """
+    One row per (tenant, period) - the checkpoint between reconciliation
+    (sales_reconciliation.py) + filing generation (gstr1_filing.py) and
+    anything actually reaching the client or a GST portal. Nothing built
+    in Phases 4-6 persisted its output because no real consumer existed
+    yet; this table is that consumer, sized to what it actually needs to
+    show a reviewer (recon status counts, flagged/skipped doc lists, one
+    filing summary per GST registration) rather than the full raw
+    ReconEntry/line-item payload, which stays queryable from
+    SalesLineItem/InvoiceTask directly if a reviewer needs to drill in.
+    """
+    __tablename__ = "sales_period_reviews"
+
+    id                = Column(String, primary_key=True, default=lambda: str(uuid4()))
+    tenant_id         = Column(String, ForeignKey("tenants.id"), nullable=False, index=True)
+    period            = Column(String, nullable=False)  # e.g. "2026-06"
+    status            = Column(String, default="PENDING_REVIEW", nullable=False)
+    # PENDING_REVIEW | APPROVED | REJECTED
+
+    recon_summary_json = Column(Text, nullable=True)   # status counts + flagged/skipped doc lists
+    filings_summary_json = Column(Text, nullable=True) # per-GSTIN: doc count, taxable, tax, sections
+
+    reviewed_by       = Column(String, ForeignKey("users.id"), nullable=True)
+    reviewed_at       = Column(DateTime, nullable=True)
+    review_notes      = Column(Text, nullable=True)
+
+    created_at        = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
 class GoogleDriveWebhookChannel(Base):
     """
     Track active Google Drive watch channels for real-time sync.
