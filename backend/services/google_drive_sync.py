@@ -117,11 +117,17 @@ class GoogleDriveSyncPipeline:
             for f in unknown_files:
                 logger.warning(f"[GoogleDriveSync] UNKNOWN document type, not processed: {'/'.join(f.path)}/{f.name}")
 
-            # Credit notes now have an extractor - process them. The client
-            # sheet still doesn't have a parser, so it's still just tracked.
+            # Credit notes now have an extractor - process them.
             temp_dir_cn = tempfile.mkdtemp(prefix="google_drive_sync_cn_")
             cn_processed, cn_failed = self._process_credit_note_files(credit_note_files, temp_dir_cn, sync_job)
-            self._track_unprocessed(client_sheet_files, reason="client_sheet parser not yet built")
+
+            # Client sheet now has a parser - parse and log a summary. Not
+            # persisted to the DB yet: there's no reconciliation engine (a
+            # later phase) to consume it, and its storage schema should be
+            # designed against what that engine actually needs, not guessed
+            # now. Parsing here at least proves the parser against the real
+            # file every run and surfaces its shape immediately.
+            self._log_client_sheet_summary(client_sheet_files)
 
             # stashed on self so _build_summary() can include them from every
             # return point in this method without threading them through each one
@@ -242,15 +248,43 @@ class GoogleDriveSyncPipeline:
 
     def _track_unprocessed(self, files: List[ClassifiedFile], reason: str):
         """
-        Logs credit_note/client_sheet files found this run without writing
-        anything to the dedup tracker DB. Deliberately not marking them
-        "seen" - once the credit-note extractor and client-sheet parser
-        exist, they must still be picked up on the next run, not silently
-        skipped because an earlier run already saw the file.
+        Logs files found this run without writing anything to the dedup
+        tracker DB. Deliberately not marking them "seen" - once whatever's
+        missing (an extractor, a downstream consumer) exists, they must
+        still be picked up on the next run, not silently skipped because
+        an earlier run already saw the file.
         """
         for f in files:
             location = "/".join(f.path) if f.path else "(month root)"
             logger.info(f"[GoogleDriveSync] Found but not yet processed ({reason}): {location}/{f.name}")
+
+    def _log_client_sheet_summary(self, client_sheet_files: List[ClassifiedFile]):
+        """
+        Downloads and parses each classified client-sheet file, logging a
+        summary (row counts, doc-type split) - not persisted to the DB yet,
+        see the comment at the call site in run(). Not marked "seen" in the
+        dedup tracker for the same reason: once a reconciliation engine
+        exists to consume this, every run must still re-surface it.
+        """
+        from services.client_sheet_parser import parse_client_sheet
+
+        for cf in client_sheet_files:
+            location = "/".join(cf.path) if cf.path else "(month root)"
+            try:
+                temp_dir = tempfile.mkdtemp(prefix="google_drive_sync_cs_")
+                local_path = os.path.join(temp_dir, cf.name)
+                if not self.drive.download_file(cf.id, cf.name, local_path):
+                    raise Exception(f"Failed to download {cf.name}")
+                rows = parse_client_sheet(local_path)
+                invoices = sum(1 for r in rows if r["doc_type"] == "Invoice")
+                credit_notes = sum(1 for r in rows if r["doc_type"] == "Credit Note")
+                logger.info(
+                    f"[GoogleDriveSync] Parsed client sheet {location}/{cf.name}: "
+                    f"{len(rows)} rows ({invoices} invoice, {credit_notes} credit note) - "
+                    f"not yet persisted, no reconciliation engine to consume it"
+                )
+            except Exception as e:
+                logger.error(f"[GoogleDriveSync] Error parsing client sheet {cf.name}: {e}")
 
     def _process_credit_note_files(self, credit_note_files: List[ClassifiedFile],
                                     temp_dir: str, sync_job) -> Tuple[int, int]:

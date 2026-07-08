@@ -91,6 +91,10 @@ SUITES = {
         "label": "Credit Note Extraction (deterministic, OneStack template)",
         "module": "backend.tests.regression.test_credit_note_extraction",
     },
+    "client_sheet": {
+        "label": "Client Sheet Parser (OneStack masterdata schema)",
+        "module": "backend.tests.regression.test_client_sheet_parser",
+    },
 }
 
 
