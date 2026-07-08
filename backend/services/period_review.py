@@ -35,11 +35,19 @@ class ReviewStateError(Exception):
     decision, once made, is a fact, not something silently overwritten."""
 
 
-def build_recon_summary(recon_entries: List) -> dict:
+def build_recon_summary(recon_entries: List, totals_match=None) -> dict:
     """
     Turns sales_reconciliation.py's ReconEntry list into the compact
     shape a reviewer actually needs: counts per status, plus the doc_nos
     that need a human's attention (everything except a clean PASS).
+
+    totals_match (a sales_reconciliation.TotalsMatchResult, optional) is
+    the 3-way net-taxable-total check across OS / client sheet / GSTR-1
+    filing - "the sheet where the totals get matched" - included here so
+    a reviewer sees it without needing a passing per-document PASS count
+    to also mean the aggregate total is right (it doesn't always - see
+    reconcile_period_totals' docstring for the real MH filing bug this
+    catches that per-document checks can't).
     """
     counts: dict = {}
     needs_attention = []
@@ -47,7 +55,18 @@ def build_recon_summary(recon_entries: List) -> dict:
         counts[e.status.value] = counts.get(e.status.value, 0) + 1
         if e.status.value != "PASS":
             needs_attention.append({"doc_no": e.doc_no, "status": e.status.value, "note": e.note})
-    return {"counts": counts, "needs_attention": needs_attention}
+
+    summary = {"counts": counts, "needs_attention": needs_attention}
+    if totals_match is not None:
+        summary["totals_match"] = {
+            "os_net_taxable": totals_match.os_net_taxable,
+            "client_net_taxable": totals_match.client_net_taxable,
+            "gstr1_net_taxable": totals_match.gstr1_net_taxable,
+            "matches": totals_match.matches,
+            "deltas": totals_match.deltas,
+            "note": totals_match.note,
+        }
+    return summary
 
 
 def build_filings_summary(filings: dict) -> dict:
@@ -72,7 +91,7 @@ def build_filings_summary(filings: dict) -> dict:
 
 
 def create_period_review(db, tenant_id: str, period: str,
-                          recon_entries: List, filings: dict) -> SalesPeriodReview:
+                          recon_entries: List, filings: dict, totals_match=None) -> SalesPeriodReview:
     """
     Persists a new PENDING_REVIEW record from this period's reconciliation
     + filing-generation output. Always creates a new row rather than
@@ -84,7 +103,7 @@ def create_period_review(db, tenant_id: str, period: str,
         tenant_id=tenant_id,
         period=period,
         status="PENDING_REVIEW",
-        recon_summary_json=json.dumps(build_recon_summary(recon_entries)),
+        recon_summary_json=json.dumps(build_recon_summary(recon_entries, totals_match)),
         filings_summary_json=json.dumps(build_filings_summary(filings)),
     )
     db.add(review)
@@ -178,7 +197,7 @@ def generate_period_review_for_tenant(db, tenant_id: str, period: str, client_sh
     PENDING_REVIEW was returned instead of a new one being made.
     """
     from services.client_sheet_parser import parse_client_sheet
-    from services.sales_reconciliation import reconcile_period
+    from services.sales_reconciliation import reconcile_period, reconcile_period_totals
     from services.gstr1_filing import generate_gstr1_filings, ONESTACK_REGISTRATION_MAP
     from models import SalesLineItem, InvoiceTask, BatchJob
 
@@ -207,7 +226,19 @@ def generate_period_review_for_tenant(db, tenant_id: str, period: str, client_sh
 
     recon_entries = reconcile_period(os_rows, client_rows)
     filings = generate_gstr1_filings(period_items, recon_entries, ONESTACK_REGISTRATION_MAP)
-    review = create_period_review(db, tenant_id, period, recon_entries, filings)
+
+    # 3-way total match: OS vs client sheet vs the GSTR-1 filing(s) about
+    # to be reviewed - summed across every registration this period's
+    # items were split into (MH + HR for OneStack), since the filing is
+    # split per-GSTIN but the net taxable total is a single period-level
+    # figure to check against OS/client.
+    gstr1_total = sum(
+        r["gstr1_json"]["_summary"]["total_taxable"]
+        for r in filings.values() if r.get("gstr1_json")
+    )
+    totals_match = reconcile_period_totals(os_rows, client_rows, {"total_taxable": gstr1_total})
+
+    review = create_period_review(db, tenant_id, period, recon_entries, filings, totals_match)
     return review, True
 
 

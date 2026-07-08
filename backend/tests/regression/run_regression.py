@@ -111,6 +111,10 @@ SUITES = {
         "label": "Sales Period Review Gate (approve/reject before filing)",
         "module": "backend.tests.regression.test_period_review",
     },
+    "gstr1_generator": {
+        "label": "GSTR-1 JSON Generator (credit-note categorization + net totals)",
+        "module": "backend.tests.regression.test_gstr1_generator",
+    },
 }
 
 
