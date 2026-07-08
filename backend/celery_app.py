@@ -193,10 +193,15 @@ def sales_ingestion_task(self, tenant_id: str, tenant_slug: str,
     invoices arrived from the 2nd through the 30th, not all on day one),
     so ingestion needs to run frequently to stay current. "Monthly" only
     describes when a FILING happens after a period closes - that's a
-    separate concern (reconciliation + GSTR-1 generation), not yet wired
-    to run automatically after this task. That chaining depends on a
-    review gate (a later phase) existing to check the output first -
-    deliberately not done here to avoid auto-filing unreviewed data.
+    separate concern (reconciliation + GSTR-1 generation).
+
+    Chained automatically once a client sheet is found in the month's
+    folder: GoogleDriveSyncPipeline.run() calls
+    generate_period_review_for_tenant() (skip_if_pending=True) at the end
+    of every run, producing a PENDING_REVIEW SalesPeriodReview a human
+    still has to approve/reject before anything reaches a GST portal -
+    the review gate (Phase 7) is what makes this safe to auto-run instead
+    of just logging the client sheet's shape and stopping there.
 
     If this month's folder doesn't exist in Drive yet (e.g. the client
     hasn't created it), this is logged clearly and treated as "nothing to
@@ -223,12 +228,14 @@ def sales_ingestion_task(self, tenant_id: str, tenant_slug: str,
             print(f"[Celery:sales_ingestion] {msg}")
             return {"status": "SKIPPED", "reason": msg}
 
-        print(f"[Celery:sales_ingestion] Resolved folder {folder_id} - starting sync for tenant {tenant_id}")
+        period = date.today().strftime("%Y-%m")
+        print(f"[Celery:sales_ingestion] Resolved folder {folder_id} - starting sync for tenant {tenant_id}, period {period}")
         pipeline = GoogleDriveSyncPipeline(
             tenant_id=tenant_id,
             google_drive_folder_id=folder_id,
             excel_output_path=excel_output_path,
             invoice_type=invoice_type,
+            period=period,
         )
         result = pipeline.run(model_config=model_config)
         print(f"[Celery:sales_ingestion] Sync completed for '{tenant_slug}': {json.dumps(result, default=str)}")
