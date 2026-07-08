@@ -32,7 +32,7 @@ services:
     dockerContext: backend
     dockerfilePath: Dockerfile
     plan: starter
-    startCommand: celery -A celery_app worker --loglevel=info
+    startCommand: celery -A celery_app worker --loglevel=info -Q celery,default,ocr,drive_sync
     envVars:
       - key: DATABASE_URL
         sync: false
@@ -49,4 +49,25 @@ services:
       - key: OPENAI_API_BASE
         sync: false
       - key: MODEL_NAME
+        sync: false
+
+  # 3. Celery Beat Scheduler — dispatches everything in beat_schedules.json
+  # (monthly/daily sync jobs registered via scripts/setup_*.py) on its
+  # crontab. Without this service running, beat_schedule entries are dead
+  # config that never fires anything - confirmed missing from this file
+  # before this change, meaning no scheduled sync had ever actually run
+  # in production regardless of what was registered in beat_schedules.json.
+  - type: worker
+    name: auditos-beat
+    env: docker
+    dockerContext: backend
+    dockerfilePath: Dockerfile
+    plan: starter
+    startCommand: celery -A celery_app beat --loglevel=info
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: CELERY_BROKER_URL
+        sync: false
+      - key: GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON
         sync: false
