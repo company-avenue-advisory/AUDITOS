@@ -74,13 +74,17 @@ class GoogleDriveConnector:
             logger.error(f"Failed to authenticate with Google Drive: {e}")
             raise
 
-    def list_files(self, file_types: List[str] = None) -> List[Dict]:
+    def list_files(self, file_types: List[str] = None, folder_id: str = None) -> List[Dict]:
         """
         List files in the monitored folder.
 
         Args:
             file_types: MIME types to filter (e.g., ["application/pdf"])
-                       If None, returns all files.
+                       If None, returns all files (including subfolders,
+                       whose mimeType is "application/vnd.google-apps.folder").
+            folder_id: overrides self.folder_id for this one call - lets
+                       callers recurse into subfolders without constructing
+                       a new connector per folder level.
 
         Returns:
             List of file metadata dicts with keys:
@@ -94,10 +98,11 @@ class GoogleDriveConnector:
         if not self.service:
             raise RuntimeError("Not authenticated with Google Drive")
 
+        target_folder_id = folder_id or self.folder_id
         files = []
         try:
             # Build query for files in the folder
-            query = f"'{self.folder_id}' in parents and trashed=false"
+            query = f"'{target_folder_id}' in parents and trashed=false"
 
             # Filter by MIME type if specified (PDFs only for invoices)
             if file_types:
@@ -119,7 +124,7 @@ class GoogleDriveConnector:
                 if not page_token:
                     break
 
-            logger.info(f"Found {len(files)} files in Google Drive folder {self.folder_id}")
+            logger.info(f"Found {len(files)} files in Google Drive folder {target_folder_id}")
             return files
 
         except Exception as e:

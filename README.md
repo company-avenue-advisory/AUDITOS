@@ -75,6 +75,45 @@ graph TD
     H --> I[Excel / GSTR-1 JSON Export]
 ```
 
+### Sales Ingestion Pipeline (OneStack) — Build Status
+
+Client-specific pipeline for OneStack Solution's monthly Sales ingestion, built folder-by-folder against their real Google Drive tree rather than a generic template. Green = built and verified (regression-tested); gray = not yet built; orange = deferred to its own phase (Purchase/Vendor Invoices needs a different extraction strategy — heterogeneous multi-vendor formats vs. Sales' single fixed template).
+
+```mermaid
+graph TD
+    subgraph Source["Source (real Drive tree, confirmed)"]
+        SI["Sales Invoice / Other Invoices"]
+        CN["Credit Note folder"]
+        CS["Client sheet (.xlsx)"]
+        ZIP["Manual zip / PDF upload"]
+    end
+
+    SI --> CLASS
+    CN --> CLASS
+    CS --> CLASS
+    ZIP --> CLASS
+
+    CLASS["drive_classifier.py<br/>folder-based, not filename"]:::built --> RESOLVE
+    RESOLVE["drive_path_resolver.py<br/>config + date to month folder ID"]:::built --> LINEITEM
+    RESOLVE --> CREDITNOTE
+    RESOLVE --> CLIENTPARSE
+
+    LINEITEM["extract_deterministic_line_items<br/>invoice_processor.py"]:::built --> RECON
+    CREDITNOTE["extract_credit_note<br/>+ credit_note_ingest.py"]:::built --> RECON
+    CLIENTPARSE["client_sheet_parser.py<br/>parses, not yet persisted"]:::built --> RECON
+
+    RECON["Reconciliation engine<br/>PDF vs OS vs client, tolerance-aware"]:::pending --> GSTR1SVC
+    GSTR1SVC["GSTR-1 workbook service<br/>tie into gstr1_generator.py"]:::pending --> SCHED
+    SCHED["Celery beat scheduling<br/>monthly, unattended"]:::pending --> REVIEW
+    REVIEW["Review gate + delivery<br/>audit trail, client handoff"]:::pending
+
+    PURCHASE["Purchase / Vendor Invoices<br/>deferred - multi-vendor,<br/>Nanonets candidate (Phase 0b)"]:::deferred
+
+    classDef built fill:#d1f3ea,stroke:#0f6e56,color:#04342c
+    classDef pending fill:#f1efe8,stroke:#888780,color:#2c2c2a
+    classDef deferred fill:#faece7,stroke:#d85a30,color:#4a1b0c
+```
+
 ---
 
 ## Local Development Setup
