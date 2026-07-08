@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from database import get_db, engine, Base, SessionLocal
-from models import BatchJob, InvoiceTask, TaskStatus, SalesLineItem, PurchaseLineItem, ObservabilityLog, UserSession, UserPreferences, UserAnnotation, Tenant, GoogleDriveSyncJob, GoogleDriveSyncConfig
+from models import BatchJob, InvoiceTask, TaskStatus, SalesLineItem, PurchaseLineItem, ObservabilityLog, UserSession, UserPreferences, UserAnnotation, Tenant, GoogleDriveSyncJob, GoogleDriveSyncConfig, SalesPeriodReview
 from async_tasks import process_batch
 from ws_manager import manager
 
@@ -1169,6 +1169,173 @@ async def export_gstr1_json(
         media_type="application/json",
         headers={"Content-Disposition": f"attachment; filename={filename}"},
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Sales Period Review Gate (Phase 7) — the checkpoint between
+# reconciliation/GSTR-1 filing generation (Phases 4-5) and anything
+# actually reaching a client or the GST portal. See services/period_review.py.
+# ─────────────────────────────────────────────────────────────────────────
+
+class PeriodReviewDecisionRequest(BaseModel):
+    notes: Optional[str] = None
+
+
+def _month_matches_period(voucher_date: Optional[str], period: str) -> bool:
+    """period is 'YYYY-MM'; voucher_date is 'DD-MM-YYYY' (this pipeline's
+    consistent date format - see invoice_processor.py's _extract_invoice_header
+    and _parse_date in gstr1_generator.py). Returns False, not an error, for
+    a date that doesn't parse - an unparseable date shouldn't crash a whole
+    period's review generation, it should just not match into any period."""
+    if not voucher_date:
+        return False
+    try:
+        year, month = period.split("-")
+        parts = str(voucher_date).strip().split("-")
+        return len(parts) == 3 and parts[1] == month and parts[2] == year
+    except (ValueError, IndexError):
+        return False
+
+
+@app.post("/api/sales/period-reviews/generate")
+async def generate_period_review(
+    background_tasks: BackgroundTasks,
+    period: str = Form(...),  # "YYYY-MM"
+    client_sheet: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RoleChecker(["owner", "auditor"])),
+):
+    """
+    Runs reconciliation (sales_reconciliation.py) + GSTR-1 filing
+    generation (gstr1_filing.py) for this tenant's given period against
+    an uploaded client sheet, and persists the result as a PENDING_REVIEW
+    SalesPeriodReview row. Client-sheet parsing needs an actual file each
+    time because no durable copy is saved from the ingestion pipeline yet
+    (see google_drive_sync.py's _log_client_sheet_summary) - this endpoint
+    is the practical way to trigger a review today; wiring this to run
+    automatically after a scheduled sync is a natural follow-up once that
+    gap is closed.
+    """
+    from services.client_sheet_parser import parse_client_sheet
+    from services.sales_reconciliation import reconcile_period
+    from services.gstr1_filing import generate_gstr1_filings, ONESTACK_REGISTRATION_MAP
+    from services.period_review import create_period_review
+
+    if not current_user.tenant_id:
+        raise HTTPException(status_code=400, detail="Current user has no tenant assigned")
+
+    tmp_dir = tempfile.mkdtemp(prefix="period_review_")
+    sheet_path = os.path.join(tmp_dir, client_sheet.filename)
+    with open(sheet_path, "wb") as f:
+        shutil.copyfileobj(client_sheet.file, f)
+
+    try:
+        client_rows = parse_client_sheet(sheet_path)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    items = (
+        db.query(SalesLineItem)
+        .join(InvoiceTask, InvoiceTask.id == SalesLineItem.task_id)
+        .join(BatchJob, BatchJob.id == InvoiceTask.batch_id)
+        .filter(BatchJob.tenant_id == current_user.tenant_id)
+        .all()
+    )
+    period_items = [i for i in items if _month_matches_period(i.voucher_date, period)]
+
+    os_rows = [{
+        "doc_no": i.invoice_no, "doc_type": "Credit Note" if "credit" in str(i.voucher_type or "").lower() else "Invoice",
+        "taxable": abs(i.taxable_value or 0), "igst": abs(i.igst_amount or 0),
+        "cgst": abs(i.cgst_amount or 0), "sgst": abs(i.sgst_amount or 0),
+        "total": abs(i.total_invoice_value or 0), "party_gstin": i.party_gstin,
+    } for i in period_items]
+
+    recon_entries = reconcile_period(os_rows, client_rows)
+    filings = generate_gstr1_filings(period_items, recon_entries, ONESTACK_REGISTRATION_MAP)
+    review = create_period_review(db, current_user.tenant_id, period, recon_entries, filings)
+
+    from services.period_review import get_review_detail
+    return get_review_detail(review)
+
+
+@app.get("/api/sales/period-reviews")
+async def list_period_reviews(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Lists this tenant's period reviews, most recent first."""
+    if not current_user.tenant_id:
+        return []
+    reviews = (
+        db.query(SalesPeriodReview)
+        .filter(SalesPeriodReview.tenant_id == current_user.tenant_id)
+        .order_by(SalesPeriodReview.created_at.desc())
+        .all()
+    )
+    return [{
+        "id": r.id, "period": r.period, "status": r.status,
+        "created_at": r.created_at.isoformat() if r.created_at else None,
+        "reviewed_at": r.reviewed_at.isoformat() if r.reviewed_at else None,
+    } for r in reviews]
+
+
+@app.get("/api/sales/period-reviews/{review_id}")
+async def get_period_review(
+    review_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    from services.period_review import get_review_detail
+
+    review = db.query(SalesPeriodReview).filter(SalesPeriodReview.id == review_id).first()
+    if not review:
+        raise HTTPException(status_code=404, detail="Period review not found")
+    require_same_tenant(review.tenant_id, current_user)
+    return get_review_detail(review)
+
+
+@app.post("/api/sales/period-reviews/{review_id}/approve")
+async def approve_period_review_endpoint(
+    review_id: str,
+    req: PeriodReviewDecisionRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RoleChecker(["owner", "auditor"])),
+):
+    from services.period_review import approve_period_review, get_review_detail, ReviewStateError
+
+    review = db.query(SalesPeriodReview).filter(SalesPeriodReview.id == review_id).first()
+    if not review:
+        raise HTTPException(status_code=404, detail="Period review not found")
+    require_same_tenant(review.tenant_id, current_user)
+
+    try:
+        approved = approve_period_review(db, review_id, current_user.id, notes=req.notes)
+    except ReviewStateError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return get_review_detail(approved)
+
+
+@app.post("/api/sales/period-reviews/{review_id}/reject")
+async def reject_period_review_endpoint(
+    review_id: str,
+    req: PeriodReviewDecisionRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RoleChecker(["owner", "auditor"])),
+):
+    from services.period_review import reject_period_review, get_review_detail, ReviewStateError
+
+    review = db.query(SalesPeriodReview).filter(SalesPeriodReview.id == review_id).first()
+    if not review:
+        raise HTTPException(status_code=404, detail="Period review not found")
+    require_same_tenant(review.tenant_id, current_user)
+
+    try:
+        rejected = reject_period_review(db, review_id, current_user.id, notes=req.notes or "")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except ReviewStateError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return get_review_detail(rejected)
 
 
 class MSMEVerifyRequest(BaseModel):
