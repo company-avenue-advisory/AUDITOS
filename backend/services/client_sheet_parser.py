@@ -16,13 +16,23 @@ Real structure confirmed against the actual June 2026 file this session:
     real June credit notes were inside Sales_masterdata(Input) all along).
 
 This module only parses and returns rows in a normalized shape - it does
-NOT judge whether the client's figures are correct. Real example found
-this session: the client sheet tagged Krushiseva (MH26061040) as
-"Interstate"/IGST, but the source PDF confirms it's intrastate CGST+SGST
-(both parties in Maharashtra) - same class of error as the Muslim Co-op
-case handled by hand earlier. That judgment belongs to the reconciliation
-engine (a later phase), which compares this parser's output against our
-own extracted Sales Register / Line Items - not to this parser.
+NOT judge whether the client's figures are correct. That judgment belongs
+to sales_reconciliation.py, which compares this parser's output against
+our own extracted Sales Register.
+
+Root cause identified for the client's systematic tax-type errors (see
+sales_reconciliation.py's docstring for the full finding): the client's
+"Interstate or Intrastate (Drop Down only)" column is confirmed via
+openpyxl formula inspection to be a plain manually-typed string, not a
+spreadsheet formula. Cross-checking it against "State of Supply" (which
+IS a formula, "=LEFT(recipient_gstin, 2)") shows 76 of 196 June 2026
+rows (39%) are the EXACT logical inversion of what the GSTIN-derived
+state comparison implies - zero exceptions, not random entry error. This
+parser returns both "supplier_location" and "state_of_supply" (in
+addition to the client's own "interstate_or_intrastate" label and actual
+entered tax amounts) specifically so sales_reconciliation.py can name
+this known pattern when it recurs, rather than reporting a generic
+"tax-type contradiction" every time.
 """
 from typing import List, Optional
 
@@ -163,6 +173,7 @@ def parse_client_sheet(xlsx_path: str) -> List[dict]:
             "party_name": _get(row, "party_name"),
             "party_gstin": _get(row, "party_gstin"),
             "b2b_or_b2c": _get(row, "b2b_or_b2c"),
+            "supplier_location": _get(row, "supplier_location"),
             "state_of_supply": str(_get(row, "state_of_supply") or "").strip(),
             "interstate_or_intrastate": _get(row, "interstate_or_intrastate"),
             "taxable": round(_f(_get(row, "taxable")), 2),
