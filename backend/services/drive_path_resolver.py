@@ -31,6 +31,7 @@ class TenantDrivePath:
     month_folder_pattern: str
     sales_subfolder_map: dict
     root_file_rule: dict
+    gstr2b_root_folder_id: Optional[str] = None
 
 
 def load_tenant_path_config(tenant_slug: str) -> TenantDrivePath:
@@ -45,6 +46,7 @@ def load_tenant_path_config(tenant_slug: str) -> TenantDrivePath:
         month_folder_pattern=cfg["month_folder_pattern"],
         sales_subfolder_map=cfg["sales_subfolder_map"],
         root_file_rule=cfg["root_file_rule"],
+        gstr2b_root_folder_id=cfg.get("gstr2b_root_folder_id"),
     )
 
 

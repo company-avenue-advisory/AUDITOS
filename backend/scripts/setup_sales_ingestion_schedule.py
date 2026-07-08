@@ -66,12 +66,14 @@ def verify_tenant(tenant_id: str) -> bool:
         db.close()
 
 
-def verify_drive_path_config_and_access(tenant_slug: str) -> bool:
+def verify_drive_path_config_and_access(tenant_slug: str, invoice_type: str = "sales") -> bool:
     """
     Verifies data/drive_paths/{tenant_slug}.json exists and that the
     current month's folder can actually be resolved (or, if not created
     yet, that the config and Drive access are at least valid) - a real
-    connection check, not just "the JSON file parses".
+    connection check, not just "the JSON file parses". Checks against
+    purchase_root_folder_id instead of sales_root_folder_id when
+    invoice_type="purchase" - they're different Drive trees.
     """
     from services.drive_path_resolver import load_tenant_path_config, resolve_month_folder_id
     from services.google_drive import GoogleDriveConnector
@@ -85,13 +87,18 @@ def verify_drive_path_config_and_access(tenant_slug: str) -> bool:
         logger.error(f"Could not load drive path config for '{tenant_slug}': {e}")
         return False
 
+    root_folder_id = cfg.purchase_root_folder_id if invoice_type == "purchase" else cfg.sales_root_folder_id
+    if not root_folder_id:
+        logger.error(f"No {'purchase' if invoice_type == 'purchase' else 'sales'}_root_folder_id configured for '{tenant_slug}'.")
+        return False
+
     try:
-        connector = GoogleDriveConnector(cfg.sales_root_folder_id)
+        connector = GoogleDriveConnector(root_folder_id)
 
         def lister(folder_id):
             return connector.list_files(file_types=None, folder_id=folder_id)
 
-        folder_id = resolve_month_folder_id(lister, cfg, date.today())
+        folder_id = resolve_month_folder_id(lister, cfg, date.today(), root_folder_id=root_folder_id)
         if folder_id:
             logger.info(f"Resolved current month's folder for '{tenant_slug}': {folder_id}")
         else:
@@ -112,20 +119,44 @@ def setup_celery_beat(tenant_id: str, tenant_slug: str, excel_output_path: str,
         logger.error(f"Invalid cron expression (expected 5 fields): {cron_expression}")
         return False
 
-    schedule_name = f"sales_ingestion_{tenant_slug}"
-    entry = {
-        "task": "tasks.sales_ingestion_task",
-        "cron": cron_expression,
-        "kwargs": {
-            "tenant_id": tenant_id,
-            "tenant_slug": tenant_slug,
-            "excel_output_path": excel_output_path,
-            "invoice_type": invoice_type,
-            "model_config": None,
-        },
-        "options": {"queue": "drive_sync", "priority": 10},
-        "registered_at": datetime.utcnow().isoformat(),
-    }
+    # invoice_type="purchase" must register celery_app.purchase_ingestion_task,
+    # not sales_ingestion_task - they resolve against different Drive
+    # roots (purchase_root_folder_id vs sales_root_folder_id) and
+    # purchase_ingestion_task's signature has no invoice_type kwarg at
+    # all (it's hardcoded "purchase" internally, since a Purchase sync
+    # only ever walks the Purchase tree). Previously this always
+    # registered sales_ingestion_task regardless of invoice_type, which
+    # would have silently scheduled a Sales-tree sync even when Purchase
+    # was requested.
+    if invoice_type == "purchase":
+        schedule_name = f"purchase_ingestion_{tenant_slug}"
+        entry = {
+            "task": "tasks.purchase_ingestion_task",
+            "cron": cron_expression,
+            "kwargs": {
+                "tenant_id": tenant_id,
+                "tenant_slug": tenant_slug,
+                "excel_output_path": excel_output_path,
+                "model_config": None,
+            },
+            "options": {"queue": "drive_sync", "priority": 10},
+            "registered_at": datetime.utcnow().isoformat(),
+        }
+    else:
+        schedule_name = f"sales_ingestion_{tenant_slug}"
+        entry = {
+            "task": "tasks.sales_ingestion_task",
+            "cron": cron_expression,
+            "kwargs": {
+                "tenant_id": tenant_id,
+                "tenant_slug": tenant_slug,
+                "excel_output_path": excel_output_path,
+                "invoice_type": invoice_type,
+                "model_config": None,
+            },
+            "options": {"queue": "drive_sync", "priority": 10},
+            "registered_at": datetime.utcnow().isoformat(),
+        }
 
     registry_path = os.path.join(backend_dir, "data", "beat_schedules.json")
     try:
@@ -168,7 +199,7 @@ def main():
 
     if not verify_tenant(args.tenant_id):
         return 1
-    if not verify_drive_path_config_and_access(args.tenant_slug):
+    if not verify_drive_path_config_and_access(args.tenant_slug, args.invoice_type):
         return 1
 
     if args.test_only:

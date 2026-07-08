@@ -115,6 +115,14 @@ SUITES = {
         "label": "GSTR-1 JSON Generator (credit-note categorization + net totals)",
         "module": "backend.tests.regression.test_gstr1_generator",
     },
+    "drive_classifier_purchase": {
+        "label": "Purchase-side Drive Classification (any-vendor, category folders)",
+        "module": "backend.tests.regression.test_drive_classifier_purchase",
+    },
+    "purchase_review": {
+        "label": "GSTR-2B Review Gate (Phase A Drive-drop automation)",
+        "module": "backend.tests.regression.test_purchase_review",
+    },
 }
 
 

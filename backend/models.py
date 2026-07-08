@@ -317,6 +317,41 @@ class SalesPeriodReview(Base):
     created_at        = Column(DateTime, default=datetime.utcnow, nullable=False)
 
 
+# ── Purchase / GSTR-2B Reconciliation Review Gate ─────────────────────────
+
+class PurchaseGstr2bReview(Base):
+    """
+    One row per (tenant, period, gstin) - the checkpoint between GSTR-2B
+    reconciliation (gstr2b_reconciler.py) and anything actually feeding a
+    GSTR-3B ITC claim. Mirrors SalesPeriodReview's shape/lifecycle (see
+    that model's docstring) - same PENDING_REVIEW -> APPROVED/REJECTED
+    state machine, same reasoning for storing a compact summary rather
+    than the full raw reconciliation payload (which stays queryable from
+    PurchaseLineItem directly if a reviewer needs to drill in).
+
+    Scoped per GSTIN (not just per tenant+period like Sales) because
+    OneStack alone has two registrations (MH/HR) and a GSTR-2B JSON is
+    always issued per-GSTIN by the portal - two registrations filing for
+    the same period means two separate reviews, not one.
+    """
+    __tablename__ = "purchase_gstr2b_reviews"
+
+    id            = Column(String, primary_key=True, default=lambda: str(uuid4()))
+    tenant_id     = Column(String, ForeignKey("tenants.id"), nullable=False, index=True)
+    period        = Column(String, nullable=False)  # e.g. "2026-06"
+    gstin         = Column(String, nullable=False)
+    status        = Column(String, default="PENDING_REVIEW", nullable=False)
+    # PENDING_REVIEW | APPROVED | REJECTED
+
+    recon_summary_json = Column(Text, nullable=True)  # counts, amounts, itc_at_risk, rule_36_4
+
+    reviewed_by   = Column(String, ForeignKey("users.id"), nullable=True)
+    reviewed_at   = Column(DateTime, nullable=True)
+    review_notes  = Column(Text, nullable=True)
+
+    created_at    = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
 class GoogleDriveWebhookChannel(Base):
     """
     Track active Google Drive watch channels for real-time sync.
