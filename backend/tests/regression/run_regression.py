@@ -95,6 +95,10 @@ SUITES = {
         "label": "Client Sheet Parser (OneStack masterdata schema)",
         "module": "backend.tests.regression.test_client_sheet_parser",
     },
+    "sales_reconciliation": {
+        "label": "Sales 3-Way Reconciliation (OS vs Client Sheet)",
+        "module": "backend.tests.regression.test_sales_reconciliation",
+    },
 }
 
 
