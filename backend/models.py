@@ -274,13 +274,39 @@ class GoogleDriveSyncConfig(Base):
     One row per tenant — upserted via POST /api/google-drive-sync/config.
     Stores the folder the user wants to pull invoices from so they never
     have to paste the URL again after the first setup.
+
+    Two modes, either or both can be set on the same row:
+      - Legacy single-folder mode (folder_id/invoice_type/schedule): one
+        fixed Drive folder, manually or cron-triggered via
+        tasks.google_drive_sync_task. No month-folder resolution.
+      - Self-resolving month-folder mode (the sales_/purchase_/gstr2b_
+        *_root_folder_id fields): mirrors drive_path_resolver.TenantDrivePath
+        - a root folder containing "<N>. <Month> <Year>" subfolders, resolved
+          at run time by tasks.sales_ingestion_task / purchase_ingestion_task /
+          gstr2b_ingestion_task. Added 2026-07-09 so any tenant can configure
+          this from the Drive Sync UI instead of requiring someone to hand-
+          edit a data/drive_paths/<slug>.json file on the server (which only
+          ever worked for OneStack, the one tenant that got a manually
+          created file) - see services/drive_path_resolver.py's
+          load_tenant_path_config_from_db for how these fields turn into a
+          TenantDrivePath.
     """
     __tablename__ = "google_drive_sync_configs"
 
     tenant_id    = Column(String, ForeignKey("tenants.id"), primary_key=True)
-    folder_id    = Column(String, nullable=False)
+    folder_id    = Column(String, nullable=True)
     invoice_type = Column(String, default="both")  # sales | purchase | both
     schedule     = Column(String, default="0 0 1 * *")  # cron expression
+
+    fiscal_year_start_month = Column(Integer, nullable=True)  # defaults to 4 (April) if unset
+    month_folder_pattern    = Column(String, nullable=True)   # defaults to "{n}. {month_name} {year}" if unset
+    sales_root_folder_id    = Column(String, nullable=True)
+    purchase_root_folder_id = Column(String, nullable=True)
+    gstr2b_root_folder_id   = Column(String, nullable=True)
+    sales_schedule          = Column(String, nullable=True)   # cron, defaults to "0 2 * * *" (daily) if unset
+    purchase_schedule       = Column(String, nullable=True)   # cron, defaults to "0 2 * * *" (daily) if unset
+    gstr2b_schedule         = Column(String, nullable=True)   # cron, defaults to "0 3 * * *" (daily) if unset
+
     created_at   = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at   = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

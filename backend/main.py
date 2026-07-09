@@ -1810,9 +1810,25 @@ async def ocr_extract_endpoint(file: UploadFile = File(...), provider: str = For
 # ── Google Drive Auto-Sync ────────────────────────────────────────────────────
 
 class GoogleDriveSyncConfigRequest(BaseModel):
-    folder_id: str
+    # Legacy single-folder mode - optional now, a tenant may only want the
+    # self-resolving mode below.
+    folder_id: Optional[str] = None
     invoice_type: str = "both"
     schedule: str = "0 0 1 * *"
+
+    # Self-resolving month-folder mode (Sales/Purchase/GSTR-2B) - added
+    # 2026-07-09 so any tenant can configure this from the UI instead of
+    # needing a hand-edited data/drive_paths/<slug>.json file (see
+    # models.GoogleDriveSyncConfig's docstring). All optional - a tenant
+    # sets whichever of these three they actually use.
+    fiscal_year_start_month: Optional[int] = None
+    month_folder_pattern: Optional[str] = None
+    sales_root_folder_id: Optional[str] = None
+    purchase_root_folder_id: Optional[str] = None
+    gstr2b_root_folder_id: Optional[str] = None
+    sales_schedule: Optional[str] = None
+    purchase_schedule: Optional[str] = None
+    gstr2b_schedule: Optional[str] = None
 
 
 class GoogleDriveSyncTriggerRequest(BaseModel):
@@ -1851,6 +1867,14 @@ async def get_drive_sync_config(
             "folder_id": cfg.folder_id,
             "invoice_type": cfg.invoice_type,
             "schedule": cfg.schedule,
+            "fiscal_year_start_month": cfg.fiscal_year_start_month,
+            "month_folder_pattern": cfg.month_folder_pattern,
+            "sales_root_folder_id": cfg.sales_root_folder_id,
+            "purchase_root_folder_id": cfg.purchase_root_folder_id,
+            "gstr2b_root_folder_id": cfg.gstr2b_root_folder_id,
+            "sales_schedule": cfg.sales_schedule,
+            "purchase_schedule": cfg.purchase_schedule,
+            "gstr2b_schedule": cfg.gstr2b_schedule,
             "updated_at": cfg.updated_at.isoformat() if cfg.updated_at else None,
         }
     })
@@ -1864,8 +1888,15 @@ async def save_drive_sync_config(
 ):
     """
     Save (or update) the Google Drive sync config for this tenant.
-    Also writes the Celery Beat schedule to beat_schedules.json so the
-    periodic sync picks up after a celery beat restart.
+    Also writes Celery Beat schedule entries to beat_schedules.json so
+    periodic syncs pick up after a celery beat restart - both the legacy
+    single-folder mode (if folder_id is set) and the self-resolving
+    Sales/Purchase/GSTR-2B mode (for whichever of those root folder IDs
+    are set), added 2026-07-09 so a tenant self-configures both modes
+    from this one endpoint instead of needing a hand-edited
+    data/drive_paths/<slug>.json file for the self-resolving mode (see
+    models.GoogleDriveSyncConfig's docstring for why that only ever
+    worked for OneStack).
     """
     # Auto-create a tenant for this user if they don't have one yet
     if not current_user.tenant_id:
@@ -1886,44 +1917,101 @@ async def save_drive_sync_config(
     cfg = db.query(GoogleDriveSyncConfig).filter(
         GoogleDriveSyncConfig.tenant_id == current_user.tenant_id
     ).first()
-    if cfg:
-        cfg.folder_id    = req.folder_id
-        cfg.invoice_type = req.invoice_type
-        cfg.schedule     = req.schedule
-    else:
-        cfg = GoogleDriveSyncConfig(
-            tenant_id=current_user.tenant_id,
-            folder_id=req.folder_id,
-            invoice_type=req.invoice_type,
-            schedule=req.schedule,
-        )
+    if not cfg:
+        cfg = GoogleDriveSyncConfig(tenant_id=current_user.tenant_id)
         db.add(cfg)
+
+    cfg.folder_id    = req.folder_id
+    cfg.invoice_type = req.invoice_type
+    cfg.schedule     = req.schedule
+    cfg.fiscal_year_start_month = req.fiscal_year_start_month
+    cfg.month_folder_pattern    = req.month_folder_pattern
+    cfg.sales_root_folder_id    = req.sales_root_folder_id
+    cfg.purchase_root_folder_id = req.purchase_root_folder_id
+    cfg.gstr2b_root_folder_id   = req.gstr2b_root_folder_id
+    cfg.sales_schedule          = req.sales_schedule
+    cfg.purchase_schedule       = req.purchase_schedule
+    cfg.gstr2b_schedule         = req.gstr2b_schedule
     db.commit()
 
-    # Register Celery Beat schedule
+    tenant = db.query(Tenant).filter(Tenant.id == current_user.tenant_id).first()
+    tenant_slug = tenant.slug if tenant else current_user.tenant_id
+
+    # Register Celery Beat schedules - one entry per configured mode.
     import json as _json
     beat_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "beat_schedules.json")
     try:
         registry = _json.load(open(beat_file, encoding="utf-8")) if os.path.exists(beat_file) else {}
-        registry[f"google_drive_sync_{current_user.tenant_id}"] = {
-            "task": "tasks.google_drive_sync_task",
-            "cron": req.schedule,
-            "kwargs": {
-                "tenant_id": current_user.tenant_id,
-                "google_drive_folder_id": req.folder_id,
-                "excel_output_path": f"/data/sync_{current_user.tenant_id}.xlsx",
-                "invoice_type": req.invoice_type,
-                "model_config": None,
-            },
-            "options": {"queue": "default"},
-            "registered_at": datetime.utcnow().isoformat(),
-        }
+
+        if req.folder_id:
+            registry[f"google_drive_sync_{current_user.tenant_id}"] = {
+                "task": "tasks.google_drive_sync_task",
+                "cron": req.schedule,
+                "kwargs": {
+                    "tenant_id": current_user.tenant_id,
+                    "google_drive_folder_id": req.folder_id,
+                    "excel_output_path": f"/data/sync_{current_user.tenant_id}.xlsx",
+                    "invoice_type": req.invoice_type,
+                    "model_config": None,
+                },
+                "options": {"queue": "default"},
+                "registered_at": datetime.utcnow().isoformat(),
+            }
+
+        if req.sales_root_folder_id:
+            registry[f"sales_ingestion_{tenant_slug}"] = {
+                "task": "tasks.sales_ingestion_task",
+                "cron": req.sales_schedule or "0 2 * * *",
+                "kwargs": {
+                    "tenant_id": current_user.tenant_id,
+                    "tenant_slug": tenant_slug,
+                    "excel_output_path": f"/data/sync_{current_user.tenant_id}_sales.xlsx",
+                    "invoice_type": "sales",
+                    "model_config": None,
+                },
+                "options": {"queue": "drive_sync", "priority": 10},
+                "registered_at": datetime.utcnow().isoformat(),
+            }
+
+        if req.purchase_root_folder_id:
+            registry[f"purchase_ingestion_{tenant_slug}"] = {
+                "task": "tasks.purchase_ingestion_task",
+                "cron": req.purchase_schedule or "0 2 * * *",
+                "kwargs": {
+                    "tenant_id": current_user.tenant_id,
+                    "tenant_slug": tenant_slug,
+                    "excel_output_path": f"/data/sync_{current_user.tenant_id}_purchase.xlsx",
+                    "model_config": None,
+                },
+                "options": {"queue": "drive_sync", "priority": 10},
+                "registered_at": datetime.utcnow().isoformat(),
+            }
+
+        if req.gstr2b_root_folder_id:
+            registry[f"gstr2b_ingestion_{tenant_slug}"] = {
+                "task": "tasks.gstr2b_ingestion_task",
+                "cron": req.gstr2b_schedule or "0 3 * * *",
+                "kwargs": {
+                    "tenant_id": current_user.tenant_id,
+                    "tenant_slug": tenant_slug,
+                },
+                "options": {"queue": "drive_sync", "priority": 10},
+                "registered_at": datetime.utcnow().isoformat(),
+            }
+
         with open(beat_file, "w", encoding="utf-8") as f:
             _json.dump(registry, f, indent=2)
     except Exception as e:
         logger.warning("Could not update beat_schedules.json: %s", e)
 
-    return JSONResponse(content={"ok": True, "folder_id": cfg.folder_id, "invoice_type": cfg.invoice_type})
+    return JSONResponse(content={
+        "ok": True,
+        "folder_id": cfg.folder_id,
+        "invoice_type": cfg.invoice_type,
+        "sales_root_folder_id": cfg.sales_root_folder_id,
+        "purchase_root_folder_id": cfg.purchase_root_folder_id,
+        "gstr2b_root_folder_id": cfg.gstr2b_root_folder_id,
+    })
 
 
 @app.get("/api/google-drive-sync/subfolders")
@@ -2002,6 +2090,86 @@ async def trigger_google_drive_sync(
         "invoice_type": invoice_type,
         "max_files": req.max_files,
     })
+
+
+def _tenant_slug_for(db: Session, current_user: User) -> str:
+    tenant = db.query(Tenant).filter(Tenant.id == current_user.tenant_id).first()
+    return tenant.slug if tenant else current_user.tenant_id
+
+
+@app.post("/api/google-drive-sync/trigger-sales")
+async def trigger_sales_ingestion(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RoleChecker(["owner", "auditor", "developer"])),
+):
+    """
+    Runs tasks.sales_ingestion_task immediately for the current tenant -
+    the self-resolving Sales pipeline (Phase 6), triggered on demand from
+    the Drive Sync UI instead of only via a Celery Beat schedule.
+    """
+    from celery_app import sales_ingestion_task
+
+    if not current_user.tenant_id:
+        raise HTTPException(status_code=400, detail="No tenant assigned to this user")
+    cfg = db.query(GoogleDriveSyncConfig).filter(GoogleDriveSyncConfig.tenant_id == current_user.tenant_id).first()
+    if not cfg or not cfg.sales_root_folder_id:
+        raise HTTPException(status_code=400, detail="No sales_root_folder_id configured. Save config first.")
+
+    tenant_slug = _tenant_slug_for(db, current_user)
+    task = sales_ingestion_task.delay(
+        tenant_id=current_user.tenant_id,
+        tenant_slug=tenant_slug,
+        excel_output_path=f"/data/sync_{current_user.tenant_id}_sales.xlsx",
+        invoice_type="sales",
+        model_config=None,
+    )
+    return JSONResponse(content={"status": "sync_started", "task_id": task.id})
+
+
+@app.post("/api/google-drive-sync/trigger-purchase")
+async def trigger_purchase_ingestion(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RoleChecker(["owner", "auditor", "developer"])),
+):
+    """Runs tasks.purchase_ingestion_task immediately for the current tenant."""
+    from celery_app import purchase_ingestion_task
+
+    if not current_user.tenant_id:
+        raise HTTPException(status_code=400, detail="No tenant assigned to this user")
+    cfg = db.query(GoogleDriveSyncConfig).filter(GoogleDriveSyncConfig.tenant_id == current_user.tenant_id).first()
+    if not cfg or not cfg.purchase_root_folder_id:
+        raise HTTPException(status_code=400, detail="No purchase_root_folder_id configured. Save config first.")
+
+    tenant_slug = _tenant_slug_for(db, current_user)
+    task = purchase_ingestion_task.delay(
+        tenant_id=current_user.tenant_id,
+        tenant_slug=tenant_slug,
+        excel_output_path=f"/data/sync_{current_user.tenant_id}_purchase.xlsx",
+        model_config=None,
+    )
+    return JSONResponse(content={"status": "sync_started", "task_id": task.id})
+
+
+@app.post("/api/google-drive-sync/trigger-gstr2b")
+async def trigger_gstr2b_ingestion(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RoleChecker(["owner", "auditor", "developer"])),
+):
+    """Runs tasks.gstr2b_ingestion_task immediately for the current tenant."""
+    from celery_app import gstr2b_ingestion_task
+
+    if not current_user.tenant_id:
+        raise HTTPException(status_code=400, detail="No tenant assigned to this user")
+    cfg = db.query(GoogleDriveSyncConfig).filter(GoogleDriveSyncConfig.tenant_id == current_user.tenant_id).first()
+    if not cfg or not cfg.gstr2b_root_folder_id:
+        raise HTTPException(status_code=400, detail="No gstr2b_root_folder_id configured. Save config first.")
+
+    tenant_slug = _tenant_slug_for(db, current_user)
+    task = gstr2b_ingestion_task.delay(
+        tenant_id=current_user.tenant_id,
+        tenant_slug=tenant_slug,
+    )
+    return JSONResponse(content={"status": "sync_started", "task_id": task.id})
 
 
 @app.get("/api/google-drive-sync/status/{task_id}")

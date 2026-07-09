@@ -176,6 +176,31 @@ def google_drive_sync_task(self, tenant_id: str, google_drive_folder_id: str,
         raise self.retry(exc=e, countdown=300)  # Retry in 5 minutes
 
 
+def _load_drive_path_config(tenant_id: str, tenant_slug: str):
+    """
+    Loads this tenant's self-resolving Drive-path config from the DB
+    (models.GoogleDriveSyncConfig row, set via POST /api/google-drive-sync/config)
+    - added 2026-07-09 so any tenant can configure Sales/Purchase/GSTR-2B
+    ingestion from the Drive Sync UI instead of needing a hand-edited
+    data/drive_paths/<slug>.json file on the server (which only ever
+    existed for OneStack - the one tenant that got one by hand this
+    session). Returns None if no config row exists yet, so callers can
+    return a clean SKIPPED result instead of raising.
+    """
+    from database import SessionLocal
+    from models import GoogleDriveSyncConfig
+    from services.drive_path_resolver import load_tenant_path_config_from_db
+
+    db = SessionLocal()
+    try:
+        cfg_row = db.query(GoogleDriveSyncConfig).filter(GoogleDriveSyncConfig.tenant_id == tenant_id).first()
+        if not cfg_row:
+            return None
+        return load_tenant_path_config_from_db(cfg_row, tenant_slug)
+    finally:
+        db.close()
+
+
 @celery_app.task(name="tasks.sales_ingestion_task", bind=True, max_retries=1, time_limit=3600)
 def sales_ingestion_task(self, tenant_id: str, tenant_slug: str,
                           excel_output_path: str, invoice_type: str = "sales",
@@ -184,11 +209,12 @@ def sales_ingestion_task(self, tenant_id: str, tenant_slug: str,
     Self-resolving Sales ingestion sync — unlike google_drive_sync_task
     above (which takes a single google_drive_folder_id baked into the
     schedule forever), this resolves the CURRENT month's Drive folder at
-    run time via drive_path_resolver.py + the tenant's
-    data/drive_paths/{tenant_slug}.json config. A tenant onboarded this
-    way never needs their schedule re-registered when a new month's
-    folder is created - only initial setup (see
-    scripts/setup_sales_ingestion_schedule.py) is a one-time step.
+    run time via drive_path_resolver.py + the tenant's DB-backed
+    GoogleDriveSyncConfig row (see _load_drive_path_config above). A
+    tenant onboarded this way never needs their schedule re-registered
+    when a new month's folder is created - only initial setup (via the
+    Drive Sync page, or scripts/setup_sales_ingestion_schedule.py) is a
+    one-time step.
 
     Scheduled DAILY, not monthly: invoices trickle into Drive throughout
     the month (confirmed against real timestamps this session - June
@@ -212,13 +238,17 @@ def sales_ingestion_task(self, tenant_id: str, tenant_slug: str,
     returning None rather than raising.
     """
     from datetime import date
-    from services.drive_path_resolver import load_tenant_path_config, resolve_month_folder_id
+    from services.drive_path_resolver import resolve_month_folder_id
     from services.google_drive import GoogleDriveConnector
     from services.google_drive_sync import GoogleDriveSyncPipeline
 
     try:
         print(f"[Celery:sales_ingestion] Resolving current month's Drive folder for tenant '{tenant_slug}'...")
-        cfg = load_tenant_path_config(tenant_slug)
+        cfg = _load_drive_path_config(tenant_id, tenant_slug)
+        if not cfg or not cfg.sales_root_folder_id:
+            msg = f"No sales_root_folder_id configured for '{tenant_slug}' - nothing to ingest."
+            print(f"[Celery:sales_ingestion] {msg}")
+            return {"status": "SKIPPED", "reason": msg}
         connector = GoogleDriveConnector(cfg.sales_root_folder_id)
 
         def lister(folder_id):
@@ -276,14 +306,14 @@ def purchase_ingestion_task(self, tenant_id: str, tenant_slug: str,
     gate (Phase 7) did.
     """
     from datetime import date
-    from services.drive_path_resolver import load_tenant_path_config, resolve_month_folder_id
+    from services.drive_path_resolver import resolve_month_folder_id
     from services.google_drive import GoogleDriveConnector
     from services.google_drive_sync import GoogleDriveSyncPipeline
 
     try:
         print(f"[Celery:purchase_ingestion] Resolving current month's Drive folder for tenant '{tenant_slug}'...")
-        cfg = load_tenant_path_config(tenant_slug)
-        if not cfg.purchase_root_folder_id:
+        cfg = _load_drive_path_config(tenant_id, tenant_slug)
+        if not cfg or not cfg.purchase_root_folder_id:
             msg = f"No purchase_root_folder_id configured for '{tenant_slug}' - nothing to ingest."
             print(f"[Celery:purchase_ingestion] {msg}")
             return {"status": "SKIPPED", "reason": msg}
@@ -343,15 +373,15 @@ def gstr2b_ingestion_task(self, tenant_id: str, tenant_slug: str) -> dict:
     import tempfile
     from datetime import date
     from database import SessionLocal
-    from services.drive_path_resolver import load_tenant_path_config, resolve_month_folder_id
+    from services.drive_path_resolver import resolve_month_folder_id
     from services.google_drive import GoogleDriveConnector
     from services.gstr2b_ingest import extract_recipient_gstin, list_gstr2b_json_files
     from services.purchase_review import generate_review_for_tenant
 
     try:
         print(f"[Celery:gstr2b_ingestion] Resolving current month's GSTR-2B Drive folder for tenant '{tenant_slug}'...")
-        cfg = load_tenant_path_config(tenant_slug)
-        if not cfg.gstr2b_root_folder_id:
+        cfg = _load_drive_path_config(tenant_id, tenant_slug)
+        if not cfg or not cfg.gstr2b_root_folder_id:
             msg = f"No gstr2b_root_folder_id configured for '{tenant_slug}' - nothing to ingest."
             print(f"[Celery:gstr2b_ingestion] {msg}")
             return {"status": "SKIPPED", "reason": msg}

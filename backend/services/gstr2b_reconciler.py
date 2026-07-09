@@ -232,15 +232,74 @@ def _aggregate_books_by_invoice(books_items: list[dict]) -> list[dict]:
 # ── Reconciliation Engine ─────────────────────────────────────────────────────
 
 AMOUNT_TOLERANCE = 2.0   # ₹2 rounding tolerance
+_FUZZY_MIN_OVERLAP = 4   # minimum normalized-invoice-number length to fuzzy-match on
+
+
+def _fuzzy_invoice_match(norm_a: str, norm_b: str) -> bool:
+    """
+    True if two ALREADY-normalized (uppercase, non-alnum stripped)
+    invoice numbers are different strings but plausibly the same
+    document. Handles two real, common mismatches an exact-key match
+    misses entirely:
+      - truncation (one is a prefix/suffix of the other, e.g. a books
+        entry "SI2024001" vs a 2B entry truncated to "2024001")
+      - leading-zero differences (e.g. "0001" vs "1")
+
+    Requires a minimum overlap length (_FUZZY_MIN_OVERLAP) for the
+    substring case so short numbers can't false-positive against an
+    unrelated invoice from the same vendor - fuzzy matching without a
+    floor is exactly the failure mode competitor tooling flags too.
+    Only ever called within an already-matching GSTIN + within-tolerance
+    amount check (see reconcile()'s fuzzy pass) - invoice-number
+    plausibility alone is never sufficient on its own.
+    """
+    if not norm_a or not norm_b or norm_a == norm_b:
+        return False
+    if len(norm_a) >= _FUZZY_MIN_OVERLAP and len(norm_b) >= _FUZZY_MIN_OVERLAP:
+        if norm_a in norm_b or norm_b in norm_a:
+            return True
+    stripped_a, stripped_b = norm_a.lstrip("0"), norm_b.lstrip("0")
+    if stripped_a and stripped_a == stripped_b:
+        return True
+    return False
+
+
+def _matched_rows(agg: dict, rec: dict, agg_total: float, fuzzy: bool) -> list[dict]:
+    """Builds the annotated row(s) for one aggregated books invoice that
+    matched (exactly or fuzzily) against one 2B record."""
+    diff = abs(agg_total - rec["total_val"])
+    status = "matched" if diff <= AMOUNT_TOLERANCE else "mismatch"
+    return [{
+        **item,
+        "recon_status":    status,
+        "fuzzy_matched":   fuzzy,
+        "2b_inv_no":       rec["inv_no"],
+        "2b_gstin":        rec["gstin"],
+        "2b_taxable_val":  rec["taxable_val"],
+        "2b_igst":         rec["igst"],
+        "2b_cgst":         rec["cgst"],
+        "2b_sgst":         rec["sgst"],
+        "2b_total_val":    rec["total_val"],
+        "diff_amount":     round(agg_total - rec["total_val"], 2),
+        "_agg_books_total": agg_total,
+    } for item in agg["_original_items"]]
+
 
 def reconcile(books_items: list[dict], gstr2b_records: list[dict]) -> dict:
     """
     Match books_items (extracted from PDFs) against gstr2b_records.
 
-    Enhanced v2 flow:
+    Enhanced v2 flow, now with a v3 fuzzy fallback pass:
       1. Aggregate books items by (GSTIN, Invoice No) — multi-line items become one row.
       2. Build a lookup from 2B records by the same normalized key.
-      3. Match aggregated books row against 2B invoice.
+      3. Match aggregated books row against 2B invoice (exact key match).
+      3b. Fuzzy fallback: for books rows that didn't exact-match, try the
+          same GSTIN + a fuzzy invoice-number match (_fuzzy_invoice_match)
+          + amount within tolerance, against 2B records the exact pass
+          didn't already use. Recovers invoice-number truncation/leading-
+          zero mismatches that would otherwise show up as both
+          missing_in_2b AND not_in_books for what's really the same
+          invoice.
       4. Return annotated rows (per-original-item, not aggregated) + extra 2B rows.
 
     Args:
@@ -252,7 +311,7 @@ def reconcile(books_items: list[dict], gstr2b_records: list[dict]) -> dict:
         {
             "rows":    [...],   # each book item annotated with status
             "extra":   [...],   # 2B records not found in books
-            "summary": {...},   # aggregate counts + amounts
+            "summary": {...},   # aggregate counts + amounts + fuzzy_matched_count
         }
     """
     # Step 0: Normalise field names (handles AuditOS extraction output)
@@ -269,82 +328,86 @@ def reconcile(books_items: list[dict], gstr2b_records: list[dict]) -> dict:
             lookup_2b[k] = rec
 
     used_2b_keys: set[str] = set()
-    annotated_rows = []
+    annotated_rows: list[dict] = []
+    unmatched_agg: list[dict] = []
 
-    # Step 3: Match aggregated books vs 2B
+    # Step 3: exact-key match
     for agg in aggregated:
         norm_key = agg["_norm_key"]
-        agg_total = round(agg["_agg_total_amount"], 2)
-
         if norm_key in lookup_2b:
             used_2b_keys.add(norm_key)
             rec = lookup_2b[norm_key]
-            diff = abs(agg_total - rec["total_val"])
-
-            if diff <= AMOUNT_TOLERANCE:
-                status = "matched"
-            else:
-                status = "mismatch"
-
-            # Annotate every original item with the match result
-            for item in agg["_original_items"]:
-                annotated_rows.append({
-                    **item,
-                    "recon_status":    status,
-                    "2b_inv_no":       rec["inv_no"],
-                    "2b_gstin":        rec["gstin"],
-                    "2b_taxable_val":  rec["taxable_val"],
-                    "2b_igst":         rec["igst"],
-                    "2b_cgst":         rec["cgst"],
-                    "2b_sgst":         rec["sgst"],
-                    "2b_total_val":    rec["total_val"],
-                    "diff_amount":     round(agg_total - rec["total_val"], 2),
-                    "_agg_books_total": agg_total,
-                })
+            annotated_rows.extend(_matched_rows(agg, rec, round(agg["_agg_total_amount"], 2), fuzzy=False))
         else:
-            # In books but not in 2B
-            for item in agg["_original_items"]:
-                annotated_rows.append({
-                    **item,
-                    "recon_status":    "missing_in_2b",
-                    "2b_inv_no":       None,
-                    "2b_gstin":        None,
-                    "2b_taxable_val":  None,
-                    "2b_igst":         None,
-                    "2b_cgst":         None,
-                    "2b_sgst":         None,
-                    "2b_total_val":    None,
-                    "diff_amount":     None,
-                })
+            unmatched_agg.append(agg)
 
-    # Step 4: 2B records not found in books
-    extra_rows = []
-    for rec in gstr2b_records:
-        if rec["_norm_key"] not in used_2b_keys:
-            extra_rows.append({
-                "recon_status":   "not_in_books",
-                "supplier_inv":   rec["inv_no"],
-                "invoice_date":   rec["inv_date"],
-                "gst_no":         rec["gstin"],
-                "party_ac_name":  None,
-                "amount":         rec["taxable_val"],
-                "igst":           rec["igst"],
-                "cgst":           rec["cgst"],
-                "sgst":           rec["sgst"],
-                "total_amount":   rec["total_val"],
-                "2b_inv_no":      rec["inv_no"],
-                "2b_gstin":       rec["gstin"],
-                "2b_taxable_val": rec["taxable_val"],
-                "2b_igst":        rec["igst"],
-                "2b_cgst":        rec["cgst"],
-                "2b_sgst":        rec["sgst"],
-                "2b_total_val":   rec["total_val"],
-                "diff_amount":    None,
+    # Step 3b: fuzzy fallback for what the exact pass left unmatched
+    remaining_2b = [rec for rec in gstr2b_records if rec["_norm_key"] not in used_2b_keys]
+    still_unmatched: list[dict] = []
+    for agg in unmatched_agg:
+        gstin = agg["_norm_key"].split("||")[0]
+        agg_inv_norm = normalize_inv(agg.get("supplier_inv") or "")
+        agg_total = round(agg["_agg_total_amount"], 2)
+
+        candidate = next((
+            rec for rec in remaining_2b
+            if rec["gstin"] == gstin
+            and _fuzzy_invoice_match(agg_inv_norm, normalize_inv(rec["inv_no"]))
+            and abs(agg_total - rec["total_val"]) <= AMOUNT_TOLERANCE
+        ), None)
+
+        if candidate:
+            remaining_2b.remove(candidate)
+            used_2b_keys.add(candidate["_norm_key"])
+            annotated_rows.extend(_matched_rows(agg, candidate, agg_total, fuzzy=True))
+        else:
+            still_unmatched.append(agg)
+
+    # Step 3c: anything still unmatched after both passes → missing_in_2b
+    for agg in still_unmatched:
+        for item in agg["_original_items"]:
+            annotated_rows.append({
+                **item,
+                "recon_status":    "missing_in_2b",
+                "fuzzy_matched":   False,
+                "2b_inv_no":       None,
+                "2b_gstin":        None,
+                "2b_taxable_val":  None,
+                "2b_igst":         None,
+                "2b_cgst":         None,
+                "2b_sgst":         None,
+                "2b_total_val":    None,
+                "diff_amount":     None,
             })
+
+    # Step 4: 2B records not found in books (after both matching passes)
+    extra_rows = []
+    for rec in remaining_2b:
+        extra_rows.append({
+            "recon_status":   "not_in_books",
+            "supplier_inv":   rec["inv_no"],
+            "invoice_date":   rec["inv_date"],
+            "gst_no":         rec["gstin"],
+            "party_ac_name":  None,
+            "amount":         rec["taxable_val"],
+            "igst":           rec["igst"],
+            "cgst":           rec["cgst"],
+            "sgst":           rec["sgst"],
+            "total_amount":   rec["total_val"],
+            "2b_inv_no":      rec["inv_no"],
+            "2b_gstin":       rec["gstin"],
+            "2b_taxable_val": rec["taxable_val"],
+            "2b_igst":        rec["igst"],
+            "2b_cgst":        rec["cgst"],
+            "2b_sgst":        rec["sgst"],
+            "2b_total_val":   rec["total_val"],
+            "diff_amount":    None,
+        })
 
     # Summary
     all_rows = annotated_rows + extra_rows
     summary = _build_summary(all_rows)
+    summary["fuzzy_matched_count"] = sum(1 for r in annotated_rows if r.get("fuzzy_matched"))
 
     return {
         "rows":    annotated_rows,

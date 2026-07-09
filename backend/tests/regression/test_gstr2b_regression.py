@@ -25,6 +25,7 @@ from backend.services.gstr2b_reconciler import (
     reconcile,
     safe_float,
     AMOUNT_TOLERANCE,
+    _fuzzy_invoice_match,
 )
 
 # ── Fixture path ──────────────────────────────────────────────────────────────
@@ -296,6 +297,92 @@ class TestMultiLineAggregation(unittest.TestCase):
         ]
         result = reconcile(books, self.gstr2b)
         self.assertAlmostEqual(result["rows"][0]["diff_amount"], 0.0, places=2)
+
+
+# ── Fuzzy invoice-number matching fallback ────────────────────────────────────
+# Added after comparing against a competitor's (CORAA) published approach:
+# exact match first, then a fuzzy pass for invoice-number truncation and
+# rounding differences that an exact-key match misses entirely - without
+# it, the SAME real invoice shows up as both missing_in_2b (books side)
+# AND not_in_books (2B side), which is misleading (it's not two separate
+# problems, it's one document with two different invoice-number spellings).
+
+class TestFuzzyInvoiceMatchHelper(unittest.TestCase):
+
+    def test_identical_strings_not_fuzzy_flagged(self):
+        # exact matches are handled by the key-match pass, not fuzzy
+        self.assertFalse(_fuzzy_invoice_match("ABC123", "ABC123"))
+
+    def test_truncated_invoice_number_matches(self):
+        self.assertTrue(_fuzzy_invoice_match("PURCH2024007", "2024007"))
+        self.assertTrue(_fuzzy_invoice_match("2024007", "PURCH2024007"))
+
+    def test_leading_zero_difference_matches(self):
+        self.assertTrue(_fuzzy_invoice_match("0001", "1"))
+
+    def test_short_unrelated_numbers_do_not_match(self):
+        # below the minimum overlap floor - must not false-positive
+        self.assertFalse(_fuzzy_invoice_match("A1", "1"))
+
+    def test_completely_different_numbers_do_not_match(self):
+        self.assertFalse(_fuzzy_invoice_match("INVOICE001", "BILLNO999"))
+
+    def test_empty_strings_do_not_match(self):
+        self.assertFalse(_fuzzy_invoice_match("", "ABC123"))
+
+
+class TestFuzzyMatchingInReconcile(unittest.TestCase):
+
+    def setUp(self):
+        self.gstr2b = [{
+            "gstin": "27AAAAA1111A1Z1",
+            "inv_no": "PURCH2024007",
+            "inv_date": "01-06-2026",
+            "taxable_val": 10000.0,
+            "igst": 0.0, "cgst": 900.0, "sgst": 900.0,
+            "total_val": 11800.0,
+            "_norm_key": "27AAAAA1111A1Z1||PURCH2024007",
+        }]
+
+    def test_truncated_books_invoice_number_recovers_a_match(self):
+        # books recorded just "2024007" (e.g. a truncated OCR read), 2B
+        # has the full "PURCH/2024/007" - exact key match would miss this
+        # entirely and report it as missing_in_2b + not_in_books separately.
+        books = [_books_item("2024007", "27AAAAA1111A1Z1",
+                              taxable=10000.0, cgst=900.0, sgst=900.0, total=11800.0)]
+        result = reconcile(books, self.gstr2b)
+        self.assertEqual(result["rows"][0]["recon_status"], "matched")
+        self.assertTrue(result["rows"][0]["fuzzy_matched"])
+        self.assertEqual(result["extra"], [])  # the 2B record got consumed, not left as not_in_books
+        self.assertEqual(result["summary"]["fuzzy_matched_count"], 1)
+
+    def test_fuzzy_match_still_respects_amount_tolerance(self):
+        # invoice number would fuzzy-match, but the amount is genuinely
+        # different - must NOT be silently matched, that would hide a
+        # real discrepancy under a plausible-looking invoice number.
+        books = [_books_item("2024007", "27AAAAA1111A1Z1",
+                              taxable=50000.0, cgst=4500.0, sgst=4500.0, total=59000.0)]
+        result = reconcile(books, self.gstr2b)
+        self.assertEqual(result["rows"][0]["recon_status"], "missing_in_2b")
+        self.assertEqual(len(result["extra"]), 1)
+        self.assertEqual(result["extra"][0]["recon_status"], "not_in_books")
+
+    def test_fuzzy_match_requires_same_gstin(self):
+        # same fuzzy-matchable invoice number, but a DIFFERENT GSTIN -
+        # must never cross-match between two different suppliers.
+        books = [_books_item("2024007", "27ZZZZZ9999Z9Z9",
+                              taxable=10000.0, cgst=900.0, sgst=900.0, total=11800.0)]
+        result = reconcile(books, self.gstr2b)
+        self.assertEqual(result["rows"][0]["recon_status"], "missing_in_2b")
+
+    def test_exact_match_takes_priority_over_fuzzy(self):
+        # if an exact match exists, the fuzzy pass should never even be
+        # needed / should not accidentally consume the wrong 2B record.
+        books = [_books_item("PURCH2024007", "27AAAAA1111A1Z1",
+                              taxable=10000.0, cgst=900.0, sgst=900.0, total=11800.0)]
+        result = reconcile(books, self.gstr2b)
+        self.assertEqual(result["rows"][0]["recon_status"], "matched")
+        self.assertFalse(result["rows"][0]["fuzzy_matched"])
 
 
 if __name__ == "__main__":

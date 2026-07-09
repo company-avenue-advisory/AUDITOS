@@ -487,7 +487,7 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
         .app-container { font-family: 'Inter', sans-serif; background: var(--bg-base); min-height: 100vh; color: var(--text-primary); padding: 0; }
         .topnav { display: flex; align-items: center; justify-content: space-between; padding: 14px 28px; border-bottom: 0.5px solid rgba(255,255,255,0.07); }
         .topnav .logo { display: flex; align-items: center; gap: 10px; }
-        .logo-mark { width: 28px; height: 28px; border-radius: 7px; background: #1A6BFF; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 700; color: #fff; }
+        .logo-mark { width: 28px; height: 28px; border-radius: 7px; background: var(--accent); display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 700; color: #fff; }
         .logo-name { font-size: 14px; font-weight: 600; letter-spacing: -0.02em; color: var(--text-primary); }
         .logo-tag { font-size: 11px; color: var(--text-secondary); margin-left: 2px; }
         .nav-right { display: flex; align-items: center; gap: 8px; }
@@ -496,13 +496,13 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
         .step-bar { display: flex; align-items: center; justify-content: center; gap: 0; padding: 20px 28px 0; }
         .step-item { display: flex; align-items: center; gap: 8px; }
         .step-dot { width: 24px; height: 24px; border-radius: 50%; border: 1.5px solid rgba(255,255,255,0.15); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 600; color: rgba(232,230,224,0.3); transition: all .3s; flex-shrink: 0; }
-        .step-dot.done { background: #1A6BFF; border-color: #1A6BFF; color: #fff; }
-        .step-dot.active { background: transparent; border-color: #1A6BFF; color: #1A6BFF; }
+        .step-dot.done { background: var(--accent); border-color: var(--accent); color: #fff; }
+        .step-dot.active { background: transparent; border-color: var(--accent); color: var(--accent); }
         .step-label { font-size: 11px; color: var(--text-secondary); transition: color .3s; white-space: nowrap; }
         .step-label.active { color: var(--text-primary); }
         .step-label.done { color: var(--text-secondary); }
         .step-line { width: 36px; height: 0.5px; background: rgba(255,255,255,0.1); margin: 0 8px; flex-shrink: 0; }
-        .step-line.done { background: #1A6BFF; }
+        .step-line.done { background: var(--accent); }
         .stage { max-width: 640px; margin: 0 auto; padding: 40px 24px 60px; }
         .step-view { animation: fadeIn .25s ease; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
@@ -510,22 +510,22 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
         .step-sub { font-size: 13px; color: var(--text-secondary); margin-bottom: 28px; line-height: 1.5; }
         .type-cards { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-bottom: 28px; }
         .type-card { border: 1.5px solid rgba(255,255,255,0.08); border-radius: 14px; padding: 20px 14px 16px; cursor: pointer; background: rgba(255,255,255,0.025); transition: all .2s; position: relative; text-align: center; }
-        .type-card:hover { border-color: rgba(26,107,255,0.4); background: rgba(26,107,255,0.04); }
-        .type-card.selected { border-color: #1A6BFF; background: rgba(26,107,255,0.08); }
+        .type-card:hover { border-color: var(--accent-glow); background: var(--accent-soft); }
+        .type-card.selected { border-color: var(--accent); background: var(--accent-soft); }
         .type-icon { width: 40px; height: 40px; border-radius: 10px; margin: 0 auto 10px; display: flex; align-items: center; justify-content: center; font-size: 20px; }
-        .type-icon.sales { background: rgba(26,107,255,0.15); }
+        .type-icon.sales { background: var(--accent-soft); }
         .type-icon.purch { background: rgba(16,185,129,0.15); }
         .type-icon.both { background: rgba(139,92,246,0.15); }
         .type-card-title { font-size: 13px; font-weight: 600; color: var(--text-primary); margin-bottom: 4px; }
         .type-card-sub { font-size: 11px; color: var(--text-secondary); line-height: 1.4; }
-        .type-check { position: absolute; top: 10px; right: 10px; width: 16px; height: 16px; border-radius: 50%; background: #1A6BFF; display: none; align-items: center; justify-content: center; font-size: 9px; color: #fff; }
+        .type-check { position: absolute; top: 10px; right: 10px; width: 16px; height: 16px; border-radius: 50%; background: var(--accent); display: none; align-items: center; justify-content: center; font-size: 9px; color: #fff; }
         .type-card.selected .type-check { display: flex; }
         .model-section { margin-bottom: 24px; }
         .model-section-label { font-size: 11px; font-weight: 500; letter-spacing: .06em; text-transform: uppercase; color: var(--text-secondary); margin-bottom: 10px; }
         .model-rows { display: flex; flex-direction: column; gap: 6px; }
         .model-row { display: flex; align-items: center; gap: 12px; border: 0.5px solid rgba(255,255,255,0.08); border-radius: 10px; padding: 12px 14px; cursor: pointer; background: rgba(255,255,255,0.02); transition: all .15s; position: relative; }
         .model-row:hover { border-color: rgba(255,255,255,0.18); }
-        .model-row.selected { border-color: #1A6BFF; background: rgba(26,107,255,0.06); }
+        .model-row.selected { border-color: var(--accent); background: var(--accent-soft); }
         .model-dot { width: 32px; height: 32px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 14px; flex-shrink: 0; }
         .model-dot.auto { background: rgba(234,179,8,0.15); }
         .model-dot.groq { background: rgba(239,68,68,0.12); }
@@ -535,16 +535,16 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
         .model-name { font-size: 13px; font-weight: 500; color: var(--text-primary); }
         .model-desc { font-size: 11px; color: var(--text-secondary); margin-top: 2px; }
         .model-badge { font-size: 10px; padding: 2px 7px; border-radius: 20px; font-weight: 500; flex-shrink: 0; }
-        .badge-rec { background: rgba(26,107,255,0.2); color: #6BA6FF; }
+        .badge-rec { background: var(--accent-glow); color: var(--accent); }
         .badge-fast { background: rgba(234,179,8,0.15); color: #D4A017; }
         .badge-priv { background: rgba(16,185,129,0.15); color: #34D399; }
         .model-radio { width: 16px; height: 16px; border-radius: 50%; border: 1.5px solid rgba(255,255,255,0.2); flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
-        .model-row.selected .model-radio { border-color: #1A6BFF; background: #1A6BFF; }
+        .model-row.selected .model-radio { border-color: var(--accent); background: var(--accent); }
         .model-row.selected .model-radio::after { content: ''; display: block; width: 6px; height: 6px; border-radius: 50%; background: #fff; }
         .both-hint { border: 0.5px solid rgba(139,92,246,0.3); border-radius: 10px; padding: 12px 14px; background: rgba(139,92,246,0.06); font-size: 12px; color: var(--text-secondary); margin-bottom: 24px; line-height: 1.5; }
         .both-hint span { color: #A78BFA; font-weight: 500; }
         .dropzone { border: 1.5px dashed rgba(255,255,255,0.12); border-radius: 14px; padding: 40px 24px; text-align: center; cursor: pointer; transition: all .2s; margin-bottom: 12px; background: rgba(255,255,255,0.015); position: relative; }
-        .dropzone:hover, .dropzone.dragging { border-color: #1A6BFF; background: rgba(26,107,255,0.04); }
+        .dropzone:hover, .dropzone.dragging { border-color: var(--accent); background: var(--accent-soft); }
         .dz-icon { font-size: 32px; margin-bottom: 12px; opacity: 0.6; }
         .dz-title { font-size: 14px; font-weight: 500; color: var(--text-primary); margin-bottom: 4px; }
         .dz-sub { font-size: 12px; color: var(--text-secondary); }
@@ -558,7 +558,7 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
         .review-row:last-child { border-bottom: none; padding-bottom: 0; }
         .review-label { color: var(--text-secondary); }
         .review-val { color: var(--text-primary); font-weight: 500; }
-        .review-val.blue { color: #6BA6FF; }
+        .review-val.blue { color: var(--accent); }
         .review-val.green { color: #34D399; }
         .review-val.purple { color: #A78BFA; }
         .output-tabs { display: flex; flex-direction: column; gap: 6px; margin-top: 16px; }
@@ -574,15 +574,15 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
         .proc-step.done { color: var(--text-primary); }
         .proc-step.active { color: var(--text-primary); }
         .proc-step-dot { width: 20px; height: 20px; border-radius: 50%; flex-shrink: 0; border: 1px solid rgba(255,255,255,0.15); display: flex; align-items: center; justify-content: center; font-size: 9px; }
-        .proc-step.done .proc-step-dot { background: #1A6BFF; border-color: #1A6BFF; color: #fff; }
-        .proc-step.active .proc-step-dot { border-color: #1A6BFF; color: #1A6BFF; }
+        .proc-step.done .proc-step-dot { background: var(--accent); border-color: var(--accent); color: #fff; }
+        .proc-step.active .proc-step-dot { border-color: var(--accent); color: var(--accent); }
         .done-wrap { text-align: center; padding: 32px 0 16px; }
         .done-icon { font-size: 40px; margin-bottom: 14px; }
         .done-title { font-size: 20px; font-weight: 600; letter-spacing: -0.02em; color: var(--text-primary); margin-bottom: 6px; }
         .done-sub { font-size: 13px; color: var(--text-secondary); margin-bottom: 28px; }
         .download-btns { display: flex; flex-direction: column; gap: 8px; margin-bottom: 20px; }
         .dl-btn { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; border-radius: 12px; cursor: pointer; transition: all .15s; text-align: left; }
-        .dl-btn.primary { background: #1A6BFF; border: none; color: #fff; }
+        .dl-btn.primary { background: var(--accent); border: none; color: #fff; }
         .dl-btn.primary:hover { background: #2277FF; }
         .dl-btn.secondary { background: transparent; border: 0.5px solid rgba(255,255,255,0.12); color: var(--text-primary); }
         .dl-btn.secondary:hover { border-color: rgba(255,255,255,0.25); color: var(--text-primary); }
@@ -597,7 +597,7 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
         .alert.err { background: rgba(239,68,68,0.08); border: 0.5px solid rgba(239,68,68,0.2); color: #F87171; }
         .alert.ok { background: rgba(16,185,129,0.08); border: 0.5px solid rgba(16,185,129,0.2); color: #34D399; }
         .alert-icon { font-size: 14px; flex-shrink: 0; margin-top: 0; }
-        .cta-btn { width: 100%; padding: 14px; border-radius: 12px; background: #1A6BFF; border: none; color: #fff; font-size: 14px; font-weight: 600; cursor: pointer; transition: all .15s; letter-spacing: -0.01em; }
+        .cta-btn { width: 100%; padding: 14px; border-radius: 12px; background: var(--accent); border: none; color: #fff; font-size: 14px; font-weight: 600; cursor: pointer; transition: all .15s; letter-spacing: -0.01em; }
         .cta-btn:hover:not(:disabled) { background: #2277FF; transform: translateY(-1px); }
         .cta-btn:active:not(:disabled) { transform: translateY(0); }
         .cta-btn:disabled { background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.25); cursor: not-allowed; transform: none; }
@@ -606,9 +606,9 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
         .back-link { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text-secondary); cursor: pointer; margin-bottom: 24px; transition: color .15s; background: none; border: none; }
         .back-link:hover { color: var(--text-primary); }
         @keyframes spin { to { transform: rotate(360deg); } }
-        .spinner { width: 36px; height: 36px; border-radius: 50%; border: 2px solid rgba(26,107,255,0.2); border-top-color: #1A6BFF; animation: spin 0.8s linear infinite; margin: 0 auto 20px; }
+        .spinner { width: 36px; height: 36px; border-radius: 50%; border: 2px solid var(--accent-glow); border-top-color: var(--accent); animation: spin 0.8s linear infinite; margin: 0 auto 20px; }
         .prog-bar { height: 2px; background: rgba(255,255,255,0.06); border-radius: 2px; margin-bottom: 28px; overflow: hidden; }
-        .prog-fill { height: 100%; background: #1A6BFF; border-radius: 2px; transition: width 0.4s ease; }
+        .prog-fill { height: 100%; background: var(--accent); border-radius: 2px; transition: width 0.4s ease; }
         .obs-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px; text-align: left; }
         .obs-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; transition: border-color 0.15s; }
         .obs-card:hover { border-color: rgba(255,255,255,0.15); }
@@ -627,11 +627,11 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
         .trace-header { display: flex; align-items: center; justify-content: space-between; padding: 20px 24px; border-bottom: 1px solid var(--border); }
         .trace-body { padding: 24px; overflow-y: auto; flex: 1; text-align: left; }
         .stepper { display: flex; flex-direction: column; gap: 20px; position: relative; padding-left: 28px; }
-        .stepper::before { content: ''; position: absolute; left: 10px; top: 8px; bottom: 8px; width: 2px; background: rgba(255,255,255,0.08); }
+        .stepper::before { content: ''; position: absolute; left: 10px; top: 8px; bottom: 8px; width: 2px; background: var(--border); }
         .stepper-item { position: relative; display: flex; flex-direction: column; gap: 4px; }
         .stepper-dot { position: absolute; left: -24px; top: 4px; width: 10px; height: 10px; border-radius: 50%; background: var(--border); border: 2px solid var(--bg-card); z-index: 1; }
-        .stepper-dot.active { background: #1A6BFF; box-shadow: 0 0 8px #1A6BFF; }
-        .stepper-dot.done { background: #34D399; }
+        .stepper-dot.active { background: var(--accent); }
+        .stepper-dot.done { background: var(--green); }
         .stepper-title { font-size: 13px; font-weight: 600; color: var(--text-primary); display: flex; align-items: center; gap: 10px; }
         .stepper-meta { font-size: 11px; color: var(--text-muted); display: flex; align-items: center; gap: 12px; }
         .stepper-detail { background: rgba(255,255,255,0.015); border: 1px solid rgba(255,255,255,0.03); border-radius: 8px; padding: 12px 14px; font-size: 12px; margin-top: 6px; color: var(--text-secondary); line-height: 1.5; }
@@ -648,7 +648,7 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
             <button className="nav-pill" onClick={fetchHistory}>Upload History</button>
             <button
               className="nav-pill"
-              style={{ borderColor: "rgba(26,107,255,0.4)", color: "rgba(26,107,255,0.8)" }}
+              style={{ borderColor: "var(--accent-glow)", color: "var(--accent)" }}
               onClick={() => { setShowHistory(false); resetAll(); }}
             >
               New upload
@@ -687,7 +687,7 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
                       <td style={{ padding: "14px 16px", textAlign: "right" }}>
                         <button 
                           className="nav-pill" 
-                          style={{ borderColor: "#1A6BFF", color: "#1A6BFF", background: "rgba(26,107,255,0.05)" }}
+                          style={{ borderColor: "var(--accent)", color: "var(--accent)", background: "var(--accent-soft)" }}
                           onClick={() => rehydrateBatch(b.id)}
                         >
                           View Data →
@@ -994,7 +994,7 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
                       padding: "12px 24px",
                       background: "transparent",
                       border: "none",
-                      borderBottom: activeOursTab === "ledger" ? "2px solid #1A6BFF" : "2px solid transparent",
+                      borderBottom: activeOursTab === "ledger" ? "2px solid var(--accent)" : "2px solid transparent",
                       color: activeOursTab === "ledger" ? "var(--text-primary)" : "var(--text-secondary)",
                       fontWeight: 600,
                       cursor: "pointer",
@@ -1012,7 +1012,7 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
                       padding: "12px 24px",
                       background: "transparent",
                       border: "none",
-                      borderBottom: activeOursTab === "observability" ? "2px solid #1A6BFF" : "2px solid transparent",
+                      borderBottom: activeOursTab === "observability" ? "2px solid var(--accent)" : "2px solid transparent",
                       color: activeOursTab === "observability" ? "var(--text-primary)" : "var(--text-secondary)",
                       fontWeight: 600,
                       cursor: "pointer",
@@ -1043,7 +1043,7 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
                     {(type === "both" && salesItems.length > 0 && purchaseItems.length > 0) && (
                       <div style={{ display: "flex", borderBottom: "1px solid var(--border)", background: "rgba(0,0,0,0.02)" }}>
                         <button 
-                          style={{ flex: 1, padding: "12px", background: activeTab === "sales" ? "transparent" : "rgba(0,0,0,0.04)", border: "none", borderBottom: activeTab === "sales" ? "2px solid #1A6BFF" : "2px solid transparent", color: activeTab === "sales" ? "var(--text-primary)" : "var(--text-secondary)", fontWeight: 600, cursor: "pointer", fontSize: 13 }}
+                          style={{ flex: 1, padding: "12px", background: activeTab === "sales" ? "transparent" : "rgba(0,0,0,0.04)", border: "none", borderBottom: activeTab === "sales" ? "2px solid var(--accent)" : "2px solid transparent", color: activeTab === "sales" ? "var(--text-primary)" : "var(--text-secondary)", fontWeight: 600, cursor: "pointer", fontSize: 13 }}
                           onClick={() => setActiveTab("sales")}
                         >
                           🧾 Sales Data ({salesItems.length})
@@ -1066,12 +1066,12 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
                       const exportLUT = items.filter((r: any) => parseFloat(r.igst_amount) === 0 && parseFloat(r.cgst_amount) === 0 && parseFloat(r.taxable_value) > 0).length;
                       const fmt = (n: number) => n.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
                       return items.length > 0 ? (
-                        <div style={{ display: "flex", gap: 12, padding: "10px 14px", background: "rgba(26,107,255,0.04)", borderBottom: "1px solid var(--border)", fontSize: 12, flexWrap: "wrap" }}>
+                        <div style={{ display: "flex", gap: 12, padding: "10px 14px", background: "var(--accent-soft)", borderBottom: "1px solid var(--border)", fontSize: 12, flexWrap: "wrap" }}>
                           <span style={{ color: "var(--text-secondary)" }}><strong style={{ color: "var(--text-primary)" }}>{items.length}</strong> invoices</span>
                           <span style={{ color: "rgba(255,255,255,0.15)" }}>·</span>
-                          <span style={{ color: "var(--text-secondary)" }}>Taxable: <strong style={{ color: "#6BA6FF" }}>₹ {fmt(totalTaxable)}</strong></span>
+                          <span style={{ color: "var(--text-secondary)" }}>Taxable: <strong style={{ color: "var(--accent)" }}>₹ {fmt(totalTaxable)}</strong></span>
                           <span style={{ color: "rgba(255,255,255,0.15)" }}>·</span>
-                          <span style={{ color: "var(--text-secondary)" }}>Tax: <strong style={{ color: "#6BA6FF" }}>₹ {fmt(totalTax)}</strong></span>
+                          <span style={{ color: "var(--text-secondary)" }}>Tax: <strong style={{ color: "var(--accent)" }}>₹ {fmt(totalTax)}</strong></span>
                           <span style={{ color: "rgba(255,255,255,0.15)" }}>·</span>
                           <span style={{ color: "var(--text-secondary)" }}>Total: <strong style={{ color: "#34D399" }}>₹ {fmt(totalVal)}</strong></span>
                           {exportLUT > 0 && (
@@ -1178,7 +1178,7 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
                                   {isEditing ? (
                                     <input 
                                       autoFocus
-                                      style={{ width: "100%", background: "var(--bg-base)", color: "var(--text-primary)", border: "1px solid #1A6BFF", outline: "none", borderRadius: 4, padding: "4px" }}
+                                      style={{ width: "100%", background: "var(--bg-base)", color: "var(--text-primary)", border: "1px solid var(--accent)", outline: "none", borderRadius: 4, padding: "4px" }}
                                       value={editingCell.value}
                                       onChange={(e) => setEditingCell({...editingCell, value: e.target.value})}
                                       onBlur={handleCellBlur}
@@ -1412,7 +1412,7 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
                     </div>
                     <div className="obs-card">
                       <div className="obs-card-label">Avg Quality Score</div>
-                      <div className="obs-card-value" style={{ color: "#1A6BFF" }}>
+                      <div className="obs-card-value" style={{ color: "var(--accent)" }}>
                         {batchMetrics?.model_used?.composite_score_avg !== undefined 
                           ? `${(batchMetrics.model_used.composite_score_avg * 100).toFixed(1)}%` 
                           : tasksMeta.length > 0
@@ -1559,7 +1559,7 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
                                   )}
                                   <button
                                     className="nav-pill"
-                                    style={{ borderColor: "#1A6BFF", color: "#1A6BFF", background: "rgba(26,107,255,0.02)", fontSize: 12, cursor: "pointer", padding: "6px 12px", borderRadius: 4 }}
+                                    style={{ borderColor: "var(--accent)", color: "var(--accent)", background: "var(--accent-soft)", fontSize: 12, cursor: "pointer", padding: "6px 12px", borderRadius: 4 }}
                                     onClick={() => setTraceTaskId(task.task_id)}
                                   >
                                     🔍 Trace steps
@@ -1635,7 +1635,7 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
                     
                     if (isStage) {
                       title = `Stage: ${evt.stage.replace("_", " ")}`;
-                      badgeColor = "rgba(26,107,255,0.15)";
+                      badgeColor = "var(--accent-soft)";
                       badgeText = "Pipeline Step";
                     } else if (isScore) {
                       title = `Quality Score Evaluated`;

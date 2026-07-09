@@ -13,6 +13,7 @@ import {
   ArrowRight,
 } from "lucide-react";
 import { validateGstItem, type ValidatedItem } from "../utils/gstValidator";
+import AccountantHome from "../components/home/AccountantHome";
 
 /* ─────────── Config ─────────── */
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -84,6 +85,14 @@ export default function DashboardPage() {
       : backendStatus === "offline"
         ? "Offline"
         : "Checking…";
+
+  // Role-based home - Phase 2 of the dashboard rollout (2026-07-09): only
+  // the auditor/accountant role has its own dedicated home so far. Other
+  // roles still see the shared dashboard below until Phase 3 gives them
+  // their own (see AccountantHome.tsx's docstring for the reasoning).
+  if (userRole === "auditor") {
+    return <AccountantHome />;
+  }
 
   return (
     <main style={{ minHeight: "100vh", padding: "48px 24px 80px" }}>
