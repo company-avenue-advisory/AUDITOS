@@ -81,28 +81,13 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
           height: "100vh",
           alignItems: "center",
           justifyContent: "center",
-          background: "#06060a",
-          color: "#a5b4fc",
+          background: "var(--bg-base)",
+          color: "var(--accent)",
           fontFamily: "var(--font-inter), sans-serif",
-          position: "relative",
-          overflow: "hidden",
         }}
       >
-        <div
-          style={{
-            position: "absolute",
-            width: "40vw",
-            height: "40vw",
-            top: "-10vw",
-            left: "-10vw",
-            borderRadius: "50%",
-            background: "radial-gradient(circle, rgba(99,102,241,0.1) 0%, transparent 75%)",
-            filter: "blur(60px)",
-            pointerEvents: "none",
-          }}
-        />
-        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 16, zIndex: 1 }}>
-          <div style={{ fontSize: 24, fontWeight: 800, letterSpacing: "-0.04em", color: "#f5f5f7" }}>
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 16 }}>
+          <div style={{ fontSize: 24, fontWeight: 800, letterSpacing: "-0.04em", color: "var(--text-primary)" }}>
             Audit OS
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -110,13 +95,13 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
               style={{
                 width: "14px",
                 height: "14px",
-                border: "2px solid rgba(129,140,248,0.3)",
-                borderTopColor: "#818cf8",
+                border: "2px solid var(--accent-glow)",
+                borderTopColor: "var(--accent)",
                 borderRadius: "50%",
                 animation: "spin 0.8s linear infinite",
               }}
             />
-            <div style={{ fontSize: 13, color: "#818cf8", fontWeight: 500 }}>
+            <div style={{ fontSize: 13, color: "var(--accent)", fontWeight: 500 }}>
               Initializing secure session...
             </div>
           </div>
@@ -164,26 +149,25 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
             bottom: 24,
             right: 24,
             zIndex: 9999,
-            background: "rgba(15,15,25,0.95)",
-            border: "1px solid rgba(129,140,248,0.3)",
+            background: "var(--bg-card)",
+            border: "1px solid var(--border)",
             borderRadius: 12,
             padding: "14px 18px",
             display: "flex",
             flexDirection: "column",
             gap: 10,
             maxWidth: 320,
-            boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
-            backdropFilter: "blur(12px)",
+            boxShadow: "0 8px 24px rgba(0,0,0,0.2)",
             fontFamily: "var(--font-inter), sans-serif",
           }}
         >
           <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
             <div style={{ fontSize: 18, lineHeight: 1 }}>📋</div>
             <div>
-              <div style={{ fontSize: 13, fontWeight: 600, color: "#f5f5f7", marginBottom: 2 }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)", marginBottom: 2 }}>
                 Resume last audit?
               </div>
-              <div style={{ fontSize: 12, color: "#9ca3af" }}>
+              <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>
                 {resumeSession.batch_total_files
                   ? `${resumeSession.batch_total_files} invoice${resumeSession.batch_total_files > 1 ? "s" : ""}`
                   : "Batch"}{" "}
@@ -194,16 +178,14 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
           <div style={{ display: "flex", gap: 8 }}>
             <button
               onClick={handleResume}
+              className="btn-primary"
               style={{
                 flex: 1,
                 padding: "6px 12px",
-                background: "rgba(99,102,241,0.15)",
-                border: "1px solid rgba(99,102,241,0.4)",
                 borderRadius: 6,
-                color: "#a5b4fc",
                 fontSize: 12,
                 fontWeight: 600,
-                cursor: "pointer",
+                border: "none",
               }}
             >
               Resume
@@ -213,9 +195,9 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
               style={{
                 padding: "6px 10px",
                 background: "transparent",
-                border: "1px solid rgba(255,255,255,0.1)",
+                border: "1px solid var(--border)",
                 borderRadius: 6,
-                color: "#6b7280",
+                color: "var(--text-muted)",
                 fontSize: 12,
                 cursor: "pointer",
               }}

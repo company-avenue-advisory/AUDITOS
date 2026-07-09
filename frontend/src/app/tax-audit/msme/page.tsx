@@ -327,12 +327,12 @@ export default function MSMEAuditPage() {
               display: "inline-flex",
               alignItems: "center",
               gap: 6,
-              background: "rgba(99,102,241,0.12)",
-              border: "1px solid rgba(99,102,241,0.25)",
+              background: "var(--accent-soft)",
+              border: "1px solid var(--accent-glow)",
               borderRadius: 99,
               padding: "5px 14px",
               fontSize: 12,
-              color: "#a5b4fc",
+              color: "var(--accent)",
               fontWeight: 500,
               marginBottom: 16,
             }}
@@ -422,7 +422,7 @@ export default function MSMEAuditPage() {
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "center",
-                    border: "1px solid rgba(99,102,241,0.2)",
+                    border: "1px solid var(--accent-glow)",
                   }}
                 >
                   <UploadCloud size={20} style={{ color: "var(--accent)" }} />
@@ -445,8 +445,8 @@ export default function MSMEAuditPage() {
           <div
             style={{
               background: "var(--green-soft)",
-              border: "1px solid rgba(34,197,94,0.25)",
-              color: "#86efac",
+              border: "1px solid var(--green)",
+              color: "var(--green)",
               padding: "12px 18px",
               borderRadius: "var(--radius-md)",
               fontSize: 13,
@@ -464,8 +464,8 @@ export default function MSMEAuditPage() {
           <div
             style={{
               background: "var(--red-soft)",
-              border: "1px solid rgba(239,68,68,0.25)",
-              color: "#fca5a5",
+              border: "1px solid var(--red)",
+              color: "var(--red)",
               padding: "12px 18px",
               borderRadius: "var(--radius-md)",
               fontSize: 13,
@@ -606,10 +606,10 @@ export default function MSMEAuditPage() {
                   onClick={() => setActiveTab(tab.id as any)}
                   style={{
                     background: activeTab === tab.id ? "var(--accent-soft)" : "transparent",
-                    border: activeTab === tab.id ? "1px solid rgba(99,102,241,0.25)" : "1px solid transparent",
+                    border: activeTab === tab.id ? "1px solid var(--accent-glow)" : "1px solid transparent",
                     borderRadius: "var(--radius-sm)",
                     padding: "4px 10px",
-                    color: activeTab === tab.id ? "#a5b4fc" : "var(--text-secondary)",
+                    color: activeTab === tab.id ? "var(--accent)" : "var(--text-secondary)",
                     fontSize: 11,
                     fontWeight: 600,
                     cursor: "pointer",
@@ -681,10 +681,10 @@ export default function MSMEAuditPage() {
                   const isVerified = row.udyamStatus !== "UNKNOWN";
                   const statusColors = {
                     UNKNOWN: { color: "var(--text-secondary)", bg: "var(--bg-surface)" },
-                    MICRO: { color: "#fca5a5", bg: "var(--red-soft)" },
-                    SMALL: { color: "#fcd34d", bg: "var(--amber-soft)" },
-                    MEDIUM: { color: "#93c5fd", bg: "var(--blue-soft)" },
-                    LARGE: { color: "#86efac", bg: "var(--green-soft)" },
+                    MICRO: { color: "var(--red)", bg: "var(--red-soft)" },
+                    SMALL: { color: "var(--amber)", bg: "var(--amber-soft)" },
+                    MEDIUM: { color: "var(--blue)", bg: "var(--blue-soft)" },
+                    LARGE: { color: "var(--green)", bg: "var(--green-soft)" },
                   };
                   
                   return (
@@ -862,11 +862,11 @@ export default function MSMEAuditPage() {
                                 ? "var(--green-soft)"
                                 : "var(--accent-soft)",
                               border: `1px solid ${
-                                isVerified ? "rgba(34,197,94,0.2)" : "rgba(99,102,241,0.2)"
+                                isVerified ? "var(--green)" : "var(--accent-glow)"
                               }`,
                               borderRadius: 6,
                               padding: "4px 6px",
-                              color: isVerified ? "#86efac" : "#a5b4fc",
+                              color: isVerified ? "var(--green)" : "var(--accent)",
                               fontSize: 9,
                               fontWeight: 600,
                               cursor: row.isVerifying || !row.udyamNumber ? "not-allowed" : "pointer",
@@ -888,11 +888,11 @@ export default function MSMEAuditPage() {
                           <button
                             onClick={() => deleteRow(row.id)}
                             style={{
-                              background: "rgba(239,68,68,0.1)",
-                              border: "1px solid rgba(239,68,68,0.2)",
+                              background: "var(--red-soft)",
+                              border: "1px solid var(--red)",
                               borderRadius: 6,
                               padding: "4px 6px",
-                              color: "#fca5a5",
+                              color: "var(--red)",
                               cursor: "pointer",
                               display: "flex",
                               alignItems: "center",

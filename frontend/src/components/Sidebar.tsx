@@ -16,6 +16,7 @@ import {
   LogOut,
   Building2,
   Cloud,
+  ClipboardCheck,
 } from "lucide-react";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -39,6 +40,18 @@ const NAV_ITEMS = [
     label: "Reconciliation",
     icon: GitCompareArrows,
     description: "GSTR-2B matching",
+  },
+  {
+    href: "/sales-period-review",
+    label: "Sales Review",
+    icon: ClipboardCheck,
+    description: "Approve before filing",
+  },
+  {
+    href: "/purchase-gstr2b-review",
+    label: "GSTR-2B Review",
+    icon: ClipboardCheck,
+    description: "Approve before ITC claim",
   },
   {
     href: "/tax-audit/msme",
@@ -123,7 +136,7 @@ export default function Sidebar() {
       style={{
         width: 240,
         minHeight: "100vh",
-        background: theme === "light" ? "rgba(250,250,250,0.97)" : "rgba(6,6,10,0.97)",
+        background: "var(--bg-base)",
         borderRight: "1px solid var(--border)",
         display: "flex",
         flexDirection: "column",
@@ -132,7 +145,6 @@ export default function Sidebar() {
         top: 0,
         left: 0,
         zIndex: 100,
-        backdropFilter: "blur(24px) saturate(180%)",
         transition: "background 0.3s ease",
       }}
     >
@@ -155,11 +167,10 @@ export default function Sidebar() {
               width: 34,
               height: 34,
               borderRadius: 10,
-              background: "linear-gradient(135deg, #6366f1, #818cf8)",
+              background: "var(--accent)",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
-              boxShadow: "0 0 16px rgba(99,102,241,0.3)",
             }}
           >
             <Shield size={17} style={{ color: "#fff" }} />
@@ -240,7 +251,7 @@ export default function Sidebar() {
                 transition: "background 0.15s ease, border-color 0.15s ease",
                 background: isActive ? "var(--accent-soft)" : "transparent",
                 border: isActive
-                  ? "1px solid rgba(99,102,241,0.25)"
+                  ? "1px solid var(--accent-glow)"
                   : "1px solid transparent",
                 cursor: "pointer",
               }}
@@ -310,7 +321,7 @@ export default function Sidebar() {
             style={{
               padding: "10px 12px",
               borderRadius: "var(--radius-sm)",
-              background: "rgba(255,255,255,0.02)",
+              background: "var(--bg-card)",
               border: "1px solid var(--border)",
               display: "flex",
               flexDirection: "column",
@@ -386,21 +397,23 @@ export default function Sidebar() {
               alignItems: "center",
               justifyContent: "center",
               gap: 8,
-              background: "rgba(239,68,68,0.08)",
-              border: "1px solid rgba(239,68,68,0.2)",
+              background: "var(--red-soft)",
+              border: "1px solid var(--red)",
               borderRadius: "var(--radius-sm)",
               padding: "8px 12px",
-              color: "#ef4444",
+              color: "var(--red)",
               fontSize: 12,
               fontWeight: 600,
               cursor: "pointer",
               transition: "all 0.2s ease",
             }}
             onMouseEnter={(e) => {
-              e.currentTarget.style.background = "rgba(239,68,68,0.15)";
+              e.currentTarget.style.background = "var(--red-soft)";
+              e.currentTarget.style.opacity = "0.8";
             }}
             onMouseLeave={(e) => {
-              e.currentTarget.style.background = "rgba(239,68,68,0.08)";
+              e.currentTarget.style.background = "var(--red-soft)";
+              e.currentTarget.style.opacity = "1";
             }}
           >
             <LogOut size={13} />

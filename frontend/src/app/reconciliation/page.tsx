@@ -44,9 +44,11 @@ interface BatchMeta { id: string; status: string; created_at: string; total_file
 /* ─────────── Config ─────────── */
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
-function authHdr() {
+function authHdr(): Record<string, string> {
   const t = typeof window !== "undefined" ? localStorage.getItem("token") : null;
-  return t ? { Authorization: `Bearer ${t}`, "Content-Type": "application/json" } : { "Content-Type": "application/json" };
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (t) headers.Authorization = `Bearer ${t}`;
+  return headers;
 }
 
 const STATUS_FILTERS = ["all", "matched", "mismatch", "missing_in_2b", "not_in_books"] as const;
@@ -196,7 +198,7 @@ export default function ReconciliationPage() {
           label: "Matched",
           count: reconResult.summary.counts.matched,
           val: reconResult.summary.amounts.matched,
-          col: "#22c55e",
+          col: "var(--green)",
           bg: "var(--green-soft)",
           icon: CheckCircle,
         },
@@ -204,7 +206,7 @@ export default function ReconciliationPage() {
           label: "Amount Mismatch",
           count: reconResult.summary.counts.mismatch,
           val: reconResult.summary.amounts.mismatch,
-          col: "#f59e0b",
+          col: "var(--amber)",
           bg: "var(--amber-soft)",
           icon: AlertTriangle,
         },
@@ -212,7 +214,7 @@ export default function ReconciliationPage() {
           label: "Missing in 2B (ITC Risk)",
           count: reconResult.summary.counts.missing_in_2b,
           val: reconResult.summary.amounts.missing_in_2b,
-          col: "#ef4444",
+          col: "var(--red)",
           bg: "var(--red-soft)",
           icon: ShieldAlert,
         },
@@ -220,7 +222,7 @@ export default function ReconciliationPage() {
           label: "Not Booked (in 2B)",
           count: reconResult.summary.counts.not_in_books,
           val: reconResult.summary.amounts.not_in_books,
-          col: "#60a5fa",
+          col: "var(--blue)",
           bg: "var(--blue-soft)",
           icon: BookOpen,
         },
@@ -248,12 +250,12 @@ export default function ReconciliationPage() {
               display: "inline-flex",
               alignItems: "center",
               gap: 6,
-              background: "rgba(99,102,241,0.12)",
-              border: "1px solid rgba(99,102,241,0.25)",
+              background: "var(--accent-soft)",
+              border: "1px solid var(--accent-glow)",
               borderRadius: 99,
               padding: "5px 14px",
               fontSize: 12,
-              color: "#a5b4fc",
+              color: "var(--accent)",
               fontWeight: 500,
               marginBottom: 20,
               letterSpacing: "0.02em",
@@ -328,7 +330,7 @@ export default function ReconciliationPage() {
             <div
               style={{
                 background: "var(--red-soft)",
-                border: "1px solid rgba(239,68,68,0.25)",
+                border: "1px solid var(--red)",
                 borderRadius: "var(--radius-md)",
                 padding: "12px 16px",
                 marginBottom: 16,
@@ -336,7 +338,7 @@ export default function ReconciliationPage() {
                 gap: 10,
                 alignItems: "center",
                 fontSize: 13,
-                color: "#fca5a5",
+                color: "var(--red)",
               }}
             >
               <AlertTriangle
@@ -358,7 +360,7 @@ export default function ReconciliationPage() {
             {/* Books source — batch connect or JSON upload */}
             <div className="glass" style={{ borderRadius: "var(--radius-md)", padding: "20px", display: "flex", flexDirection: "column", gap: 12 }}>
               {/* Mode toggle */}
-              <div style={{ display: "flex", gap: 6, background: "rgba(0,0,0,0.25)", borderRadius: 8, padding: 3 }}>
+              <div style={{ display: "flex", gap: 6, background: "var(--bg-card)", borderRadius: 8, padding: 3 }}>
                 {(["batch", "upload"] as const).map((mode) => (
                   <button key={mode} onClick={() => setBooksMode(mode)} style={{ flex: 1, padding: "6px 10px", borderRadius: 6, border: "none", cursor: "pointer", fontSize: 12, fontWeight: 600, background: booksMode === mode ? "var(--accent)" : "transparent", color: booksMode === mode ? "#fff" : "var(--text-muted)", transition: "all 0.15s" }}>
                     {mode === "batch" ? "Use Batch" : "Upload JSON"}
@@ -375,7 +377,7 @@ export default function ReconciliationPage() {
                   {batchesLoading ? (
                     <div style={{ fontSize: 12, color: "var(--text-muted)" }}>Loading batches…</div>
                   ) : recentBatches.length === 0 ? (
-                    <div style={{ fontSize: 12, color: "#f59e0b" }}>No completed batches found. Run the extractor first.</div>
+                    <div style={{ fontSize: 12, color: "var(--amber)" }}>No completed batches found. Run the extractor first.</div>
                   ) : (
                     <select value={selectedBatchId} onChange={(e) => setSelectedBatchId(e.target.value)} style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 6, padding: "8px 10px", color: "var(--text-primary)", fontSize: 12, cursor: "pointer" }}>
                       {recentBatches.map((b) => (
@@ -388,7 +390,7 @@ export default function ReconciliationPage() {
               ) : (
                 <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10, cursor: "pointer" }} onClick={() => booksRef.current?.click()}>
                   <input type="file" accept=".json" ref={booksRef} style={{ display: "none" }} onChange={onBooksChange} />
-                  <div style={{ width: 40, height: 40, borderRadius: 10, background: "rgba(99,102,241,0.12)", border: "1px solid rgba(99,102,241,0.25)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <div style={{ width: 40, height: 40, borderRadius: 10, background: "var(--accent-soft)", border: "1px solid var(--accent-glow)", display: "flex", alignItems: "center", justifyContent: "center" }}>
                     <Upload size={16} style={{ color: "var(--accent)" }} />
                   </div>
                   <div style={{ textAlign: "center" }}>
@@ -426,8 +428,8 @@ export default function ReconciliationPage() {
                   width: 44,
                   height: 44,
                   borderRadius: 12,
-                  background: "rgba(245,158,11,0.12)",
-                  border: "1px solid rgba(245,158,11,0.25)",
+                  background: "var(--amber-soft)",
+                  border: "1px solid var(--amber)",
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center",
@@ -505,8 +507,8 @@ export default function ReconciliationPage() {
                   alignItems: "center",
                   gap: 8,
                   background: "var(--green-soft)",
-                  color: "#86efac",
-                  border: "1px solid rgba(34,197,94,0.25)",
+                  color: "var(--green)",
+                  border: "1px solid var(--green)",
                 }}
               >
                 <Download size={14} />
@@ -598,7 +600,7 @@ export default function ReconciliationPage() {
             className="animate-fade-up"
             style={{
               background: "var(--red-soft)",
-              border: "1px solid rgba(239,68,68,0.25)",
+              border: "1px solid var(--red)",
               borderRadius: "var(--radius-lg)",
               padding: "20px 24px",
               display: "flex",
@@ -615,7 +617,7 @@ export default function ReconciliationPage() {
                 style={{
                   fontSize: 14,
                   fontWeight: 700,
-                  color: "#fca5a5",
+                  color: "var(--red)",
                   marginBottom: 4,
                 }}
               >
@@ -624,7 +626,7 @@ export default function ReconciliationPage() {
               <div
                 style={{
                   fontSize: 12,
-                  color: "#fca5a5",
+                  color: "var(--red)",
                   opacity: 0.8,
                   lineHeight: 1.5,
                 }}
@@ -642,11 +644,11 @@ export default function ReconciliationPage() {
 
         {/* ══ RULE 36(4) BANNER ══ */}
         {reconResult?.summary?.rule_36_4?.breached && (
-          <div className="animate-fade-up" style={{ background: "rgba(239,68,68,0.07)", border: "1px solid rgba(239,68,68,0.3)", borderRadius: "var(--radius-lg)", padding: "18px 24px", display: "flex", alignItems: "flex-start", gap: 14 }}>
-            <ShieldAlert size={22} style={{ color: "#ef4444", flexShrink: 0, marginTop: 2 }} />
+          <div className="animate-fade-up" style={{ background: "var(--red-soft)", border: "1px solid var(--red)", borderRadius: "var(--radius-lg)", padding: "18px 24px", display: "flex", alignItems: "flex-start", gap: 14 }}>
+            <ShieldAlert size={22} style={{ color: "var(--red)", flexShrink: 0, marginTop: 2 }} />
             <div>
-              <div style={{ fontSize: 14, fontWeight: 700, color: "#fca5a5", marginBottom: 6 }}>Rule 36(4) ITC Cap Breached</div>
-              <div style={{ fontSize: 12, color: "#fca5a5", lineHeight: 1.6 }}>
+              <div style={{ fontSize: 14, fontWeight: 700, color: "var(--red)", marginBottom: 6 }}>Rule 36(4) ITC Cap Breached</div>
+              <div style={{ fontSize: 12, color: "var(--red)", lineHeight: 1.6 }}>
                 Your provisional ITC cap is <strong>₹ {reconResult.summary.rule_36_4!.cap.toLocaleString("en-IN", { minimumFractionDigits: 2 })}</strong> (105% of GSTR-2B matched ITC).
                 Total ITC claimed in books is <strong>₹ {reconResult.summary.rule_36_4!.total_claimed.toLocaleString("en-IN", { minimumFractionDigits: 2 })}</strong>.
                 Excess of <strong>₹ {reconResult.summary.rule_36_4!.excess.toLocaleString("en-IN", { minimumFractionDigits: 2 })}</strong> may be disallowed.
@@ -676,7 +678,7 @@ export default function ReconciliationPage() {
             >
               <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
                 <span style={{ fontSize: 17, fontWeight: 700, color: "var(--text-primary)", letterSpacing: "-0.02em" }}>Reconciliation Detail</span>
-                <span style={{ fontSize: 11, fontWeight: 600, color: "var(--text-muted)", background: "rgba(255,255,255,0.07)", border: "1px solid var(--border)", borderRadius: 99, padding: "2px 10px" }}>
+                <span style={{ fontSize: 11, fontWeight: 600, color: "var(--text-muted)", background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 99, padding: "2px 10px" }}>
                   {reconResult.summary.total_rows} rows
                 </span>
               </div>
@@ -684,7 +686,7 @@ export default function ReconciliationPage() {
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                 {STATUS_FILTERS.map((f) => {
                   const labels: Record<string, string> = { all: "All", matched: "✓ Matched", mismatch: "⚠ Mismatch", missing_in_2b: "✗ Missing 2B", not_in_books: "ℹ Not Booked" };
-                  const colors: Record<string, string> = { all: "var(--accent)", matched: "#22c55e", mismatch: "#f59e0b", missing_in_2b: "#ef4444", not_in_books: "#60a5fa" };
+                  const colors: Record<string, string> = { all: "var(--accent)", matched: "var(--green)", mismatch: "var(--amber)", missing_in_2b: "var(--red)", not_in_books: "var(--blue)" };
                   const active = statusFilter === f;
                   const count = f === "all" ? reconResult.summary.total_rows : (f === "not_in_books" ? reconResult.extra.length : reconResult.rows.filter((r) => r.recon_status === f).length);
                   return (
@@ -707,7 +709,7 @@ export default function ReconciliationPage() {
                 <thead>
                   <tr
                     style={{
-                      background: "rgba(0,0,0,0.25)",
+                      background: "var(--bg-card)",
                       borderBottom: "1px solid var(--border)",
                       textAlign: "left",
                       color: "var(--text-muted)",
@@ -750,20 +752,20 @@ export default function ReconciliationPage() {
                       const st = r.recon_status as string;
                       const color =
                         st === "matched"
-                          ? "#22c55e"
+                          ? "var(--green)"
                           : st === "mismatch"
-                            ? "#f59e0b"
+                            ? "var(--amber)"
                             : st === "not_in_books"
-                              ? "#60a5fa"
-                              : "#ef4444";
+                              ? "var(--blue)"
+                              : "var(--red)";
                       const bg =
                         st === "matched"
-                          ? "rgba(34,197,94,0.04)"
+                          ? "var(--green-soft)"
                           : st === "mismatch"
-                            ? "rgba(245,158,11,0.04)"
+                            ? "var(--amber-soft)"
                             : st === "not_in_books"
-                              ? "rgba(96,165,250,0.04)"
-                              : "rgba(239,68,68,0.04)";
+                              ? "var(--blue-soft)"
+                              : "var(--red-soft)";
                       const label =
                         st === "matched"
                           ? "✓ Matched"
@@ -832,14 +834,14 @@ export default function ReconciliationPage() {
                               ? total2b.toFixed(2)
                               : "-"}
                           </td>
-                          <td style={{ padding: 8, textAlign: "right", color: diffAmount && Math.abs(diffAmount) > 2 ? "#ef4444" : "var(--text-primary)", fontWeight: diffAmount && Math.abs(diffAmount) > 2 ? 700 : 400 }}>
+                          <td style={{ padding: 8, textAlign: "right", color: diffAmount && Math.abs(diffAmount) > 2 ? "var(--red)" : "var(--text-primary)", fontWeight: diffAmount && Math.abs(diffAmount) > 2 ? 700 : 400 }}>
                             {diffAmount ? diffAmount.toFixed(2) : "-"}
                           </td>
                           <td style={{ padding: 8 }}>
                             {(() => {
                               const itc = r.itc_eligibility as string | undefined;
                               if (!itc || itc === "ITC_UNKNOWN") return <span style={{ color: "var(--text-muted)", fontSize: 10 }}>—</span>;
-                              const col = itc === "ITC_ELIGIBLE" ? "#22c55e" : itc === "ITC_BLOCKED" ? "#ef4444" : itc === "ITC_RESTRICTED" ? "#f59e0b" : "var(--text-muted)";
+                              const col = itc === "ITC_ELIGIBLE" ? "var(--green)" : itc === "ITC_BLOCKED" ? "var(--red)" : itc === "ITC_RESTRICTED" ? "var(--amber)" : "var(--text-muted)";
                               return <span style={{ fontSize: 10, fontWeight: 700, color: col, background: `${col}18`, borderRadius: 4, padding: "2px 6px" }}>{itc.replace("ITC_", "")}</span>;
                             })()}
                           </td>

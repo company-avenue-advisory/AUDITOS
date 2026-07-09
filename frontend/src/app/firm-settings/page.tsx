@@ -188,24 +188,23 @@ export default function FirmSettingsPage() {
     gap: 6,
     padding: "10px 18px",
     borderRadius: 8,
-    border: "none",
     cursor: "pointer",
     fontWeight: 600,
     fontSize: 13,
     background:
       variant === "primary" ? "var(--accent)" :
-      variant === "danger" ? "rgba(239,68,68,0.1)" : "var(--bg-card)",
+      variant === "danger" ? "var(--red-soft)" : "var(--bg-card)",
     color:
       variant === "primary" ? "#fff" :
-      variant === "danger" ? "#ef4444" : "var(--text-secondary)",
+      variant === "danger" ? "var(--red)" : "var(--text-secondary)",
     border:
       variant === "primary" ? "none" :
-      variant === "danger" ? "1px solid rgba(239,68,68,0.25)" : "1px solid var(--border)",
+      variant === "danger" ? "1px solid var(--red)" : "1px solid var(--border)",
   });
 
   const roleColor: Record<string, string> = {
-    owner: "#6366f1", auditor: "#22d3ee", hr: "#f59e0b",
-    developer: "#10b981", other: "var(--text-muted)",
+    owner: "var(--accent)", auditor: "var(--blue)", hr: "var(--amber)",
+    developer: "var(--green)", other: "var(--text-muted)",
   };
 
   return (
@@ -214,9 +213,8 @@ export default function FirmSettingsPage() {
       <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 32 }}>
         <div style={{
           width: 44, height: 44, borderRadius: 12,
-          background: "linear-gradient(135deg,#6366f1,#818cf8)",
+          background: "var(--accent)",
           display: "flex", alignItems: "center", justifyContent: "center",
-          boxShadow: "0 0 20px rgba(99,102,241,0.3)",
         }}>
           <Building2 size={22} color="#fff" />
         </div>
@@ -236,7 +234,7 @@ export default function FirmSettingsPage() {
       )}
 
       {error && (
-        <div style={{ padding: 14, borderRadius: 8, background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.2)", color: "#ef4444", fontSize: 13, marginBottom: 20 }}>
+        <div style={{ padding: 14, borderRadius: 8, background: "var(--red-soft)", border: "1px solid var(--red)", color: "var(--red)", fontSize: 13, marginBottom: 20 }}>
           <AlertCircle size={14} style={{ display: "inline", marginRight: 6 }} />{error}
         </div>
       )}
@@ -269,8 +267,8 @@ export default function FirmSettingsPage() {
                 required
               />
             </div>
-            {createError && <div style={{ fontSize: 12, color: "#ef4444" }}>{createError}</div>}
-            {createSuccess && <div style={{ fontSize: 12, color: "#22d3ee" }}><CheckCircle size={12} style={{ display: "inline", marginRight: 4 }} />{createSuccess}</div>}
+            {createError && <div style={{ fontSize: 12, color: "var(--red)" }}>{createError}</div>}
+            {createSuccess && <div style={{ fontSize: 12, color: "var(--blue)" }}><CheckCircle size={12} style={{ display: "inline", marginRight: 4 }} />{createSuccess}</div>}
             <button type="submit" style={btn("primary")} disabled={creating}>
               {creating ? "Creating..." : "Create Firm"}
             </button>
@@ -308,7 +306,7 @@ export default function FirmSettingsPage() {
                     required
                   />
                 </div>
-                {editError && <div style={{ fontSize: 12, color: "#ef4444" }}>{editError}</div>}
+                {editError && <div style={{ fontSize: 12, color: "var(--red)" }}>{editError}</div>}
                 <div style={{ display: "flex", gap: 10 }}>
                   <button type="submit" style={btn("primary")}>Save Changes</button>
                   <button type="button" onClick={() => { setEditing(false); setEditName(firm.name); setEditSlug(firm.slug); setEditError(""); }} style={btn("secondary")}>Cancel</button>
@@ -328,7 +326,7 @@ export default function FirmSettingsPage() {
                   <div key={m.id} style={{
                     display: "flex", alignItems: "center", gap: 12,
                     padding: "12px 14px", borderRadius: 8,
-                    background: "rgba(255,255,255,0.02)", border: "1px solid var(--border)",
+                    background: "var(--bg-card)", border: "1px solid var(--border)",
                   }}>
                     <div style={{
                       width: 32, height: 32, borderRadius: "50%",
@@ -343,7 +341,7 @@ export default function FirmSettingsPage() {
                       <div style={{ fontSize: 11, fontWeight: 700, color: roleColor[m.role] || "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginTop: 2 }}>{m.role}</div>
                     </div>
                     {!m.is_active && (
-                      <span style={{ fontSize: 10, fontWeight: 700, color: "#f59e0b", background: "rgba(245,158,11,0.1)", borderRadius: 4, padding: "2px 6px" }}>INACTIVE</span>
+                      <span style={{ fontSize: 10, fontWeight: 700, color: "var(--amber)", background: "var(--amber-soft)", borderRadius: 4, padding: "2px 6px" }}>INACTIVE</span>
                     )}
                     <button
                       onClick={() => handleRemove(m.id, m.email)}
@@ -377,16 +375,16 @@ export default function FirmSettingsPage() {
                   {inviting ? "Adding..." : "Add"}
                 </button>
               </form>
-              {inviteMsg && <div style={{ fontSize: 12, color: "#22d3ee", marginTop: 10 }}><CheckCircle size={12} style={{ display: "inline", marginRight: 4 }} />{inviteMsg}</div>}
-              {inviteError && <div style={{ fontSize: 12, color: "#ef4444", marginTop: 10 }}>{inviteError}</div>}
+              {inviteMsg && <div style={{ fontSize: 12, color: "var(--blue)", marginTop: 10 }}><CheckCircle size={12} style={{ display: "inline", marginRight: 4 }} />{inviteMsg}</div>}
+              {inviteError && <div style={{ fontSize: 12, color: "var(--red)", marginTop: 10 }}>{inviteError}</div>}
             </div>
           </div>
 
           {/* GSTIN info */}
-          <div style={{ ...card, background: "rgba(99,102,241,0.05)", border: "1px solid rgba(99,102,241,0.2)" }}>
+          <div style={{ ...card, background: "var(--accent-soft)", border: "1px solid var(--accent-glow)" }}>
             <div style={{ fontSize: 12, fontWeight: 600, color: "var(--accent)", marginBottom: 8 }}>Firm GSTIN</div>
             <div style={{ fontSize: 13, color: "var(--text-secondary)", marginBottom: 4 }}>
-              Set in <code style={{ background: "rgba(255,255,255,0.06)", padding: "1px 6px", borderRadius: 4, fontSize: 12 }}>backend/.env</code> as <code style={{ background: "rgba(255,255,255,0.06)", padding: "1px 6px", borderRadius: 4, fontSize: 12 }}>FIRM_GSTIN</code>.
+              Set in <code style={{ background: "var(--bg-card)", padding: "1px 6px", borderRadius: 4, fontSize: 12 }}>backend/.env</code> as <code style={{ background: "var(--bg-card)", padding: "1px 6px", borderRadius: 4, fontSize: 12 }}>FIRM_GSTIN</code>.
             </div>
             <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
               The first 2 digits determine your state code for B2B/B2CS/B2CL inter-state split in GSTR-1 exports. Update this before exporting.

@@ -1,59 +1,70 @@
 @import "tailwindcss";
 
+/*
+ * Design tokens — restrained, flat, fintech-grade. Reference: Nanonets and
+ * CORAA's actual product UI (checked directly this session) - both use
+ * light-first, generous whitespace, one muted accent, no glow/blur/gradient
+ * effects. The previous dark-neon-glow + glassmorphism direction read as a
+ * generic "AI-generated demo" rather than a serious compliance tool -
+ * flattened here while keeping the SAME variable names so every page that
+ * already consumes var(--accent)/var(--bg-card)/etc. picks up the new look
+ * without needing its own changes.
+ */
 :root {
-  --bg-base:       #06060a;
-  --bg-surface:    rgba(255,255,255,0.035);
-  --bg-card:       rgba(255,255,255,0.05);
-  --bg-card-hover: rgba(255,255,255,0.08);
+  --bg-base:       #0d0d0f;
+  --bg-surface:    #131316;
+  --bg-card:       #18181b;
+  --bg-card-hover: #1e1e22;
   --border:        rgba(255,255,255,0.08);
-  --border-strong: rgba(255,255,255,0.14);
-  --text-primary:  #f5f5f7;
-  --text-secondary:#a1a1aa;
-  --text-muted:    #52525b;
-  --accent:        #6366f1;
-  --accent-glow:   rgba(99,102,241,0.25);
-  --accent-soft:   rgba(99,102,241,0.12);
-  --amber:         #f59e0b;
-  --amber-soft:    rgba(245,158,11,0.10);
-  --green:         #22c55e;
-  --green-soft:    rgba(34,197,94,0.10);
-  --red:           #ef4444;
-  --red-soft:      rgba(239,68,68,0.10);
-  --blue:          #60a5fa;
-  --blue-soft:     rgba(96,165,250,0.10);
-  --radius-sm:     10px;
-  --radius-md:     16px;
-  --radius-lg:     22px;
-  --radius-xl:     28px;
+  --border-strong: rgba(255,255,255,0.16);
+  --text-primary:  #f2f2f3;
+  --text-secondary:#9a9aa0;
+  --text-muted:    #7a7a80;
+  --accent:        #6fa4ff;
+  --accent-glow:   rgba(111,164,255,0.16);
+  --accent-soft:   rgba(111,164,255,0.12);
+  --amber:         #f0b93a;
+  --amber-soft:    rgba(240,185,58,0.12);
+  --green:         #5fd493;
+  --green-soft:    rgba(95,212,147,0.12);
+  --red:           #f2665a;
+  --red-soft:      rgba(242,102,90,0.12);
+  --blue:          #6fa4ff;
+  --blue-soft:     rgba(111,164,255,0.12);
+  --radius-sm:     8px;
+  --radius-md:     10px;
+  --radius-lg:     14px;
+  --radius-xl:     18px;
   --scrollbar-thumb: rgba(255,255,255,0.12);
   --scrollbar-thumb-hover: rgba(255,255,255,0.22);
   --sidebar-hover: rgba(255,255,255,0.04);
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace;
 }
 
 [data-theme="light"] {
-  --bg-base:       #fafafa;
-  --bg-surface:    rgba(0,0,0,0.02);
-  --bg-card:       rgba(255,255,255,0.8);
-  --bg-card-hover: #ffffff;
+  --bg-base:       #ffffff;
+  --bg-surface:    #fafafa;
+  --bg-card:       #f7f7f8;
+  --bg-card-hover: #f0f0f2;
   --border:        rgba(0,0,0,0.08);
-  --border-strong: rgba(0,0,0,0.16);
-  --text-primary:  #09090b;
-  --text-secondary:#52525b;
-  --text-muted:    #a1a1aa;
-  --accent:        #4f46e5;
-  --accent-glow:   rgba(79,70,229,0.2);
-  --accent-soft:   rgba(79,70,229,0.1);
-  --amber:         #d97706;
-  --amber-soft:    rgba(217,119,6,0.1);
-  --green:         #16a34a;
-  --green-soft:    rgba(22,163,74,0.1);
-  --red:           #dc2626;
-  --red-soft:      rgba(220,38,38,0.1);
-  --blue:          #2563eb;
-  --blue-soft:     rgba(37,99,235,0.1);
+  --border-strong: rgba(0,0,0,0.14);
+  --text-primary:  #18181b;
+  --text-secondary:#5c5c63;
+  --text-muted:    #8a8a90;
+  --accent:        #3468e0;
+  --accent-glow:   rgba(52,104,224,0.12);
+  --accent-soft:   rgba(52,104,224,0.08);
+  --amber:         #b8790f;
+  --amber-soft:    rgba(184,121,15,0.08);
+  --green:         #157f4a;
+  --green-soft:    rgba(21,127,74,0.08);
+  --red:           #c33a2e;
+  --red-soft:      rgba(195,58,46,0.08);
+  --blue:          #3468e0;
+  --blue-soft:     rgba(52,104,224,0.08);
   --scrollbar-thumb: rgba(0,0,0,0.12);
   --scrollbar-thumb-hover: rgba(0,0,0,0.22);
-  --sidebar-hover: rgba(0,0,0,0.04);
+  --sidebar-hover: rgba(0,0,0,0.03);
 }
 
 *, *::before, *::after { box-sizing: border-box; }
@@ -63,33 +74,27 @@ html { scroll-behavior: smooth; }
 body {
   background: var(--bg-base);
   color: var(--text-primary);
-  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  font-family: var(--font-inter), system-ui, -apple-system, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   min-height: 100vh;
-  /* Subtle ambient grid — lightweight SVG bg, no JS */
-  background-image:
-    radial-gradient(ellipse 80vw 60vh at 50% -10%, rgba(99,102,241,0.12) 0%, transparent 70%),
-    radial-gradient(ellipse 60vw 40vh at 80% 100%, rgba(139,92,246,0.07) 0%, transparent 60%);
-  background-attachment: fixed;
 }
 
-/* ─── Glass Card ─── */
+/* ─── Flat surface card (no blur, no glow) ─── */
 .glass {
   background: var(--bg-card);
   border: 1px solid var(--border);
-  backdrop-filter: blur(20px) saturate(160%);
-  -webkit-backdrop-filter: blur(20px) saturate(160%);
+  transition: border-color 0.15s ease;
 }
 .glass:hover { border-color: var(--border-strong); }
 
-/* ─── Glow ring on focus ─── */
+/* ─── Focus ring ─── */
 .focus-ring:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
-/* ─── Lightweight CSS animations ─── */
+/* ─── Lightweight CSS animations (used for content entry only, not decoration) ─── */
 @keyframes fade-up {
   from { opacity: 0; transform: translateY(14px); }
   to   { opacity: 1; transform: translateY(0); }
@@ -99,51 +104,33 @@ body {
   50%       { opacity: 0.5; }
 }
 @keyframes spin { to { transform: rotate(360deg); } }
-@keyframes shimmer {
-  from { background-position: -200% center; }
-  to   { background-position: 200% center; }
-}
 
 .animate-fade-up   { animation: fade-up 0.45s cubic-bezier(.22,1,.36,1) both; }
 .animate-pulse-slow{ animation: pulse-slow 2s ease-in-out infinite; }
 .animate-spin      { animation: spin 1s linear infinite; }
 
-/* Gradient text */
-.gradient-text {
-  background: linear-gradient(135deg, #e0e7ff 0%, #818cf8 40%, #c084fc 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-}
-
-/* Shimmer on brand title */
+/* Page titles - flat solid color, no animated gradient/shimmer. Class name
+ * kept as "shimmer-text"/"gradient-text" so existing pages using them don't
+ * need their own edits - only the definition changed. */
+.gradient-text,
 .shimmer-text {
-  background: linear-gradient(90deg,
-    #c7d2fe 0%, #818cf8 30%, #e879f9 60%, #818cf8 80%, #c7d2fe 100%
-  );
-  background-size: 200% auto;
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-  animation: shimmer 4s linear infinite;
+  color: var(--text-primary);
+  background: none;
+  -webkit-text-fill-color: unset;
 }
 
-/* Accent button */
+/* Flat accent button - no gradient, no glow shadow */
 .btn-primary {
-  background: linear-gradient(135deg, #6366f1, #818cf8);
+  background: var(--accent);
   color: #fff;
   border: none;
   border-radius: var(--radius-md);
   font-weight: 600;
   letter-spacing: -0.01em;
-  box-shadow: 0 0 0 1px rgba(99,102,241,0.4), 0 4px 24px rgba(99,102,241,0.25);
-  transition: transform 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease;
+  transition: opacity 0.15s ease, transform 0.1s ease;
 }
-.btn-primary:hover:not(:disabled) {
-  transform: translateY(-1px);
-  box-shadow: 0 0 0 1px rgba(99,102,241,0.6), 0 8px 32px rgba(99,102,241,0.35);
-}
-.btn-primary:active:not(:disabled) { transform: translateY(0) scale(0.98); }
+.btn-primary:hover:not(:disabled) { opacity: 0.88; }
+.btn-primary:active:not(:disabled) { transform: scale(0.98); }
 .btn-primary:disabled { opacity: 0.35; cursor: not-allowed; }
 
 /* Ghost button */
@@ -188,8 +175,8 @@ body {
   background: var(--red-soft);
 }
 
-/* ─── Metric card hover lift ─── */
-.glass {
-  transition: border-color 0.15s ease, transform 0.15s ease;
+/* ─── Financial figures - monospace for scannability ─── */
+.figure {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
 }
-
