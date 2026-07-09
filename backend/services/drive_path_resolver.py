@@ -26,12 +26,27 @@ _CONFIG_DIR = os.path.join(os.path.dirname(__file__), "..", "data", "drive_paths
 class TenantDrivePath:
     tenant_slug: str
     fiscal_year_start_month: int
-    sales_root_folder_id: str
+    sales_root_folder_id: Optional[str]
     purchase_root_folder_id: Optional[str]
     month_folder_pattern: str
     sales_subfolder_map: dict
     root_file_rule: dict
     gstr2b_root_folder_id: Optional[str] = None
+
+
+# Defaults applied when a tenant hasn't customized these via the DB-backed
+# config - matches OneStack's real, confirmed folder-naming convention.
+# Not yet exposed in the Drive Sync UI (see load_tenant_path_config_from_db's
+# docstring); a tenant with a differently-named folder tree still needs a
+# code change until that's built out.
+_DEFAULT_MONTH_FOLDER_PATTERN = "{n}. {month_name} {year}"
+_DEFAULT_SALES_SUBFOLDER_MAP = {
+    "sales invoice": "invoice",
+    "other invoices": "invoice",
+    "credit note": "credit_note",
+    "sale analysis": "ignore",
+}
+_DEFAULT_ROOT_FILE_RULE = {"xlsx": "client_sheet", "xls": "client_sheet", "pdf": "invoice"}
 
 
 def load_tenant_path_config(tenant_slug: str) -> TenantDrivePath:
@@ -47,6 +62,39 @@ def load_tenant_path_config(tenant_slug: str) -> TenantDrivePath:
         sales_subfolder_map=cfg["sales_subfolder_map"],
         root_file_rule=cfg["root_file_rule"],
         gstr2b_root_folder_id=cfg.get("gstr2b_root_folder_id"),
+    )
+
+
+def load_tenant_path_config_from_db(cfg, tenant_slug: str) -> TenantDrivePath:
+    """
+    Builds a TenantDrivePath from a models.GoogleDriveSyncConfig row instead
+    of a hand-edited data/drive_paths/<slug>.json file - added 2026-07-09 so
+    any tenant can configure Sales/Purchase/GSTR-2B self-resolving ingestion
+    from the Drive Sync UI (POST /api/google-drive-sync/config) rather than
+    needing someone to create and edit a JSON file on the server, which
+    only ever worked for OneStack (the one tenant that got one by hand).
+
+    sales_subfolder_map/root_file_rule aren't yet per-tenant customizable
+    fields in the DB config - they use the same defaults confirmed against
+    OneStack's real folder tree. A tenant with a differently-organized
+    Drive tree still needs those fields added to the DB schema and UI
+    before this fully generalizes; tracked as a known gap, not silently
+    assumed to work for everyone.
+
+    tenant_slug is passed separately (not read off cfg) since
+    GoogleDriveSyncConfig doesn't store it - callers already have the
+    Tenant row loaded (that's how they found cfg via tenant_id) and can
+    pass its .slug directly.
+    """
+    return TenantDrivePath(
+        tenant_slug=tenant_slug,
+        fiscal_year_start_month=cfg.fiscal_year_start_month or 4,
+        sales_root_folder_id=cfg.sales_root_folder_id,
+        purchase_root_folder_id=cfg.purchase_root_folder_id,
+        month_folder_pattern=cfg.month_folder_pattern or _DEFAULT_MONTH_FOLDER_PATTERN,
+        sales_subfolder_map=_DEFAULT_SALES_SUBFOLDER_MAP,
+        root_file_rule=_DEFAULT_ROOT_FILE_RULE,
+        gstr2b_root_folder_id=cfg.gstr2b_root_folder_id,
     )
 
 
