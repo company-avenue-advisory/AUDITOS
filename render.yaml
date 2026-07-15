@@ -6,7 +6,7 @@ services:
     dockerContext: backend
     dockerfilePath: Dockerfile
     plan: starter  # default starter tier (or standard depending on company choice)
-    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    dockerCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: DATABASE_URL
         sync: false
@@ -32,7 +32,7 @@ services:
     dockerContext: backend
     dockerfilePath: Dockerfile
     plan: starter
-    startCommand: celery -A celery_app worker --loglevel=info -Q celery,default,ocr,drive_sync
+    dockerCommand: celery -A celery_app worker --loglevel=info -Q celery,default,ocr,drive_sync
     envVars:
       - key: DATABASE_URL
         sync: false
@@ -63,7 +63,7 @@ services:
     dockerContext: backend
     dockerfilePath: Dockerfile
     plan: starter
-    startCommand: celery -A celery_app beat --loglevel=info
+    dockerCommand: celery -A celery_app beat --loglevel=info
     envVars:
       - key: DATABASE_URL
         sync: false
