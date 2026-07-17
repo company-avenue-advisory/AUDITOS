@@ -24,6 +24,15 @@ AuditOS is a highly specialized, enterprise-grade AI pipeline designed to automa
 - **43B(h) MSME Compliance:** Tracks vendor payment timelines against Section 43B(h) limits and flags at-risk outstanding balances.
 - **Duplicate Invoice Detection:** Cross-batch deduplication using composite key hashing (GSTIN + invoice number + date + amount) to prevent double-booking.
 
+### TallyPrime Direct Connector
+- **XML-over-HTTP connector** (`services/tally_connector.py`) talks directly to TallyPrime's built-in server (default port 9000) over LAN — no cloud API, no manual Excel re-import into Tally.
+- **Read:** company list, chart of accounts (ledgers with GSTIN/state/opening balance), and vouchers by date range.
+- **Write:** pushes approved Sales, Purchase, Credit Note, and Debit Note line items as Tally vouchers. Credit/Debit Note are booked as the exact accounting reversal of Sales/Purchase (every ledger leg's sign negated), verified live to produce the correct Dr/Cr balance direction.
+- **Ledger auto-resolution:** if a party (customer/vendor) doesn't yet exist in Tally, it's created automatically under Sundry Debtors/Creditors with GSTIN and state carried over — the voucher push never fails on an unknown-ledger error.
+- **Idempotent by design:** every push attempt is logged (`TallyPushLog`); re-running a push on the same batch skips items already pushed successfully instead of creating duplicate vouchers.
+- **Approval-gated:** only pushes line items with `recon_status == "ERP_READY"` (the same reconciliation-review checkpoint used elsewhere) — never pushes unreviewed data.
+- One-click **"Push to Tally"** button in the invoice extractor UI, with per-invoice success/skip/fail reporting (no silent failures).
+
 ### Google Drive Auto-Sync
 - **One-click pull:** Configure a Drive folder once (folder URL or ID), then trigger a sync from the UI — no CLI needed.
 - Per-tenant config persisted in the database (`GoogleDriveSyncConfig`); subsequent triggers reuse the saved folder without re-entering it.
@@ -210,6 +219,8 @@ backend/
     duplicate_detector.py # Cross-batch deduplication
     google_drive_sync.py  # Google Drive polling & webhook sync
     excel_sync.py         # Excel output with lockfile coordination
+    output_schema.py      # Canonical field dictionary + named Excel views
+    tally_connector.py    # TallyPrime XML-over-HTTP connector (read/write/idempotent)
     vendor_profile.py     # Per-vendor extraction hints
   tests/regression/       # GST math, GSTR-2B, ITC rules regression suite
   scripts/                # Setup, backtest, and training utilities
