@@ -1859,7 +1859,7 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
                 <input
                   value={tallyHost}
                   onChange={(e) => setTallyHost(e.target.value)}
-                  placeholder="192.168.1.157"
+                  placeholder="192.168.1.100"
                   disabled={isPushingToTally}
                   style={{ width: "100%", padding: "8px 10px", marginBottom: 12, background: "#15151f", border: "1px solid var(--border)", borderRadius: 6, color: "var(--text-primary)" }}
                 />
@@ -1875,7 +1875,7 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
                 <input
                   value={tallyCompany}
                   onChange={(e) => setTallyCompany(e.target.value)}
-                  placeholder="Xyz Pvt Ltd"
+                  placeholder="Your Company Name"
                   disabled={isPushingToTally}
                   style={{ width: "100%", padding: "8px 10px", marginBottom: 20, background: "#15151f", border: "1px solid var(--border)", borderRadius: 6, color: "var(--text-primary)" }}
                 />
