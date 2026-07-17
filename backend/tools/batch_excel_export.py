@@ -317,6 +317,9 @@ async def process_one(sem, pdf_path, client):
 
 # ── Excel writer ────────────────────────────────────────────────────────────
 
+# NOTE: these labels are mirrored in services/output_schema.py::AUDIT_VIEW
+# (the canonical field dictionary). Keep the two in sync; when this standalone
+# tool is wired to the canonical schema, derive COLUMNS from labels(AUDIT_VIEW).
 COLUMNS = [
     "S.No", "File Name", "Invoice No", "Invoice Date",
     "Party Name", "Party GSTIN", "Place of Supply", "Particulars", "HSN/SAC",

@@ -41,6 +41,14 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
   // Phase 4A: Review Panel state
   const [reviewTask, setReviewTask] = useState<{ taskId: string; filename: string } | null>(null);
 
+  // Tally connector: push ERP_READY items to TallyPrime as vouchers
+  const [showTallyModal, setShowTallyModal] = useState(false);
+  const [tallyHost, setTallyHost] = useState("");
+  const [tallyPort, setTallyPort] = useState("9000");
+  const [tallyCompany, setTallyCompany] = useState("");
+  const [isPushingToTally, setIsPushingToTally] = useState(false);
+  const [tallyPushResult, setTallyPushResult] = useState<any>(null);
+
   // Auto-save session state so users can resume across devices/interfaces
   const sessionState = useMemo(() => ({
     active_batch_id: batchId,
@@ -432,6 +440,43 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
       URL.revokeObjectURL(url);
     } catch (e: any) {
       alert("Error downloading GSTR-1 JSON: " + e.message);
+    }
+  };
+
+  const handlePushToTally = async () => {
+    if (!batchId) {
+      alert("No active batch to push.");
+      return;
+    }
+    if (!tallyHost.trim() || !tallyCompany.trim()) {
+      alert("Enter both the TallyPrime host/IP and the company name.");
+      return;
+    }
+    setIsPushingToTally(true);
+    setTallyPushResult(null);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/tally/push/${batchId}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${localStorage.getItem("token")}`,
+        },
+        body: JSON.stringify({
+          host: tallyHost.trim(),
+          port: parseInt(tallyPort, 10) || 9000,
+          company: tallyCompany.trim(),
+          type: "both",
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.detail || "Push to Tally failed");
+      }
+      setTallyPushResult(data);
+    } catch (e: any) {
+      setTallyPushResult({ error: e.message || "Push to Tally failed" });
+    } finally {
+      setIsPushingToTally(false);
     }
   };
 
@@ -1378,6 +1423,21 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
                         <span className="dl-btn-arrow">↓</span>
                       </button>
                     )}
+                    {(salesItems.length > 0 || purchaseItems.length > 0) && (
+                      <button
+                        className="dl-btn secondary"
+                        onClick={() => { setTallyPushResult(null); setShowTallyModal(true); }}
+                      >
+                        <div className="dl-btn-left">
+                          <span className="dl-btn-icon">⇄</span>
+                          <div>
+                            <div className="dl-btn-title">Push to Tally</div>
+                            <div className="dl-btn-sub">Direct connect · ERP_READY items only</div>
+                          </div>
+                        </div>
+                        <span className="dl-btn-arrow">→</span>
+                      </button>
+                    )}
                   </div>
 
                   <div className="alert-row">
@@ -1768,6 +1828,113 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
                 </div>
               )}
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Tally connector: push ERP_READY items as vouchers */}
+      {showTallyModal && (
+        <div
+          style={{
+            position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)",
+            display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000,
+          }}
+          onClick={() => !isPushingToTally && setShowTallyModal(false)}
+        >
+          <div
+            style={{
+              background: "#0c0c14", border: "1px solid var(--border)", borderRadius: 12,
+              padding: 24, width: 420, maxWidth: "90vw",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 style={{ margin: 0, marginBottom: 4, color: "var(--text-primary)" }}>Push to Tally</h3>
+            <p style={{ fontSize: 13, color: "var(--text-secondary)", marginTop: 0, marginBottom: 16 }}>
+              Pushes only items marked <strong>ERP_READY</strong> (passed reconciliation review) as vouchers to TallyPrime over your LAN.
+            </p>
+
+            {!tallyPushResult && (
+              <>
+                <label style={{ fontSize: 13, color: "var(--text-secondary)", display: "block", marginBottom: 4 }}>TallyPrime Host / IP</label>
+                <input
+                  value={tallyHost}
+                  onChange={(e) => setTallyHost(e.target.value)}
+                  placeholder="192.168.1.157"
+                  disabled={isPushingToTally}
+                  style={{ width: "100%", padding: "8px 10px", marginBottom: 12, background: "#15151f", border: "1px solid var(--border)", borderRadius: 6, color: "var(--text-primary)" }}
+                />
+                <label style={{ fontSize: 13, color: "var(--text-secondary)", display: "block", marginBottom: 4 }}>Port</label>
+                <input
+                  value={tallyPort}
+                  onChange={(e) => setTallyPort(e.target.value)}
+                  placeholder="9000"
+                  disabled={isPushingToTally}
+                  style={{ width: "100%", padding: "8px 10px", marginBottom: 12, background: "#15151f", border: "1px solid var(--border)", borderRadius: 6, color: "var(--text-primary)" }}
+                />
+                <label style={{ fontSize: 13, color: "var(--text-secondary)", display: "block", marginBottom: 4 }}>Tally Company Name</label>
+                <input
+                  value={tallyCompany}
+                  onChange={(e) => setTallyCompany(e.target.value)}
+                  placeholder="Xyz Pvt Ltd"
+                  disabled={isPushingToTally}
+                  style={{ width: "100%", padding: "8px 10px", marginBottom: 20, background: "#15151f", border: "1px solid var(--border)", borderRadius: 6, color: "var(--text-primary)" }}
+                />
+                <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+                  <button
+                    className="dl-btn secondary"
+                    style={{ padding: "8px 16px" }}
+                    disabled={isPushingToTally}
+                    onClick={() => setShowTallyModal(false)}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    className="dl-btn primary"
+                    style={{ padding: "8px 16px" }}
+                    disabled={isPushingToTally}
+                    onClick={handlePushToTally}
+                  >
+                    {isPushingToTally ? "Pushing…" : "Push Now"}
+                  </button>
+                </div>
+              </>
+            )}
+
+            {tallyPushResult && (
+              <div>
+                {tallyPushResult.error ? (
+                  <div className="alert err">✗ {tallyPushResult.error}</div>
+                ) : (
+                  <>
+                    <div style={{ fontSize: 14, marginBottom: 12, color: "var(--text-primary)" }}>
+                      <strong>{tallyPushResult.succeeded}</strong> pushed ·{" "}
+                      <strong>{tallyPushResult.skipped_already_pushed ?? 0}</strong> already-pushed (skipped) ·{" "}
+                      <strong style={{ color: tallyPushResult.failed > 0 ? "#EF4444" : "inherit" }}>{tallyPushResult.failed}</strong> failed
+                    </div>
+                    {tallyPushResult.results?.filter((r: any) => !r.success).length > 0 && (
+                      <div style={{ maxHeight: 200, overflowY: "auto", marginBottom: 16 }}>
+                        {tallyPushResult.results
+                          .filter((r: any) => !r.success)
+                          .map((r: any, i: number) => (
+                            <div key={i} style={{ fontSize: 12, color: "var(--text-secondary)", marginBottom: 6, paddingLeft: 8, borderLeft: "2px solid #EF4444" }}>
+                              <strong>{r.invoice_no || r.file_name}</strong> ({r.voucher_type}): {r.error}
+                            </div>
+                          ))}
+                      </div>
+                    )}
+                  </>
+                )}
+                <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                  <button
+                    className="dl-btn primary"
+                    style={{ padding: "8px 16px" }}
+                    onClick={() => { setShowTallyModal(false); setTallyPushResult(null); }}
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

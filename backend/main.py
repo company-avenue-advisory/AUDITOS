@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from database import get_db, engine, Base, SessionLocal
-from models import BatchJob, InvoiceTask, TaskStatus, SalesLineItem, PurchaseLineItem, ObservabilityLog, UserSession, UserPreferences, UserAnnotation, Tenant, GoogleDriveSyncJob, GoogleDriveSyncConfig, SalesPeriodReview, PurchaseGstr2bReview
+from models import BatchJob, InvoiceTask, TaskStatus, SalesLineItem, PurchaseLineItem, ObservabilityLog, UserSession, UserPreferences, UserAnnotation, Tenant, GoogleDriveSyncJob, GoogleDriveSyncConfig, SalesPeriodReview, PurchaseGstr2bReview, TallyPushLog
 from async_tasks import process_batch
 from ws_manager import manager
 
@@ -1169,6 +1169,149 @@ async def export_gstr1_json(
         media_type="application/json",
         headers={"Content-Disposition": f"attachment; filename={filename}"},
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Tally Push (Phase: Tally connector, direct-connect write path) —
+# pushes approved line items to TallyPrime as vouchers over its XML-over-HTTP
+# interface. Gated on recon_status == "ERP_READY" (the existing approval
+# checkpoint set by the reconciliation engine / review gates above) — an
+# irreversible write to an external system, never auto-triggered.
+# See services/tally_connector.py.
+# ─────────────────────────────────────────────────────────────────────────
+
+class TallyPushRequest(BaseModel):
+    host: str
+    port: int = 9000
+    company: str
+    type: str = "both"  # "sales" | "purchase" | "both"
+
+
+class TallyPushItemResult(BaseModel):
+    task_id: str
+    file_name: str
+    voucher_type: str
+    invoice_no: Optional[str] = None
+    success: bool
+    skipped: bool = False
+    error: Optional[str] = None
+
+
+def _already_pushed(db: Session, item_type: str, item_id: int, company: str) -> bool:
+    """Idempotency check — has this exact line item already been pushed
+    successfully to this Tally company? See models.TallyPushLog."""
+    existing = db.query(TallyPushLog).filter(
+        TallyPushLog.item_type == item_type,
+        TallyPushLog.item_id == item_id,
+        TallyPushLog.tally_company == company,
+        TallyPushLog.status == "success",
+    ).first()
+    return existing is not None
+
+
+def _push_one_item(
+    db: Session,
+    connector,
+    item,
+    item_type: str,
+    voucher_type: str,
+    task,
+    batch_id: str,
+    company: str,
+    user_id: str,
+) -> TallyPushItemResult:
+    from services.tally_connector import TallyConnectionError
+
+    if _already_pushed(db, item_type, item.id, company):
+        return TallyPushItemResult(
+            task_id=task.id, file_name=task.file_name, voucher_type=voucher_type,
+            invoice_no=item.invoice_no, success=True, skipped=True,
+            error="Already pushed to this Tally company — skipped to avoid duplicate voucher.",
+        )
+
+    row = {c.name: getattr(item, c.name) for c in item.__table__.columns if c.name not in ("id", "task_id")}
+    try:
+        push_result = connector.push_voucher(row, voucher_type=voucher_type)
+        success, error = push_result.success, push_result.error
+    except TallyConnectionError as e:
+        success, error = False, str(e)
+
+    db.add(TallyPushLog(
+        tenant_id=task.batch.tenant_id if task.batch else None,
+        batch_id=batch_id, task_id=task.id, item_type=item_type, item_id=item.id,
+        voucher_type=voucher_type, invoice_no=item.invoice_no,
+        status="success" if success else "failed",
+        tally_company=company, error=error, pushed_by_user_id=user_id,
+    ))
+    db.commit()
+
+    return TallyPushItemResult(
+        task_id=task.id, file_name=task.file_name, voucher_type=voucher_type,
+        invoice_no=row.get("invoice_no"), success=success, error=error,
+    )
+
+
+@app.post("/api/tally/push/{batch_id}")
+async def push_batch_to_tally(
+    batch_id: str,
+    req: TallyPushRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RoleChecker(["owner", "auditor"])),
+):
+    from services.tally_connector import TallyConnector, TallyConfig, TallyConnectionError
+
+    batch = db.query(BatchJob).filter(BatchJob.id == batch_id).first()
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch not found")
+    require_same_tenant(batch.tenant_id, current_user)
+
+    tasks = db.query(InvoiceTask).filter(
+        InvoiceTask.batch_id == batch_id,
+        InvoiceTask.recon_status == "ERP_READY",
+    ).all()
+    if not tasks:
+        raise HTTPException(
+            status_code=400,
+            detail="No ERP_READY items in this batch. Items must pass reconciliation review before pushing to Tally.",
+        )
+
+    connector = TallyConnector(TallyConfig(host=req.host, port=req.port, company=req.company))
+    try:
+        connector.test_connection()
+    except TallyConnectionError as e:
+        raise HTTPException(status_code=502, detail=f"Cannot reach TallyPrime: {e}")
+
+    results: List[TallyPushItemResult] = []
+
+    for task in tasks:
+        # voucher_type on the line item overrides the default ("Sales"/"Purchase")
+        # for Credit Note / Debit Note rows — see services/credit_note_ingest.py,
+        # which stores credit notes as SalesLineItem rows with voucher_type
+        # set explicitly rather than a separate table.
+        if req.type in ("sales", "both"):
+            for item in (task.sales_items or []):
+                vtype = item.voucher_type or "Sales"
+                results.append(_push_one_item(
+                    db, connector, item, "sales", vtype, task, batch_id, req.company, current_user.id,
+                ))
+
+        if req.type in ("purchase", "both"):
+            for item in (task.purchase_items or []):
+                vtype = item.voucher_type or "Purchase"
+                results.append(_push_one_item(
+                    db, connector, item, "purchase", vtype, task, batch_id, req.company, current_user.id,
+                ))
+
+    succeeded = sum(1 for r in results if r.success)
+    skipped = sum(1 for r in results if r.skipped)
+    return {
+        "batch_id": batch_id,
+        "total": len(results),
+        "succeeded": succeeded,
+        "skipped_already_pushed": skipped,
+        "failed": len(results) - succeeded,
+        "results": results,
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────

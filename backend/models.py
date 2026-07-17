@@ -150,6 +150,33 @@ class ObservabilityLog(Base):
     is_replay        = Column(Boolean, default=False)
 
 
+class TallyPushLog(Base):
+    """
+    Append-only record of every Tally voucher push attempt — the idempotency
+    ledger for services/tally_connector.py. One row per (item_type, item_id)
+    per attempt; never updated, only inserted (same pattern as ObservabilityLog).
+
+    Before pushing a line item, the endpoint checks for an existing row with
+    status="success" for that (item_type, item_id) and skips it if found —
+    prevents duplicate vouchers in Tally on a retried/re-run batch push.
+    """
+    __tablename__ = "tally_push_logs"
+
+    id                 = Column(Integer, primary_key=True, autoincrement=True)
+    tenant_id          = Column(String, index=True, nullable=True)
+    batch_id           = Column(String, index=True, nullable=False)
+    task_id            = Column(String, index=True, nullable=False)
+    item_type          = Column(String, nullable=False)   # "sales" | "purchase"
+    item_id            = Column(Integer, index=True, nullable=False)  # SalesLineItem.id / PurchaseLineItem.id
+    voucher_type       = Column(String, nullable=False)   # "Sales" | "Purchase"
+    invoice_no         = Column(String, nullable=True)
+    status             = Column(String, nullable=False)   # "success" | "failed"
+    tally_company      = Column(String, nullable=True)
+    error              = Column(String, nullable=True)
+    pushed_at          = Column(DateTime, default=datetime.utcnow, nullable=False)
+    pushed_by_user_id  = Column(String, nullable=True)
+
+
 # ── Role-Based User Model ────────────────────────────────────────────────────────
 
 class User(Base):
