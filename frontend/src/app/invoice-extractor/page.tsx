@@ -443,6 +443,26 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
     }
   };
 
+  const openTallyModal = async () => {
+    setTallyPushResult(null);
+    setShowTallyModal(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/tally/config`, {
+        headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.configured && data.config) {
+          setTallyHost(data.config.host || "");
+          setTallyPort(String(data.config.port || 9000));
+          setTallyCompany(data.config.company || "");
+        }
+      }
+    } catch {
+      // No saved config yet, or fetch failed — leave fields blank for manual entry.
+    }
+  };
+
   const handlePushToTally = async () => {
     if (!batchId) {
       alert("No active batch to push.");
@@ -1426,7 +1446,7 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
                     {(salesItems.length > 0 || purchaseItems.length > 0) && (
                       <button
                         className="dl-btn secondary"
-                        onClick={() => { setTallyPushResult(null); setShowTallyModal(true); }}
+                        onClick={openTallyModal}
                       >
                         <div className="dl-btn-left">
                           <span className="dl-btn-icon">⇄</span>

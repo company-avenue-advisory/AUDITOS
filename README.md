@@ -32,6 +32,30 @@ AuditOS is a highly specialized, enterprise-grade AI pipeline designed to automa
 - **Idempotent by design:** every push attempt is logged (`TallyPushLog`); re-running a push on the same batch skips items already pushed successfully instead of creating duplicate vouchers.
 - **Approval-gated:** only pushes line items with `recon_status == "ERP_READY"` (the same reconciliation-review checkpoint used elsewhere) — never pushes unreviewed data.
 - One-click **"Push to Tally"** button in the invoice extractor UI, with per-invoice success/skip/fail reporting (no silent failures).
+- Connection settings (host/port/company) are saved per-tenant after the first successful push, so the modal pre-fills instead of asking every time.
+- See [`backend/docs/TALLY_CONNECTOR_SETUP.md`](backend/docs/TALLY_CONNECTOR_SETUP.md) for onboarding a new client's Tally machine — firewall rules, subnet troubleshooting, and the port-collision check that matters on shared machines.
+
+**Current flow — requires AuditOS's backend and the Tally machine on the same LAN** (true for local dev and any on-prem deployment; not yet true once the backend is cloud-hosted, since a cloud server can't reach into a firm's private network):
+
+```mermaid
+graph LR
+    UI["Push to Tally button<br/>invoice-extractor UI"]:::built --> API
+    API["POST /api/tally/push<br/>ERP_READY items only"]:::built --> CONN
+    CONN["tally_connector.py<br/>XML-over-HTTP"]:::built --> TALLY
+    LOG["TallyPushLog<br/>idempotency"]:::built -.->|checked before every push| CONN
+    CFG["TallyConnectionConfig<br/>saved host/port/company"]:::built -.->|pre-fills| UI
+
+    subgraph LAN["Same LAN (required today)"]
+        TALLY["TallyPrime<br/>Server mode, port 9000"]:::built
+    end
+
+    BRIDGE["Local Bridge Agent<br/>outbound-only relay, LAN auto-discovery<br/>lets cloud-hosted AuditOS reach any firm's Tally"]:::planned -.->|replaces direct LAN link| CONN
+
+    classDef built fill:#d1f3ea,stroke:#0f6e56,color:#04342c
+    classDef planned fill:#f1efe8,stroke:#888780,color:#2c2c2a,stroke-dasharray: 5 5
+```
+
+**Planned (not yet built):** a lightweight local agent an accountant pairs once (6-digit code, no IP/firewall config) that opens an outbound connection to the cloud backend and relays push jobs to their local Tally — the standard pattern for reaching a private LAN from a cloud product (same approach as Zoom/ngrok/TeamViewer).
 
 ### Google Drive Auto-Sync
 - **One-click pull:** Configure a Drive folder once (folder URL or ID), then trigger a sync from the UI — no CLI needed.
