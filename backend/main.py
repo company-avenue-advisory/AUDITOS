@@ -1201,6 +1201,27 @@ async def get_tally_config(
     }
 
 
+@app.get("/api/tally/companies")
+async def list_tally_companies(
+    host: str,
+    port: int = 9000,
+    current_user: User = Depends(RoleChecker(["owner", "auditor"])),
+):
+    """List companies currently open in TallyPrime at host:port — lets the
+    Push to Tally modal offer a dropdown instead of a free-text company
+    field the accountant has to spell exactly right."""
+    from services.tally_connector import TallyConnector, TallyConfig, TallyConnectionError
+
+    if not host:
+        raise HTTPException(status_code=400, detail="host is required")
+    connector = TallyConnector(TallyConfig(host=host, port=port))
+    try:
+        companies = connector.list_companies()
+    except TallyConnectionError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    return {"companies": companies}
+
+
 class TallyPushRequest(BaseModel):
     host: str
     port: int = 9000
@@ -1300,7 +1321,7 @@ async def push_batch_to_tally(
     try:
         connector.test_connection()
     except TallyConnectionError as e:
-        raise HTTPException(status_code=502, detail=f"Cannot reach TallyPrime: {e}")
+        raise HTTPException(status_code=502, detail=str(e))
 
     # Connectivity confirmed — remember this host/port/company for next time
     # so the modal pre-fills instead of asking again (models.TallyConnectionConfig).
