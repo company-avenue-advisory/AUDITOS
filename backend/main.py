@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from database import get_db, engine, Base, SessionLocal
-from models import BatchJob, InvoiceTask, TaskStatus, SalesLineItem, PurchaseLineItem, ObservabilityLog, UserSession, UserPreferences, UserAnnotation, Tenant, GoogleDriveSyncJob, GoogleDriveSyncConfig, SalesPeriodReview, PurchaseGstr2bReview, TallyPushLog
+from models import BatchJob, InvoiceTask, TaskStatus, SalesLineItem, PurchaseLineItem, ObservabilityLog, UserSession, UserPreferences, UserAnnotation, Tenant, GoogleDriveSyncJob, GoogleDriveSyncConfig, SalesPeriodReview, PurchaseGstr2bReview, TallyPushLog, TallyConnectionConfig
 from async_tasks import process_batch
 from ws_manager import manager
 
@@ -1180,6 +1180,48 @@ async def export_gstr1_json(
 # See services/tally_connector.py.
 # ─────────────────────────────────────────────────────────────────────────
 
+@app.get("/api/tally/config")
+async def get_tally_config(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return the saved TallyPrime connection config for the current tenant,
+    so the Push to Tally modal can pre-fill host/port/company instead of
+    requiring them retyped every time. See models.TallyConnectionConfig."""
+    if not current_user.tenant_id:
+        return {"configured": False, "config": None}
+    cfg = db.query(TallyConnectionConfig).filter(
+        TallyConnectionConfig.tenant_id == current_user.tenant_id
+    ).first()
+    if not cfg:
+        return {"configured": False, "config": None}
+    return {
+        "configured": True,
+        "config": {"host": cfg.host, "port": cfg.port, "company": cfg.company},
+    }
+
+
+@app.get("/api/tally/companies")
+async def list_tally_companies(
+    host: str,
+    port: int = 9000,
+    current_user: User = Depends(RoleChecker(["owner", "auditor"])),
+):
+    """List companies currently open in TallyPrime at host:port — lets the
+    Push to Tally modal offer a dropdown instead of a free-text company
+    field the accountant has to spell exactly right."""
+    from services.tally_connector import TallyConnector, TallyConfig, TallyConnectionError
+
+    if not host:
+        raise HTTPException(status_code=400, detail="host is required")
+    connector = TallyConnector(TallyConfig(host=host, port=port))
+    try:
+        companies = connector.list_companies()
+    except TallyConnectionError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    return {"companies": companies}
+
+
 class TallyPushRequest(BaseModel):
     host: str
     port: int = 9000
@@ -1279,7 +1321,18 @@ async def push_batch_to_tally(
     try:
         connector.test_connection()
     except TallyConnectionError as e:
-        raise HTTPException(status_code=502, detail=f"Cannot reach TallyPrime: {e}")
+        raise HTTPException(status_code=502, detail=str(e))
+
+    # Connectivity confirmed — remember this host/port/company for next time
+    # so the modal pre-fills instead of asking again (models.TallyConnectionConfig).
+    tally_cfg = db.query(TallyConnectionConfig).filter(
+        TallyConnectionConfig.tenant_id == current_user.tenant_id
+    ).first()
+    if not tally_cfg:
+        tally_cfg = TallyConnectionConfig(tenant_id=current_user.tenant_id)
+        db.add(tally_cfg)
+    tally_cfg.host, tally_cfg.port, tally_cfg.company = req.host, req.port, req.company
+    db.commit()
 
     results: List[TallyPushItemResult] = []
 

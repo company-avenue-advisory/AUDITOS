@@ -150,6 +150,25 @@ class ObservabilityLog(Base):
     is_replay        = Column(Boolean, default=False)
 
 
+class TallyConnectionConfig(Base):
+    """
+    Per-tenant TallyPrime connection settings (host/port/company), so the
+    "Push to Tally" modal doesn't need host/port/company retyped on every
+    use. Same upsert pattern as GoogleDriveSyncConfig — one row per tenant.
+
+    Auto-saved by the push endpoint after a successful connectivity test
+    (see main.py's push_batch_to_tally) rather than requiring a separate
+    "save config" step — the first successful push remembers itself.
+    """
+    __tablename__ = "tally_connection_configs"
+
+    tenant_id  = Column(String, ForeignKey("tenants.id"), primary_key=True)
+    host       = Column(String, nullable=False)
+    port       = Column(Integer, default=9000, nullable=False)
+    company    = Column(String, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
 class TallyPushLog(Base):
     """
     Append-only record of every Tally voucher push attempt — the idempotency

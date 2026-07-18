@@ -441,7 +441,11 @@ class TallyConnector:
         Debit Note reverses a Purchase entry (vendor-side, Sundry Creditors)
         — see _push_voucher_request's `reverse` doc for why negating every
         leg is the correct reversal regardless of Tally's sign convention.
-        NOT yet live-tested against TallyPrime (only Sales/Purchase were).
+        The party-ledger base sign flips between sales-side and purchase-side
+        (a debtor's normal balance is Dr, a creditor's is Cr) — `is_reversal`
+        below is computed as `is_note XOR is_purchase_side`, not just
+        `is_note`, or Purchase/Debit Note post in the wrong direction. All
+        four types live-tested against TallyPrime, confirmed correct Dr/Cr.
 
         If `auto_create_ledger` is True (default) and the party ledger isn't
         already in Tally, it's created automatically under Sundry Debtors
@@ -458,7 +462,19 @@ class TallyConnector:
             return TallyPushResult(success=False, error=f"Unsupported voucher_type: {voucher_type!r}")
 
         is_sales_side = vtype in ("sales", "credit note")
-        is_reversal = vtype in ("credit note", "debit note")
+        is_note = vtype in ("credit note", "debit note")
+        # Sales' base pattern (party leg negative, ISDEEMEDPOSITIVE=Yes) posts
+        # as Dr — correct for a debtor. Purchase needs the OPPOSITE base
+        # pattern (Cr, correct for a creditor), so it can't just inherit
+        # Sales' sign. `reverse` must flip relative to the correct base for
+        # each side, not relative to "is this a Note": Credit Note reverses
+        # Sales' Dr base -> Cr; Debit Note reverses Purchase's Cr base -> Dr,
+        # which numerically equals Sales' own Dr base pattern. Net rule:
+        # reverse = is_note XOR is_purchase_side. Confirmed live 2026-07-18 —
+        # without this XOR, Debit Note posted as Cr (same as a normal
+        # Purchase) instead of Dr; caught before this ever touched a real
+        # client's Tally company.
+        is_reversal = is_note != (not is_sales_side)
 
         date = _iso_date_to_tally(canonical_row.get("voucher_date", ""))
         if not date:
