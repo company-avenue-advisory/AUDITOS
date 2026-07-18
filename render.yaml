@@ -1,4 +1,19 @@
+databases:
+  # Render-managed Postgres. DATABASE_URL below is wired automatically via
+  # fromDatabase — no connection string to copy/paste anywhere.
+  - name: auditos-db
+    plan: starter
+    databaseName: auditos
+    user: auditos
+
 services:
+  # 0. Render-managed Redis (Celery broker). CELERY_BROKER_URL below is
+  # wired automatically via fromService — same reasoning as the DB above.
+  - type: redis
+    name: auditos-redis
+    plan: starter
+    ipAllowList: []
+
   # 1. Web Service (FastAPI Backend API)
   - type: web
     name: auditos-backend
@@ -9,9 +24,14 @@ services:
     dockerCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: DATABASE_URL
-        sync: false
+        fromDatabase:
+          name: auditos-db
+          property: connectionString
       - key: CELERY_BROKER_URL
-        sync: false
+        fromService:
+          type: redis
+          name: auditos-redis
+          property: connectionString
       - key: GCS_BUCKET_NAME
         sync: false
       - key: GCP_CREDS_JSON
@@ -35,9 +55,14 @@ services:
     dockerCommand: celery -A celery_app worker --loglevel=info -Q celery,default,ocr,drive_sync
     envVars:
       - key: DATABASE_URL
-        sync: false
+        fromDatabase:
+          name: auditos-db
+          property: connectionString
       - key: CELERY_BROKER_URL
-        sync: false
+        fromService:
+          type: redis
+          name: auditos-redis
+          property: connectionString
       - key: GCS_BUCKET_NAME
         sync: false
       - key: GCP_CREDS_JSON
@@ -66,8 +91,31 @@ services:
     dockerCommand: celery -A celery_app beat --loglevel=info
     envVars:
       - key: DATABASE_URL
-        sync: false
+        fromDatabase:
+          name: auditos-db
+          property: connectionString
       - key: CELERY_BROKER_URL
-        sync: false
+        fromService:
+          type: redis
+          name: auditos-redis
+          property: connectionString
       - key: GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON
         sync: false
+
+  # 4. Frontend (Next.js, standalone Docker build). NEXT_PUBLIC_API_URL is a
+  # client-bundled env var (baked in at build time, not read at runtime), so
+  # it's set to the backend's public Render URL directly rather than via
+  # fromService (which resolves to an internal hostname meant for
+  # service-to-service calls, not what a browser can reach) — Render's
+  # public URL for a web service is always https://<name>.onrender.com,
+  # so this is a deterministic, not-yet-deployed reference to auditos-backend.
+  - type: web
+    name: auditos-frontend
+    env: docker
+    dockerContext: frontend
+    dockerfilePath: Dockerfile
+    plan: starter
+    dockerCommand: node server.js
+    envVars:
+      - key: NEXT_PUBLIC_API_URL
+        value: https://auditos-backend.onrender.com
