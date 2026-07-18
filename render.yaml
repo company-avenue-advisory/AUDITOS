@@ -1,15 +1,20 @@
 databases:
   # Render-managed Postgres. DATABASE_URL below is wired automatically via
   # fromDatabase — no connection string to copy/paste anywhere.
+  # "starter" is a legacy plan name, no longer valid for new Postgres
+  # instances (confirmed via Render's Blueprint review error 2026-07-18) -
+  # basic-256mb is the current smallest paid tier.
   - name: auditos-db
-    plan: starter
+    plan: basic-256mb
     databaseName: auditos
     user: auditos
 
 services:
   # 0. Render-managed Redis (Celery broker). CELERY_BROKER_URL below is
   # wired automatically via fromService — same reasoning as the DB above.
-  - type: redis
+  # "redis" is a deprecated type alias; "keyvalue" is current (confirmed
+  # via Render docs 2026-07-18).
+  - type: keyvalue
     name: auditos-redis
     plan: starter
     ipAllowList: []
@@ -29,7 +34,7 @@ services:
           property: connectionString
       - key: CELERY_BROKER_URL
         fromService:
-          type: redis
+          type: keyvalue
           name: auditos-redis
           property: connectionString
       - key: GCS_BUCKET_NAME
@@ -60,7 +65,7 @@ services:
           property: connectionString
       - key: CELERY_BROKER_URL
         fromService:
-          type: redis
+          type: keyvalue
           name: auditos-redis
           property: connectionString
       - key: GCS_BUCKET_NAME
@@ -96,7 +101,7 @@ services:
           property: connectionString
       - key: CELERY_BROKER_URL
         fromService:
-          type: redis
+          type: keyvalue
           name: auditos-redis
           property: connectionString
       - key: GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON
