@@ -192,6 +192,10 @@ CELERY_BROKER_URL="redis://localhost:6379/0"
 GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON=/path/to/service-account-key.json
 GOOGLE_DRIVE_FOLDER_ID=YOUR_GOOGLE_DRIVE_FOLDER_ID_HERE
 
+# LLM throughput tuning (optional — defaults are free-tier-safe; raise once on a paid key)
+LLM_CONCURRENCY=3
+RPM_GEMINI_FLASH=10
+
 # Observability (optional)
 SENTRY_DSN=""
 ```
