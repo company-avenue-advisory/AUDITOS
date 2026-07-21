@@ -32,6 +32,19 @@ COST_PER_1M_TOKENS = {
         "input":  0.59 * USD_TO_INR,
         "output": 0.59 * USD_TO_INR,
     },
+    # Anthropic direct (via main.py's MODEL_OPTIONS "anthropic" / "anthropic-sonnet"
+    # choices) — these two model_identifier strings were missing entirely from
+    # this table, so cost tracking silently read ₹0 for every Claude-routed
+    # invoice (not a key-format mismatch — the keys below just didn't exist).
+    # Pricing confirmed current as of 2026-07 (claude-api skill model catalog).
+    "claude-haiku-4-5-20251001": {
+        "input":  1.00 * USD_TO_INR,
+        "output": 5.00 * USD_TO_INR,
+    },
+    "claude-sonnet-4-6": {
+        "input":  3.00 * USD_TO_INR,
+        "output": 15.00 * USD_TO_INR,
+    },
 }
 
 PROMPT_FILE_PATH = os.path.join(

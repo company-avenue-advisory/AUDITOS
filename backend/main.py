@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from database import get_db, engine, Base, SessionLocal
-from models import BatchJob, InvoiceTask, TaskStatus, SalesLineItem, PurchaseLineItem, ObservabilityLog, UserSession, UserPreferences, UserAnnotation, Tenant, GoogleDriveSyncJob, GoogleDriveSyncConfig, SalesPeriodReview, PurchaseGstr2bReview, TallyPushLog, TallyConnectionConfig
+from models import BatchJob, InvoiceTask, TaskStatus, SalesLineItem, PurchaseLineItem, ObservabilityLog, UserSession, UserPreferences, UserAnnotation, Tenant, GoogleDriveSyncJob, GoogleDriveSyncConfig, SalesPeriodReview, PurchaseGstr2bReview, TallyPushLog, TallyConnectionConfig, Gstr2bGapTrigger
 from async_tasks import process_batch
 from ws_manager import manager
 
@@ -1625,6 +1625,154 @@ async def reject_gstr2b_review_endpoint(
     return get_review_detail(rejected)
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# GSTR-2B Gap Triggers (Section 13.1/13.2) — outbound-messaging state for
+# Bucket A (not_in_books, client-request, accountant-gated) and Bucket B
+# (missing_in_2b, auto vendor-followup). See services/gstr2b_trigger_engine.py
+# and memory/project_gstr2b_client_trigger.md for the confirmed rules.
+# ─────────────────────────────────────────────────────────────────────────
+
+def _trigger_json(t) -> dict:
+    return {
+        "id": t.id,
+        "period": t.period,
+        "registration_gstin": t.registration_gstin,
+        "counterparty_gstin": t.counterparty_gstin,
+        "invoice_no": t.invoice_no,
+        "bucket": t.bucket,
+        "amount": t.amount,
+        "status": t.status,
+        "reviewed_by": t.reviewed_by,
+        "reviewed_at": t.reviewed_at.isoformat() if t.reviewed_at else None,
+        "last_triggered_at": t.last_triggered_at.isoformat() if t.last_triggered_at else None,
+        "trigger_count": t.trigger_count,
+        "resolved_at": t.resolved_at.isoformat() if t.resolved_at else None,
+        "created_at": t.created_at.isoformat() if t.created_at else None,
+    }
+
+
+@app.get("/api/gstr2b/triggers")
+async def list_gstr2b_triggers(
+    status: Optional[str] = None,
+    bucket: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Lists this tenant's gap triggers, most recent first. Optional status/bucket filters."""
+    if not current_user.tenant_id:
+        return []
+    q = db.query(Gstr2bGapTrigger).filter(Gstr2bGapTrigger.tenant_id == current_user.tenant_id)
+    if status:
+        q = q.filter(Gstr2bGapTrigger.status == status)
+    if bucket:
+        q = q.filter(Gstr2bGapTrigger.bucket == bucket)
+    triggers = q.order_by(Gstr2bGapTrigger.created_at.desc()).all()
+    return [_trigger_json(t) for t in triggers]
+
+
+@app.post("/api/gstr2b/triggers/{trigger_id}/approve")
+async def approve_gstr2b_trigger_endpoint(
+    trigger_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RoleChecker(["owner", "auditor"])),
+):
+    """Accountant approves a Bucket A (not_in_books) client-request so it becomes eligible to send."""
+    from services.gstr2b_trigger_engine import approve_trigger
+
+    trigger = db.query(Gstr2bGapTrigger).filter(Gstr2bGapTrigger.id == trigger_id).first()
+    if not trigger:
+        raise HTTPException(status_code=404, detail="Trigger not found")
+    require_same_tenant(trigger.tenant_id, current_user)
+
+    try:
+        approved = approve_trigger(db, trigger_id, current_user.id)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return _trigger_json(approved)
+
+
+@app.post("/api/gstr2b/triggers/{trigger_id}/reject")
+async def reject_gstr2b_trigger_endpoint(
+    trigger_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RoleChecker(["owner", "auditor"])),
+):
+    """Accountant rejects a Bucket A client-request — no client contact this cycle."""
+    from services.gstr2b_trigger_engine import reject_trigger
+
+    trigger = db.query(Gstr2bGapTrigger).filter(Gstr2bGapTrigger.id == trigger_id).first()
+    if not trigger:
+        raise HTTPException(status_code=404, detail="Trigger not found")
+    require_same_tenant(trigger.tenant_id, current_user)
+
+    try:
+        rejected = reject_trigger(db, trigger_id, current_user.id)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return _trigger_json(rejected)
+
+
+@app.post("/api/gstr2b/triggers/run")
+async def run_gstr2b_triggers_endpoint(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RoleChecker(["owner", "auditor"])),
+):
+    """
+    Sends whatever is currently due for this tenant (approved Bucket A rows,
+    policy-enabled Bucket B rows, respecting the monthly re-trigger gate).
+    Manual trigger for now — hook this up to a Celery beat schedule once the
+    real email provider is wired in (send_fn is still the audit-log-only
+    stub, see gstr2b_trigger_engine.default_send_fn).
+    """
+    from services.gstr2b_trigger_engine import run_due_triggers
+
+    if not current_user.tenant_id:
+        raise HTTPException(status_code=400, detail="Current user has no tenant assigned")
+
+    try:
+        return run_due_triggers(db, current_user.tenant_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+class Gstr2bTriggerSettingsRequest(BaseModel):
+    client_contact_email: Optional[str] = None
+    auto_vendor_followup_enabled: Optional[bool] = None
+    bucket_a_require_review: Optional[bool] = None
+
+
+@app.put("/api/gstr2b/trigger-settings")
+async def update_gstr2b_trigger_settings(
+    req: Gstr2bTriggerSettingsRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RoleChecker(["owner"])),
+):
+    """
+    Sets the destination email + both outbound policy toggles (Notion §13.1:
+    "Firm settings: outbound policy toggles (A-request gate on/off, B-auto-send
+    on/off)") for the current tenant. Owner-only — flipping either toggle off
+    changes whether real messages go out without a human step, once a
+    provider is wired in.
+    """
+    tenant = db.query(Tenant).filter(Tenant.id == current_user.tenant_id).first()
+    if not tenant:
+        raise HTTPException(status_code=400, detail="Current user has no tenant assigned")
+
+    if req.client_contact_email is not None:
+        tenant.client_contact_email = req.client_contact_email
+    if req.auto_vendor_followup_enabled is not None:
+        tenant.auto_vendor_followup_enabled = req.auto_vendor_followup_enabled
+    if req.bucket_a_require_review is not None:
+        tenant.bucket_a_require_review = req.bucket_a_require_review
+    db.commit()
+
+    return {
+        "client_contact_email": tenant.client_contact_email,
+        "auto_vendor_followup_enabled": tenant.auto_vendor_followup_enabled,
+        "bucket_a_require_review": tenant.bucket_a_require_review,
+    }
+
+
 class MSMEVerifyRequest(BaseModel):
     udyam_number: str
 
@@ -2466,6 +2614,8 @@ async def reconcile_gstr2b(req: ReconcileRequest):
 
 class BatchReconcileRequest(BaseModel):
     gstr2b: Any   # raw GSTR-2B JSON from portal
+    period: Optional[str] = None             # "YYYY-MM" - needed for trigger tracking, not for matching itself
+    registration_gstin: Optional[str] = None # the audited company's own GSTIN - same reason
 
 
 @app.post("/api/reconcile/from-batch/{batch_id}")
@@ -2517,6 +2667,110 @@ async def reconcile_from_batch(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Reconciliation error: {e}")
+
+
+@app.post("/api/reconcile/from-batch/{batch_id}/export")
+async def export_reconciliation_from_batch(
+    batch_id: str,
+    req: BatchReconcileRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Same reconciliation as reconcile_from_batch above, but returns the
+    canonical color-coded workbook (services/gstr2b_excel_export.py) instead
+    of raw JSON - including the Section 13.1 Bucket A Drive-verify columns
+    ("In Drive?", "Entry Missing in Tally"), wired here for the first time
+    via services/gstr2b_drive_verify.py (intentionally left unwired when the
+    Excel writer itself was built - see gstr2b_excel_export.py's docstring -
+    until this targeted Drive-verify service existed).
+
+    Drive-verify is best-effort: if the tenant has no Google Drive sync
+    configured, or the Drive check errors for any reason, the export still
+    succeeds with blank Drive-verify columns rather than failing outright -
+    a missing/broken Drive connection should never block the accountant
+    from getting the reconciliation workbook itself.
+    """
+    from services.gstr2b_reconciler import parse_gstr2b, reconcile as recon_match
+    from services.gstr2b_excel_export import write_gstr2b_reconciliation_excel, annotate_recon_result
+
+    batch = db.query(BatchJob).filter(BatchJob.id == batch_id).first()
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch not found")
+    require_same_tenant(batch.tenant_id, current_user)
+
+    tasks = db.query(InvoiceTask).filter(InvoiceTask.batch_id == batch_id).all()
+    purchase_items = []
+    for t in tasks:
+        for item in (getattr(t, "purchase_items", None) or []):
+            purchase_items.append(
+                {c.name: getattr(item, c.name) for c in item.__table__.columns}
+            )
+
+    if not purchase_items:
+        raise HTTPException(
+            status_code=400,
+            detail="No purchase items found in this batch. Run purchase extraction first.",
+        )
+
+    try:
+        raw_2b = req.gstr2b
+        if isinstance(raw_2b, str):
+            raw_2b = json.loads(raw_2b)
+        gstr2b_records = parse_gstr2b(raw_2b)
+        if not gstr2b_records:
+            raise HTTPException(
+                status_code=422,
+                detail="No B2B invoice records found in the GSTR-2B JSON.",
+            )
+        result = recon_match(purchase_items, gstr2b_records)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Reconciliation error: {e}")
+
+    drive_checker = None
+    if batch.tenant_id:
+        try:
+            from services.google_drive import GoogleDriveConnector
+            from services.drive_path_resolver import load_tenant_path_config_from_db
+            from services.gstr2b_drive_verify import make_drive_checker
+
+            cfg_row = db.query(GoogleDriveSyncConfig).filter(
+                GoogleDriveSyncConfig.tenant_id == batch.tenant_id
+            ).first()
+            if cfg_row and cfg_row.purchase_root_folder_id:
+                tenant = db.query(Tenant).filter(Tenant.id == batch.tenant_id).first()
+                drive_cfg = load_tenant_path_config_from_db(cfg_row, tenant.slug if tenant else "")
+                connector = GoogleDriveConnector(cfg_row.purchase_root_folder_id)
+                tmp_dir = tempfile.mkdtemp(prefix="gstr2b_drive_verify_")
+                drive_checker = make_drive_checker(connector, drive_cfg, tmp_dir)
+        except Exception as e:
+            logger.warning(f"[gstr2b export] Drive-verify unavailable, exporting without it: {e}")
+            drive_checker = None
+
+    # Annotate once (Drive check is the expensive step) so both the workbook
+    # and the trigger-sync below see the same in_drive / client_action values.
+    annotated = annotate_recon_result(result, drive_checker)
+
+    if batch.tenant_id and req.registration_gstin:
+        try:
+            from services.gstr2b_trigger_engine import sync_gap_triggers
+            sync_gap_triggers(
+                db, batch.tenant_id, req.registration_gstin,
+                req.period or datetime.utcnow().strftime("%Y-%m"), annotated,
+            )
+        except Exception as e:
+            logger.warning(f"[gstr2b export] Trigger sync failed, export still proceeds: {e}")
+
+    output_path = os.path.join(tempfile.gettempdir(), f"gstr2b_reconciliation_{batch_id}.xlsx")
+    write_gstr2b_reconciliation_excel(annotated, output_path, drive_checker=None)
+
+    return FileResponse(
+        path=output_path,
+        filename="gstr2b_reconciliation.xlsx",
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
 
 
 @app.post("/api/reconcile/export")

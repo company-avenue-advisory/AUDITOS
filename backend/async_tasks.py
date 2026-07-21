@@ -71,18 +71,22 @@ def _cache_set(key: str, result: InvoiceExtractionResponse):
         pass
 
 # ---------------------------------------------------------------------------
-# Concurrency controls — tuned for Gemini 2.5 Flash FREE tier (15 RPM limit).
+# Concurrency controls — defaults tuned for Gemini 2.5 Flash FREE tier
+# (15 RPM limit), but env-driven so a paid key doesn't stay pinned to
+# free-tier throughput. This was the single biggest wall-clock ceiling in
+# the pipeline (confirmed: comment itself noted paid Flash allows ~3500 RPM
+# while the hardcoded values kept every batch throttled to free-tier speed
+# regardless of the actual API tier in use).
 #
 # llm_semaphore   : max simultaneous LLM threads in-flight across all batches.
-#                   3 concurrent threads × ~3s per call = ~60s per minute cap,
-#                   keeping us safely under 15 RPM with the RpmGuard below.
+#                   LLM_CONCURRENCY env var, default 3 (free-tier safe).
 #
 # RpmGuard        : sliding-window RPM limiter per model family.
-#                   Gemini Flash paid → 4000 RPM safe ceiling set to 3500.
-#                   Gemini Pro free   → 50 RPM ceiling.
-#                   Falls back to no-op when provider is unknown.
+#                   RPM_GEMINI_FLASH / RPM_GEMINI_PRO / RPM_GROQ / RPM_DEFAULT
+#                   env vars, defaulting to the same free-tier-safe values as
+#                   before. Falls back to no-op when provider is unknown.
 # ---------------------------------------------------------------------------
-llm_semaphore = asyncio.Semaphore(3)  # Free tier: 3 concurrent = safe under 15 RPM
+llm_semaphore = asyncio.Semaphore(int(os.getenv("LLM_CONCURRENCY", "3")))
 
 
 class RpmGuard:
@@ -113,11 +117,13 @@ class RpmGuard:
 
 
 # One guard per model family — shared across all concurrent coroutines.
+# Env-driven: bump these once a paid tier is in use, instead of hand-editing
+# code. Defaults match the previous hardcoded free-tier-safe values exactly.
 _rpm_guards: dict[str, RpmGuard] = {
-    "gemini-flash": RpmGuard(10),    # Gemini 2.5 Flash FREE: 15 RPM limit; 10 = safe headroom
-    "gemini-pro":   RpmGuard(10),    # Gemini 2.5 Pro free:  15 RPM
-    "groq":         RpmGuard(18),    # Groq free: ~20 RPM effective
-    "default":      RpmGuard(10),
+    "gemini-flash": RpmGuard(int(os.getenv("RPM_GEMINI_FLASH", "10"))),  # Free: 15 RPM limit; 10 = safe headroom. Paid Flash allows ~3500 RPM.
+    "gemini-pro":   RpmGuard(int(os.getenv("RPM_GEMINI_PRO", "10"))),    # Free: 15 RPM
+    "groq":         RpmGuard(int(os.getenv("RPM_GROQ", "18"))),          # Free: ~20 RPM effective
+    "default":      RpmGuard(int(os.getenv("RPM_DEFAULT", "10"))),
 }
 
 def _get_rpm_guard(model_config: dict) -> RpmGuard:

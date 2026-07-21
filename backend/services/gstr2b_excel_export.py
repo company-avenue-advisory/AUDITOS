@@ -95,6 +95,29 @@ def _annotate_client_action(row: dict) -> dict:
     return row
 
 
+def annotate_recon_result(recon_result: dict, drive_checker: Optional[Callable[[dict], bool]]) -> dict:
+    """
+    Runs the Section 13.1 gap-investigation + client-action annotation once,
+    returning a new recon_result dict with `rows`/`extra` replaced by their
+    annotated versions (`in_drive`, `tally_entry_status`, `client_action`).
+
+    Pulled out of write_gstr2b_reconciliation_excel so callers that also need
+    the annotated rows for something else (services.gstr2b_trigger_engine —
+    deciding which gap rows are trigger candidates) can run the Drive check
+    exactly once and hand the same annotated rows to both the Excel writer
+    and the trigger engine, instead of paying for two separate Drive-verify
+    passes over the same gap set.
+    """
+    all_rows = list(recon_result.get("rows", [])) + [
+        _annotate_gap_row(r, drive_checker) for r in recon_result.get("extra", [])
+    ]
+    all_rows = [_annotate_client_action(r) for r in all_rows]
+
+    books_rows = [r for r in all_rows if r.get("recon_status") != "not_in_books"]
+    gap_rows = [r for r in all_rows if r.get("recon_status") == "not_in_books"]
+    return {**recon_result, "rows": books_rows, "extra": gap_rows}
+
+
 def write_gstr2b_reconciliation_excel(
     recon_result: dict,
     path: str,
@@ -105,19 +128,21 @@ def write_gstr2b_reconciliation_excel(
 
     Args:
         recon_result:  the dict returned by gstr2b_reconciler.reconcile()
-                       ({"rows": [...], "extra": [...], "summary": {...}})
+                       ({"rows": [...], "extra": [...], "summary": {...}}), or
+                       the output of annotate_recon_result() — already-annotated
+                       rows are left untouched since _annotate_gap_row/
+                       _annotate_client_action only fill blank fields.
         path:          output .xlsx path
         drive_checker: optional callable(row) -> bool, used only on
                        `not_in_books` rows (Section 13.1 gap investigation).
-                       Left None until the targeted Drive-verify service exists.
+                       Pass None if recon_result is already annotated (e.g. via
+                       annotate_recon_result) to avoid re-running Drive checks.
     """
     if not OPENPYXL_AVAILABLE:
         raise RuntimeError("openpyxl not installed")
 
-    all_rows = list(recon_result.get("rows", [])) + [
-        _annotate_gap_row(r, drive_checker) for r in recon_result.get("extra", [])
-    ]
-    all_rows = [_annotate_client_action(r) for r in all_rows]
+    annotated = annotate_recon_result(recon_result, drive_checker)
+    all_rows = list(annotated["rows"]) + list(annotated["extra"])
 
     wb = Workbook()
     ws = wb.active

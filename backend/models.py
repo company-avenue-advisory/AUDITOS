@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, DateTime, Integer, Enum, Float, ForeignKey, Text, Boolean, JSON
+from sqlalchemy import Column, String, DateTime, Integer, Enum, Float, ForeignKey, Text, Boolean, JSON, UniqueConstraint
 from sqlalchemy.orm import relationship
 import enum
 from datetime import datetime
@@ -25,6 +25,18 @@ class Tenant(Base):
     slug       = Column(String, unique=True, nullable=False, index=True)  # e.g. "sharma-associates"
     is_active  = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    # GSTR-2B gap-trigger destination + policy (see Gstr2bGapTrigger / services/gstr2b_trigger_engine.py).
+    # One contact email per tenant for now — matches the per-tenant granularity
+    # already used by GoogleDriveSyncConfig, revisit per-GSTIN only if a client
+    # with multiple registrations actually needs split contacts.
+    client_contact_email          = Column(String, nullable=True)
+    auto_vendor_followup_enabled  = Column(Boolean, default=False, nullable=False)
+    # Bucket A ("not_in_books" client requests) default to accountant-gated
+    # (True) per the confirmed human-gated-outbound rule. A firm can flip this
+    # off to auto-approve Bucket A requests the same way Bucket B already
+    # auto-sends — see services/gstr2b_trigger_engine.sync_gap_triggers.
+    bucket_a_require_review       = Column(Boolean, default=True, nullable=False)
 
     users = relationship("User", back_populates="tenant")
     batches = relationship("BatchJob", back_populates="tenant")
@@ -422,6 +434,62 @@ class PurchaseGstr2bReview(Base):
     review_notes  = Column(Text, nullable=True)
 
     created_at    = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class Gstr2bGapTrigger(Base):
+    """
+    One row per (tenant, registration_gstin, counterparty_gstin, invoice_no,
+    bucket) — tracks outbound-messaging state for a single GSTR-2B
+    reconciliation gap across however many times reconciliation gets re-run
+    for that period. Encodes the confirmed rules from
+    memory/project_gstr2b_client_trigger.md:
+
+      bucket="not_in_books" (Bucket A, Drive=No rows only — Drive=Yes never
+        reaches here, that's an internal Tally-booking fix, no client
+        contact): pending_review -> accountant approves -> approved ->
+        services.gstr2b_trigger_engine.run_due_triggers sends the client
+        request -> sent. Re-sent monthly (last_triggered_at gate) while the
+        gap stays open.
+
+      bucket="missing_in_2b" (Bucket B): queued (no accountant gate — auto
+        per Tenant.auto_vendor_followup_enabled) -> run_due_triggers sends
+        the vendor-followup notice -> sent. Also re-sent monthly while open.
+
+    A gap that disappears from a later reconciliation run (invoice got
+    booked, or the 2B filing showed up) is marked resolved by
+    sync_gap_triggers rather than deleted, so the audit trail (who approved
+    what, when it was sent, when it resolved) survives.
+    """
+    __tablename__ = "gstr2b_gap_triggers"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "registration_gstin", "counterparty_gstin",
+            "invoice_no", "bucket", name="uq_gap_trigger_identity",
+        ),
+    )
+
+    id                  = Column(String, primary_key=True, default=lambda: str(uuid4()))
+    tenant_id           = Column(String, ForeignKey("tenants.id"), nullable=False, index=True)
+    period              = Column(String, nullable=False)   # period of most recent sighting, e.g. "2026-06"
+    registration_gstin  = Column(String, nullable=False)   # the audited company's own GSTIN
+    counterparty_gstin  = Column(String, nullable=False)   # supplier (A) or vendor (B) GSTIN
+    invoice_no          = Column(String, nullable=False)
+    bucket              = Column(String, nullable=False)   # not_in_books | missing_in_2b
+    amount              = Column(Float, nullable=True)
+
+    status              = Column(String, default="pending_review", nullable=False)
+    # not_in_books:  pending_review -> approved -> sent -> resolved | rejected
+    # missing_in_2b: queued -> sent -> resolved
+
+    reviewed_by         = Column(String, ForeignKey("users.id"), nullable=True)
+    reviewed_at         = Column(DateTime, nullable=True)
+
+    last_triggered_at   = Column(DateTime, nullable=True)
+    trigger_count       = Column(Integer, default=0, nullable=False)
+    resolved_at         = Column(DateTime, nullable=True)
+
+    created_at          = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at          = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
 
 class GoogleDriveWebhookChannel(Base):
