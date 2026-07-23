@@ -10,4 +10,4 @@ Accepted engineering doctrine, numbered in the order they were adopted. Do not r
 | RFC-004 | Data Intelligence Platform | [RFC-004_data_intelligence_platform.md](RFC-004_data_intelligence_platform.md) |
 | RFC-005 | Platform Architecture | [RFC-005_platform_architecture.md](RFC-005_platform_architecture.md) |
 
-Execution-level companions (not RFCs, live at repo root): `ENGINEERING_EXECUTION_BLUEPRINT.md`, `ENGINEERING_PRINCIPLES.md`, `PROJECT_BOOTSTRAP.md`.
+Execution-level companions (not RFCs, live in [`../engineering/`](../engineering/README.md)): `ENGINEERING_EXECUTION_BLUEPRINT.md`, `ENGINEERING_PRINCIPLES.md`, `PROJECT_BOOTSTRAP.md`.
