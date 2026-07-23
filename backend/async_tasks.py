@@ -207,7 +207,8 @@ async def process_batch(batch_id: str, tasks: list, model_config: dict, type_val
             total_files=total,
             batch_type=type_val,
             environment="development",
-            db_session=db
+            db_session=db,
+            tenant_id=_tenant_id
         )
     except Exception as e:
         print(f"Error logging batch envelope: {e}")
@@ -229,7 +230,8 @@ async def process_batch(batch_id: str, tasks: list, model_config: dict, type_val
         ObsLogger.emit_file_manifest(
             batch_id=batch_id,
             files_meta=files_meta,
-            db_session=db
+            db_session=db,
+            tenant_id=_tenant_id
         )
     except Exception as e:
         print(f"Error logging file manifest: {e}")
@@ -335,6 +337,14 @@ async def process_batch(batch_id: str, tasks: list, model_config: dict, type_val
                     db.add(db_item)
             
             # Phase 4A: Run Financial Reconciliation Engine and persist audit report
+            #
+            # recon_report is initialized to None here (not left undefined) so that
+            # the observability calls further down — which read its status and
+            # overall_confidence for the quality-score / flag / failure-tracking
+            # payloads — have a well-defined "reconciliation did not complete"
+            # value to report instead of raising a NameError or, worse, silently
+            # falling through with a stale value from a previous loop iteration.
+            recon_report = None
             try:
                 import json as _json
                 from core.reconciliation.engine import FinancialReconciliationEngine
@@ -447,6 +457,16 @@ async def process_batch(batch_id: str, tasks: list, model_config: dict, type_val
                     no_igst_cgst_conflict = False
                     break
 
+            # grounding_score previously a hardcoded 0.85 regardless of what the
+            # reconciliation engine actually found. It now reflects the real
+            # ReconciliationReport.overall_confidence when reconciliation
+            # completed (Phase 4A above), and a low, explicit fallback (not a
+            # false-confident default) when reconciliation itself failed to run —
+            # a missing reconciliation result is itself evidence of a problem,
+            # not a reason to report high confidence.
+            recon_confidence = recon_report.overall_confidence if recon_report is not None else 0.3
+            recon_status = recon_report.status if recon_report is not None else "RECONCILIATION_ERROR"
+
             # Step 5 — Emit Quality Score
             score = logger.emit_quality_score(
                 filename=task.file_name,
@@ -459,7 +479,7 @@ async def process_batch(batch_id: str, tasks: list, model_config: dict, type_val
                 variance_inr=variance,
                 gstin_format_valid=gstin_format_valid,
                 no_igst_cgst_conflict=no_igst_cgst_conflict,
-                grounding_score=0.85
+                grounding_score=recon_confidence
             )
 
             # Step 6 — Evaluate Flags
@@ -473,7 +493,9 @@ async def process_batch(batch_id: str, tasks: list, model_config: dict, type_val
                 no_igst_cgst_conflict=no_igst_cgst_conflict,
                 total_cost_inr=cost_info["total_cost_inr"],
                 batch_avg_cost=0.0,  # Batch average evaluated at batch level
-                raw_items=len(res.sales_items) + len(res.purchase_items)
+                raw_items=len(res.sales_items) + len(res.purchase_items),
+                reconciliation_status=recon_status,
+                reconciliation_confidence=recon_confidence
             )
 
             # Step 4a — Emit File Metrics
@@ -485,8 +507,8 @@ async def process_batch(batch_id: str, tasks: list, model_config: dict, type_val
                 model_identifier=model_identifier,
                 correction_meta=res.correction_meta or {},
                 llm_retries=res.total_retries or 0,
-                stage_failed=None,
-                error_type=None
+                stage_failed="reconciliation" if recon_report is None else None,
+                error_type="RECONCILIATION_ERROR" if recon_report is None else None
             )
 
             # Step 7a — Emit Debug Record if Flagged
@@ -572,7 +594,8 @@ async def process_batch(batch_id: str, tasks: list, model_config: dict, type_val
             tasks_meta=batch_tasks_meta,
             model_identifier=model_identifier,
             api_provider=api_provider,
-            db_session=db
+            db_session=db,
+            tenant_id=batch.tenant_id if batch else None
         )
     except Exception as e:
         print(f"Error logging batch metrics: {e}")

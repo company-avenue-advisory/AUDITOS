@@ -123,6 +123,10 @@ SUITES = {
         "label": "GSTR-2B Review Gate (Phase A Drive-drop automation)",
         "module": "backend.tests.regression.test_purchase_review",
     },
+    "observability": {
+        "label": "Observability Instrumentation (tenant_id threading + reconciliation-aware flags)",
+        "module": "backend.tests.regression.test_observability_regression",
+    },
 }
 
 

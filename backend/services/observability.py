@@ -162,7 +162,8 @@ class ObsLogger:
     def emit_batch_envelope(cls, batch_id: str, session_id: str, model_selected: str,
                             model_identifier: str, api_provider: str, api_endpoint: str,
                             total_files: int, batch_type: str, environment: str,
-                            submitted_by: str = "anonymous", db_session=None) -> None:
+                            submitted_by: str = "anonymous", db_session=None,
+                            tenant_id: Optional[str] = None) -> None:
         """Step 1a — Batch envelope. Written synchronously before any file opens."""
         from models import ObservabilityLog
         from database import SessionLocal
@@ -187,6 +188,7 @@ class ObsLogger:
         db = db_session or SessionLocal()
         try:
             log = ObservabilityLog(
+                tenant_id=tenant_id,
                 batch_id=batch_id, file_id=None,
                 event_type="batch_received", stage=None, severity=None, flag_id=None,
                 payload_json=json.dumps(payload, ensure_ascii=False, default=str),
@@ -201,7 +203,8 @@ class ObsLogger:
                 db.close()
 
     @classmethod
-    def emit_file_manifest(cls, batch_id: str, files_meta: list, db_session=None) -> None:
+    def emit_file_manifest(cls, batch_id: str, files_meta: list, db_session=None,
+                           tenant_id: Optional[str] = None) -> None:
         """Step 1b — File manifest. One entry per file in the batch."""
         from models import ObservabilityLog
         from database import SessionLocal
@@ -215,6 +218,7 @@ class ObsLogger:
         db = db_session or SessionLocal()
         try:
             log = ObservabilityLog(
+                tenant_id=tenant_id,
                 batch_id=batch_id, file_id=None,
                 event_type="file_manifest", stage=None, severity=None, flag_id=None,
                 payload_json=json.dumps(payload, ensure_ascii=False, default=str),
@@ -432,7 +436,8 @@ class ObsLogger:
 
     @classmethod
     def emit_batch_metrics(cls, batch_id: str, tasks_meta: list, model_identifier: str,
-                           api_provider: str, db_session=None) -> None:
+                           api_provider: str, db_session=None,
+                           tenant_id: Optional[str] = None) -> None:
         """Step 4b — Batch-level metrics after all files complete."""
         from models import ObservabilityLog
         from database import SessionLocal
@@ -492,6 +497,7 @@ class ObsLogger:
         try:
             from models import ObservabilityLog
             log = ObservabilityLog(
+                tenant_id=tenant_id,
                 batch_id=batch_id, file_id=None, event_type="batch_metrics",
                 payload_json=json.dumps(payload, ensure_ascii=False, default=str),
                 prompt_version=get_prompt_version(),
@@ -503,10 +509,12 @@ class ObsLogger:
             if not db_session: db.close()
 
         # Check batch-level alert thresholds
-        cls._check_batch_alerts(batch_id, payload, model_identifier, api_provider, db_session)
+        cls._check_batch_alerts(batch_id, payload, model_identifier, api_provider, db_session,
+                                 tenant_id=tenant_id)
 
     @classmethod
-    def _check_batch_alerts(cls, batch_id, metrics, model_identifier, api_provider, db_session):
+    def _check_batch_alerts(cls, batch_id, metrics, model_identifier, api_provider, db_session,
+                            tenant_id: Optional[str] = None):
         from database import SessionLocal
         from models import ObservabilityLog
         alerts = []
@@ -532,6 +540,7 @@ class ObsLogger:
                     "timestamp_utc": ts, "trigger_detail": detail, "auto_routed_to_debug": True,
                 }
                 log = ObservabilityLog(
+                    tenant_id=tenant_id,
                     batch_id=batch_id, file_id=None, event_type="system_flag",
                     severity=severity, flag_id=flag_id,
                     payload_json=json.dumps(payload, ensure_ascii=False, default=str),
@@ -606,8 +615,18 @@ class ObsLogger:
                        json_parse_ok: bool, statutory_math_balanced: bool,
                        gstin_format_valid: bool, no_igst_cgst_conflict: bool,
                        total_cost_inr: float, batch_avg_cost: float,
-                       raw_items: int, stage_failed: Optional[str] = None) -> list:
-        """Evaluate all flag rules from Step 6 and emit a flag for each triggered rule."""
+                       raw_items: int, stage_failed: Optional[str] = None,
+                       reconciliation_status: Optional[str] = None,
+                       reconciliation_confidence: Optional[float] = None) -> list:
+        """
+        Evaluate all flag rules from Step 6 and emit a flag for each triggered rule.
+
+        reconciliation_status / reconciliation_confidence are optional and sourced
+        from FinancialReconciliationEngine's ReconciliationReport (status,
+        overall_confidence) — when the caller doesn't have a reconciliation
+        result to pass (e.g. reconciliation itself failed to run), these stay
+        None and the two rules below are skipped rather than firing on absent data.
+        """
         flags = []
         total_corr = (correction_meta.get("gst_rates_snapped", 0) +
                       correction_meta.get("subtotal_rows_dropped", 0) +
@@ -636,6 +655,18 @@ class ObsLogger:
              "Model output could not be parsed as structured JSON"),
             (stage_failed is not None, "PARTIAL_TRACE", "LOW",
              f"Stage '{stage_failed}' failed to complete"),
+            (reconciliation_status is not None and reconciliation_status == "BLOCKED",
+             "RECONCILIATION_BLOCKED", "CRITICAL",
+             f"Reconciliation status BLOCKED — invoice failed hard reconciliation checks"),
+            (reconciliation_confidence is not None and reconciliation_confidence < 0.6,
+             "RECONCILIATION_LOW_CONFIDENCE", "HIGH",
+             # Tuple elements are all evaluated eagerly regardless of the
+             # condition, so this message must be None-safe even though the
+             # rule itself only ever fires when reconciliation_confidence is
+             # not None — round(None, 2) would raise, so guard here too.
+             f"Reconciliation overall_confidence "
+             f"{round(reconciliation_confidence, 2) if reconciliation_confidence is not None else 'N/A'} "
+             f"below 0.60 threshold"),
         ]
 
         for condition, flag_id, severity, detail in rules:
@@ -702,7 +733,8 @@ class ObsLogger:
     @classmethod
     def emit_ca_flag(cls, batch_id: str, file_id: str, rejected_field: str,
                      extracted_value: Any, ca_corrected_value: Any,
-                     composite_score: float, db_session=None) -> None:
+                     composite_score: float, db_session=None,
+                     tenant_id: Optional[str] = None) -> None:
         """Step 6a — CA reviewer rejects a specific field from the frontend grid."""
         from models import ObservabilityLog
         from database import SessionLocal
@@ -721,6 +753,7 @@ class ObsLogger:
         db = db_session or SessionLocal()
         try:
             log = ObservabilityLog(
+                tenant_id=tenant_id,
                 batch_id=batch_id, file_id=file_id,
                 event_type="ca_review_flag", severity="HIGH", flag_id="CA_REJECTION",
                 payload_json=json.dumps(payload, ensure_ascii=False, default=str),
