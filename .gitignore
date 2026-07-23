@@ -71,6 +71,7 @@ data/
 !package-lock.json
 !tsconfig.json
 !backend/tests/regression/fixtures/gstr2b/sample_gstr2b.json
+!backend/tests/regression/fixtures/golden/*.json
 
 # Extra Data Dirs
 salesinvoices/

@@ -131,6 +131,10 @@ SUITES = {
         "label": "Correction Capture & Review Queue Prioritization",
         "module": "backend.tests.regression.test_review_priority_regression",
     },
+    "golden_dataset": {
+        "label": "Golden Dataset & Regression Framework",
+        "module": "backend.tests.regression.test_golden_dataset_regression",
+    },
 }
 
 
