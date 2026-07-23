@@ -2091,7 +2091,8 @@ async def update_item(
                 extracted_value=old_value,
                 ca_corrected_value=req.value,
                 composite_score=composite_score,
-                db_session=db
+                db_session=db,
+                tenant_id=resource_tenant_id
             )
         except Exception as e:
             print(f"Error logging CA flag: {e}")
