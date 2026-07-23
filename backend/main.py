@@ -668,10 +668,42 @@ async def get_job_status(batch_id: str, db: Session = Depends(get_db), current_u
                 pass
     # ───────────────────────────────────────────────────────────
     
+    # ── Bootstrap Task 4: review-queue prioritization signals ──────────
+    # Reuses the existing duplicate_detector module (already used by the
+    # separate /api/jobs/{batch_id}/duplicates endpoint) rather than
+    # reimplementing duplicate matching here. Only the cheap, pure-python
+    # within_batch check is used on this hot path -- cross_batch involves
+    # its own DB queries and stays behind the dedicated /duplicates
+    # endpoint for a deeper look, not recomputed on every status poll.
+    from services.duplicate_detector import detect_within_batch
+    from services.review_priority import sort_tasks_by_priority
+    duplicate_task_ids = set()
+    try:
+        for group in detect_within_batch(tasks):
+            for occurrence in group.get("occurrences", []):
+                if occurrence.get("task_id"):
+                    duplicate_task_ids.add(str(occurrence["task_id"]))
+    except Exception:
+        pass  # prioritization signal is best-effort; never blocks the status response
+
+    manual_flag_counts = {}
+    if tasks:
+        from models import UserAnnotation
+        from sqlalchemy import func as _func
+        task_ids = [t.id for t in tasks]
+        for task_id, count in (
+            db.query(UserAnnotation.task_id, _func.count(UserAnnotation.id))
+            .filter(UserAnnotation.task_id.in_(task_ids))
+            .group_by(UserAnnotation.task_id)
+            .all()
+        ):
+            manual_flag_counts[task_id] = count
+    # ─────────────────────────────────────────────────────────────────
+
     tasks_details = []
     all_sales = []
     all_purchase = []
-    
+
     for t in tasks:
         task_info = {
             "task_id": t.id,
@@ -681,15 +713,22 @@ async def get_job_status(batch_id: str, db: Session = Depends(get_db), current_u
             "composite_score": scores_by_file.get(t.id, None),
             "flags": flags_by_file.get(t.id, []),
             "recon_status": getattr(t, 'recon_status', None),
+            "validation_status": getattr(t, 'validation_status', None),
+            "is_duplicate": t.id in duplicate_task_ids,
+            "manual_flag_count": manual_flag_counts.get(t.id, 0),
         }
-        
+
         sales = []
         purchase = []
         if getattr(t, 'sales_items', None):
             sales = [{c.name: getattr(item, c.name) for c in item.__table__.columns if c.name not in ["task_id"]} for item in t.sales_items]
         if getattr(t, 'purchase_items', None):
             purchase = [{c.name: getattr(item, c.name) for c in item.__table__.columns if c.name not in ["task_id"]} for item in t.purchase_items]
-            
+
+        task_info["total_invoice_value"] = sum(
+            float(item.get("total_invoice_value") or 0.0) for item in (sales + purchase)
+        )
+
         if sales or purchase or t.status == TaskStatus.COMPLETED:
             for s in sales:
                 s["errors"] = validate_suvit_item(s)
@@ -697,14 +736,16 @@ async def get_job_status(batch_id: str, db: Session = Depends(get_db), current_u
             for p in purchase:
                 p["errors"] = validate_suvit_item(p)
                 p["filename"] = t.file_name
-                
+
             task_info["sales_count"] = len(sales)
             task_info["purchase_count"] = len(purchase)
             all_sales.extend(sales)
             all_purchase.extend(purchase)
-            
+
         tasks_details.append(task_info)
-        
+
+    tasks_details = sort_tasks_by_priority(tasks_details)
+
     return JSONResponse(content={
         "batch_id": batch.id,
         "status": batch.status.value,
@@ -2013,6 +2054,10 @@ async def compress_pdf_endpoint(file: UploadFile = File(...), quality: int = For
 class ItemUpdateRequest(BaseModel):
     field: str
     value: Any
+    # Bootstrap Task 4: optional, backend-only addition — existing frontend
+    # calls that don't send it are unaffected (defaults to None), so this
+    # doesn't require a UI change to be usable.
+    reason: Optional[str] = None
 
 @app.put("/api/items/{item_id}")
 async def update_item(
@@ -2096,7 +2141,34 @@ async def update_item(
             )
         except Exception as e:
             print(f"Error logging CA flag: {e}")
-            
+
+        # Bootstrap Task 4: structured correction-event record. Distinct from
+        # (not a replacement for) the ObservabilityLog write above -- that's
+        # the system-level audit/alerting event; this is the queryable,
+        # structured table a future review-prioritization or learning pass
+        # actually reads from (RFC-002's episodic-memory / correction-capture
+        # doctrine). UserAnnotation and its /api/tasks/{id}/annotate endpoint
+        # already existed for this exact shape of data but were never wired
+        # to the one place a correction actually happens -- this closes that
+        # gap by reusing the model instead of introducing a new one.
+        try:
+            from models import UserAnnotation
+            annotation = UserAnnotation(
+                user_id=current_user.id,
+                task_id=task_id,
+                field_name=req.field,
+                note=req.reason,
+                original_value=str(old_value) if old_value is not None else None,
+                corrected_value=str(req.value) if req.value is not None else None,
+                confidence_before=composite_score,
+                validation_status=getattr(task, "validation_status", None) if task else None,
+                reconciliation_status=getattr(task, "recon_status", None) if task else None,
+            )
+            db.add(annotation)
+            db.commit()
+        except Exception as e:
+            print(f"Error logging correction annotation: {e}")
+
     return {"status": "success"}
 
 @app.post("/api/invoice-metadata")
