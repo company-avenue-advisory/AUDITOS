@@ -457,6 +457,16 @@ async def process_batch(batch_id: str, tasks: list, model_config: dict, type_val
                     no_igst_cgst_conflict = False
                     break
 
+            # Bootstrap Task 4: persist this same PASSED/FAILED verdict onto the
+            # task row (not just the observability event below) so the review
+            # queue can prioritize on it and a correction event can record
+            # "what did validation say at the time of this fix" without
+            # re-deriving these three checks or re-querying ObservabilityLog.
+            task.validation_status = "PASSED" if (
+                statutory_math_balanced and gstin_format_valid and no_igst_cgst_conflict
+            ) else "FAILED"
+            db.commit()
+
             # grounding_score previously a hardcoded 0.85 regardless of what the
             # reconciliation engine actually found. It now reflects the real
             # ReconciliationReport.overall_confidence when reconciliation

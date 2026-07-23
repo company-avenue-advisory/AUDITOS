@@ -68,6 +68,12 @@ class InvoiceTask(Base):
     # Phase 4A: Reconciliation audit fields
     recon_status = Column(String, nullable=True)         # ERP_READY | NEEDS_REVIEW | BLOCKED
     recon_report_json = Column(Text, nullable=True)      # Full ReconciliationReport as JSON
+    # Bootstrap Task 4: lightweight validation status (statutory math + GSTIN
+    # format + IGST/CGST-SGST mutual-exclusivity — the same three checks
+    # async_tasks.py already computes for the quality-score/flag pipeline,
+    # now also persisted here so the review queue can prioritize on it
+    # without recomputing anything.
+    validation_status = Column(String, nullable=True)    # PASSED | FAILED
     
     batch = relationship("BatchJob", back_populates="tasks")
     sales_items = relationship("SalesLineItem", back_populates="task", cascade="all, delete-orphan")
@@ -266,7 +272,13 @@ class UserPreferences(Base):
 class UserAnnotation(Base):
     """
     Field-level notes and corrections made by auditors during review.
-    Append-only — each edit is a new row (before/after values preserved).
+    Append-only — each edit is a new row (before/after values preserved),
+    never an update to a prior row. This is AuditOS's structured
+    correction-event record (Bootstrap Task 4): the queryable table a
+    future learning/prioritization pass reads from, distinct from
+    ObservabilityLog's ca_review_flag event (system-level audit trail /
+    alerting, unstructured JSON payload) which continues to fire
+    alongside this row, not instead of it.
     """
     __tablename__ = "user_annotations"
 
@@ -274,10 +286,16 @@ class UserAnnotation(Base):
     user_id        = Column(String, ForeignKey("users.id"), nullable=False, index=True)
     task_id        = Column(String, ForeignKey("invoice_tasks.id"), nullable=False, index=True)
     field_name     = Column(String, nullable=False)
-    note           = Column(Text, nullable=True)
+    note           = Column(Text, nullable=True)          # reviewer's reason for the correction
     original_value = Column(Text, nullable=True)
     corrected_value= Column(Text, nullable=True)
     created_at     = Column(DateTime, default=datetime.utcnow, nullable=False)
+    # Bootstrap Task 4: state-at-time-of-correction, so a future learning
+    # pass can ask "what did the system believe before a human fixed it"
+    # without having to reconstruct that from ObservabilityLog's JSON blobs.
+    confidence_before      = Column(Float, nullable=True)   # composite_score at correction time
+    validation_status      = Column(String, nullable=True)  # InvoiceTask.validation_status at correction time
+    reconciliation_status  = Column(String, nullable=True)  # InvoiceTask.recon_status at correction time
 
 
 # ── Google Drive Sync ──────────────────────────────────────────────────────

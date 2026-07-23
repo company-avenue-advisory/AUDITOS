@@ -127,6 +127,10 @@ SUITES = {
         "label": "Observability Instrumentation (tenant_id threading + reconciliation-aware flags)",
         "module": "backend.tests.regression.test_observability_regression",
     },
+    "review_priority": {
+        "label": "Correction Capture & Review Queue Prioritization",
+        "module": "backend.tests.regression.test_review_priority_regression",
+    },
 }
 
 
