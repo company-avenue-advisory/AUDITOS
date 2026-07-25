@@ -1,0 +1,71 @@
+name: CI
+
+# Bootstrap Program 8 (CI/CD Made Real). Two independent jobs:
+#   regression — runs the full deterministic regression suite. Required to pass.
+#   lint       — ruff, scoped to only the files a PR actually changes. The
+#                existing codebase has 132 pre-existing pyflakes-level issues
+#                (confirmed by running `ruff check backend/ --select=F` before
+#                writing this workflow); a repo-wide lint gate would fail
+#                against main itself and block every future PR for debt nobody
+#                touched. Diff-scoping means new code is held to the standard
+#                without that trap. Tightening to repo-wide is a deliberate
+#                future decision, not a default to slide into silently.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  regression:
+    name: Regression Suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install backend dependencies
+        run: pip install -r backend/requirements.txt
+
+      - name: Run regression suite
+        run: python backend/tests/regression/run_regression.py
+
+  lint:
+    name: Lint (changed files only)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Determine changed Python files
+        id: changed
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="origin/${{ github.base_ref }}"
+          else
+            BASE="${{ github.event.before }}"
+          fi
+          FILES=$(git diff --name-only --diff-filter=ACMR "$BASE" HEAD -- '*.py' | tr '\n' ' ')
+          echo "files=$FILES" >> "$GITHUB_OUTPUT"
+
+      - name: Run ruff on changed files
+        if: steps.changed.outputs.files != ''
+        run: ruff check ${{ steps.changed.outputs.files }}
+
+      - name: No changed Python files
+        if: steps.changed.outputs.files == ''
+        run: echo "No changed .py files in this diff — nothing to lint."
