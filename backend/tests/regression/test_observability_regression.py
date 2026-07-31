@@ -24,7 +24,6 @@ already used in test_period_review.py / test_purchase_review.py.
 """
 import sys
 import os
-import json
 import unittest
 
 _backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../backend"))
