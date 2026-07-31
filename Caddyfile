@@ -1,0 +1,12 @@
+# Reverse proxy + TLS for the backend API only. Frontend is on Vercel.
+# Replace api.yourfirm.example with the real subdomain before deploying,
+# and point its DNS A record at the droplet's IP (159.65.152.27).
+#
+# No basic-auth gate here: the frontend (browser) calls this API directly,
+# so a proxy-level password would break every fetch. Access control is the
+# app's own JWT login (backend/services/auth.py) plus ALLOWED_ORIGINS CORS
+# lockdown to the Vercel domain -- set in .env, not here.
+
+api.yourfirm.example {
+	reverse_proxy backend:8000
+}
