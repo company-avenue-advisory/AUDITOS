@@ -83,7 +83,7 @@ const NAV_ITEMS = [
 /* ─────────── Sidebar Component ─────────── */
 export default function Sidebar() {
   const pathname = usePathname();
-  const [theme, setTheme] = useState("dark");
+  const [theme, setTheme] = useState("light");
   const [userEmail, setUserEmail] = useState("");
   const [userRole, setUserRole] = useState("");
   const [firmName, setFirmName] = useState<string | null>(null);
@@ -98,12 +98,12 @@ export default function Sidebar() {
     fetchPreferences().then((prefs) => {
       const serverTheme = prefs?.theme;
       const localTheme = localStorage.getItem("theme");
-      const resolved = serverTheme || localTheme || "dark";
+      const resolved = serverTheme || localTheme || "light";
       setTheme(resolved);
       document.documentElement.setAttribute("data-theme", resolved);
       localStorage.setItem("theme", resolved);
     }).catch(() => {
-      const currentTheme = document.documentElement.getAttribute("data-theme") || "dark";
+      const currentTheme = document.documentElement.getAttribute("data-theme") || "light";
       setTheme(currentTheme);
     });
 
