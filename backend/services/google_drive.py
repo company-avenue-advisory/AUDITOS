@@ -206,6 +206,7 @@ class GoogleDriveFileTracker:
         Returns False if:
           - File ID doesn't exist (new file)
           - File ID exists but md5Checksum changed (file was updated)
+          - File ID exists but processing_status is not "completed" (crashed/failed)
         """
         try:
             existing = self.db.query(self.DBTracker).filter(
@@ -219,6 +220,11 @@ class GoogleDriveFileTracker:
             if existing.md5_checksum != md5_checksum:
                 logger.info(f"File {google_drive_id} was updated (md5 changed)")
                 return False  # File was updated, needs reprocessing
+
+            # Check if previous processing actually completed
+            if existing.processing_status != "completed":
+                logger.info(f"File {google_drive_id} has status '{existing.processing_status}', will retry")
+                return False  # Previous run didn't finish, needs reprocessing
 
             return True  # Already processed with same content
 

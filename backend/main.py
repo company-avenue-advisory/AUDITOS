@@ -2265,6 +2265,12 @@ class GoogleDriveSyncTriggerRequest(BaseModel):
     subfolder_id: Optional[str] = None
 
 
+class IngestionTriggerRequest(BaseModel):
+    # Optional period override, format "YYYY-MM" (e.g. "2026-06").
+    # When omitted the task resolves the current month via date.today().
+    period: Optional[str] = None
+
+
 @app.get("/api/google-drive-sync/config")
 async def get_drive_sync_config(
     db: Session = Depends(get_db),
@@ -2516,6 +2522,7 @@ def _tenant_slug_for(db: Session, current_user: User) -> str:
 
 @app.post("/api/google-drive-sync/trigger-sales")
 async def trigger_sales_ingestion(
+    req: IngestionTriggerRequest = IngestionTriggerRequest(),
     db: Session = Depends(get_db),
     current_user: User = Depends(RoleChecker(["owner", "auditor", "developer"])),
 ):
@@ -2523,6 +2530,9 @@ async def trigger_sales_ingestion(
     Runs tasks.sales_ingestion_task immediately for the current tenant -
     the self-resolving Sales pipeline (Phase 6), triggered on demand from
     the Drive Sync UI instead of only via a Celery Beat schedule.
+
+    Optional body param ``period`` (format "YYYY-MM") overrides which
+    month's folder is resolved - without it, the task uses date.today().
     """
     from celery_app import sales_ingestion_task
 
@@ -2539,16 +2549,22 @@ async def trigger_sales_ingestion(
         excel_output_path=f"/data/sync_{current_user.tenant_id}_sales.xlsx",
         invoice_type="sales",
         model_config=None,
+        period=req.period,
     )
     return JSONResponse(content={"status": "sync_started", "task_id": task.id})
 
 
 @app.post("/api/google-drive-sync/trigger-purchase")
 async def trigger_purchase_ingestion(
+    req: IngestionTriggerRequest = IngestionTriggerRequest(),
     db: Session = Depends(get_db),
     current_user: User = Depends(RoleChecker(["owner", "auditor", "developer"])),
 ):
-    """Runs tasks.purchase_ingestion_task immediately for the current tenant."""
+    """Runs tasks.purchase_ingestion_task immediately for the current tenant.
+
+    Optional body param ``period`` (format "YYYY-MM") overrides which
+    month's folder is resolved - without it, the task uses date.today().
+    """
     from celery_app import purchase_ingestion_task
 
     if not current_user.tenant_id:
@@ -2563,6 +2579,7 @@ async def trigger_purchase_ingestion(
         tenant_slug=tenant_slug,
         excel_output_path=f"/data/sync_{current_user.tenant_id}_purchase.xlsx",
         model_config=None,
+        period=req.period,
     )
     return JSONResponse(content={"status": "sync_started", "task_id": task.id})
 
@@ -2605,6 +2622,28 @@ async def get_sync_status(task_id: str):
         "result": result,
         "error": str(task_result.info) if task_result.status == "FAILURE" else None,
     })
+
+
+@app.post("/api/google-drive-sync/cancel/{task_id}")
+async def cancel_google_drive_sync(
+    task_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RoleChecker(["owner", "auditor", "developer"])),
+):
+    """Cancel a running Google Drive sync task by its Celery task ID."""
+    from celery_app import celery_app as _celery
+
+    _celery.control.revoke(task_id, terminate=True, signal="SIGTERM")
+
+    sync_job = db.query(GoogleDriveSyncJob).filter(
+        GoogleDriveSyncJob.celery_task_id == task_id
+    ).first()
+    if sync_job:
+        sync_job.status = "cancelled"
+        sync_job.completed_at = datetime.utcnow()
+        db.commit()
+
+    return JSONResponse(content={"status": "cancelled", "task_id": task_id})
 
 
 @app.get("/api/google-drive-sync/history")
