@@ -52,7 +52,7 @@ class GoogleDriveSyncPipeline:
     def __init__(self, tenant_id: str, google_drive_folder_id: str,
                  excel_output_path: str, invoice_type: str = "both",
                  period: str = None, max_files: int = None,
-                 subfolder_id: str = None):
+                 subfolder_id: str = None, celery_task_id: str = None):
         """
         Initialize sync pipeline.
 
@@ -92,6 +92,7 @@ class GoogleDriveSyncPipeline:
         self.period = period
         self.max_files = max_files if (max_files is None or max_files > 0) else None
         self.subfolder_id = subfolder_id
+        self.celery_task_id = celery_task_id
         # Remaining per-run file budget, decremented as files are consumed.
         # None = unlimited.
         self._files_budget = self.max_files
@@ -123,7 +124,8 @@ class GoogleDriveSyncPipeline:
                 id=sync_job_id,
                 tenant_id=self.tenant_id,
                 sync_timestamp=start_time,
-                status="in_progress"
+                status="in_progress",
+                celery_task_id=self.celery_task_id,
             )
             self.db.add(sync_job)
             self.db.commit()

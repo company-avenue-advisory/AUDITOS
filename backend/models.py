@@ -338,10 +338,11 @@ class GoogleDriveSyncJob(Base):
     updated_files    = Column(Integer, default=0)
     processed_files  = Column(Integer, default=0)
     failed_files     = Column(Integer, default=0)
-    status           = Column(String, default="in_progress")  # in_progress | completed | failed
+    status           = Column(String, default="in_progress")  # in_progress | completed | failed | cancelled
     error_message    = Column(Text, nullable=True)
     excel_output_path = Column(String, nullable=True)
     completed_at     = Column(DateTime, nullable=True)
+    celery_task_id   = Column(String, nullable=True)
 
 
 class GoogleDriveSyncConfig(Base):
