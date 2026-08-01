@@ -147,7 +147,7 @@ export default function DashboardPage() {
                 display: "flex",
                 alignItems: "center",
                 gap: 8,
-                background: "rgba(255,255,255,0.04)",
+                background: "var(--bg-surface)",
                 border: "1px solid var(--border)",
                 borderRadius: "var(--radius-sm)",
                 padding: "8px 16px",
@@ -169,7 +169,7 @@ export default function DashboardPage() {
                   color: statusColor,
                 }}
               >
-                API: {statusLabel}
+                {statusLabel}
               </span>
             </div>
           </div>
@@ -482,11 +482,11 @@ export default function DashboardPage() {
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                 <thead>
                   <tr style={{ background: "rgba(0,0,0,0.02)", borderBottom: "1px solid var(--border)" }}>
-                    <th style={{ padding: "12px 16px", textAlign: "left", color: "var(--text-muted)", fontWeight: 600, fontSize: 10, textTransform: "uppercase", letterSpacing: "0.06em" }}>Severity</th>
-                    <th style={{ padding: "12px 16px", textAlign: "left", color: "var(--text-muted)", fontWeight: 600, fontSize: 10, textTransform: "uppercase", letterSpacing: "0.06em" }}>Flag ID</th>
-                    <th style={{ padding: "12px 16px", textAlign: "left", color: "var(--text-muted)", fontWeight: 600, fontSize: 10, textTransform: "uppercase", letterSpacing: "0.06em" }}>Source Document</th>
-                    <th style={{ padding: "12px 16px", textAlign: "left", color: "var(--text-muted)", fontWeight: 600, fontSize: 10, textTransform: "uppercase", letterSpacing: "0.06em" }}>Trigger Condition / Details</th>
-                    <th style={{ padding: "12px 16px", textAlign: "right", color: "var(--text-muted)", fontWeight: 600, fontSize: 10, textTransform: "uppercase", letterSpacing: "0.06em" }}>Timestamp</th>
+                    <th style={{ padding: "12px 16px", textAlign: "left", color: "var(--text-muted)", fontWeight: 600, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em" }}>Severity</th>
+                    <th style={{ padding: "12px 16px", textAlign: "left", color: "var(--text-muted)", fontWeight: 600, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em" }}>Issue</th>
+                    <th style={{ padding: "12px 16px", textAlign: "left", color: "var(--text-muted)", fontWeight: 600, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em" }}>Source Document</th>
+                    <th style={{ padding: "12px 16px", textAlign: "left", color: "var(--text-muted)", fontWeight: 600, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em" }}>Trigger Condition / Details</th>
+                    <th style={{ padding: "12px 16px", textAlign: "right", color: "var(--text-muted)", fontWeight: 600, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em" }}>Timestamp</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -502,7 +502,7 @@ export default function DashboardPage() {
                         <span style={{
                           padding: "2px 8px",
                           borderRadius: 4,
-                          fontSize: 10,
+                          fontSize: 11,
                           fontWeight: 700,
                           background: flag.severity === "CRITICAL" ? "rgba(239,68,68,0.15)" : flag.severity === "HIGH" ? "rgba(245,158,11,0.15)" : "rgba(59,130,246,0.15)",
                           color: flag.severity === "CRITICAL" ? "#ef4444" : flag.severity === "HIGH" ? "#f59e0b" : "#3b82f6"
@@ -574,7 +574,7 @@ export default function DashboardPage() {
               <thead>
                 <tr style={{ background: "rgba(0,0,0,0.02)", borderBottom: "1px solid var(--border)" }}>
                   <th style={{ padding: "14px 20px", color: "var(--text-secondary)", fontWeight: 500 }}>Date Started</th>
-                  <th style={{ padding: "14px 20px", color: "var(--text-secondary)", fontWeight: 500 }}>Batch ID</th>
+                  <th style={{ padding: "14px 20px", color: "var(--text-secondary)", fontWeight: 500 }}>Batch</th>
                   <th style={{ padding: "14px 20px", color: "var(--text-secondary)", fontWeight: 500 }}>Invoices</th>
                   <th style={{ padding: "14px 20px", color: "var(--text-secondary)", fontWeight: 500 }}>Status</th>
                   <th style={{ padding: "14px 20px", color: "var(--text-secondary)", fontWeight: 500 }}>Avg Quality Score</th>
@@ -587,7 +587,7 @@ export default function DashboardPage() {
                   <tr
                     key={b.id}
                     style={{ borderBottom: "1px solid var(--border)", transition: "background .15s" }}
-                    onMouseEnter={e => e.currentTarget.style.background = "rgba(255,255,255,0.01)"}
+                    onMouseEnter={e => e.currentTarget.style.background = "var(--bg-card-hover)"}
                     onMouseLeave={e => e.currentTarget.style.background = "transparent"}
                   >
                     <td style={{ padding: "14px 20px", color: "var(--text-primary)" }}>

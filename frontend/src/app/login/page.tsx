@@ -131,7 +131,7 @@ export default function LoginPage() {
               fontWeight: 600,
             }}
           >
-            Security Layer Enabled
+            Invoice Compliance Platform
           </p>
         </div>
 
@@ -389,7 +389,7 @@ export default function LoginPage() {
           }}
         >
           <Sparkles size={12} style={{ color: "var(--accent)" }} />
-          <span>Secured with cryptographic password hashing (bcrypt)</span>
+          <span>Your data is securely encrypted</span>
         </div>
       </div>
     </div>

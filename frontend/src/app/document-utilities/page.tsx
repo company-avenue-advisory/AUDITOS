@@ -334,7 +334,7 @@ export default function DocumentUtilitiesPage() {
             display: "flex",
             gap: 4,
             padding: 4,
-            background: "rgba(255,255,255,0.02)",
+            background: "var(--bg-surface)",
             border: "1px solid var(--border)",
             borderRadius: "var(--radius-md)",
             alignSelf: "flex-start",
@@ -435,7 +435,7 @@ export default function DocumentUtilitiesPage() {
                 left: 0,
                 right: 0,
                 bottom: 0,
-                background: "rgba(6,6,10,0.7)",
+                background: "rgba(0,0,0,0.5)",
                 backdropFilter: "blur(4px)",
                 display: "flex",
                 flexDirection: "column",
@@ -478,7 +478,7 @@ export default function DocumentUtilitiesPage() {
                     padding: "24px",
                     textAlign: "center",
                     cursor: "pointer",
-                    background: "rgba(255,255,255,0.01)",
+                    background: "var(--bg-surface)",
                   }}
                 >
                   <input
@@ -492,7 +492,7 @@ export default function DocumentUtilitiesPage() {
                   <div style={{ fontSize: 12, fontWeight: 600 }}>
                     {bankFile ? bankFile.name : "Drag bank PDF here or browse"}
                   </div>
-                  <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 4 }}>
+                  <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
                     {bankFile ? formatBytes(bankFile.size) : "Standard encrypted/decrypted bank PDFs"}
                   </div>
                 </div>
@@ -510,12 +510,12 @@ export default function DocumentUtilitiesPage() {
                       onChange={(e) => setBankPassword(e.target.value)}
                       style={{
                         width: "100%",
-                        background: "rgba(255,255,255,0.05)",
+                        background: "var(--bg-surface)",
                         border: "1px solid var(--border-strong)",
                         borderRadius: "var(--radius-sm)",
                         padding: "10px 14px",
                         fontSize: 13,
-                        color: "#fff",
+                        color: "var(--text-primary)",
                         outline: "none",
                       }}
                     />
@@ -552,7 +552,7 @@ export default function DocumentUtilitiesPage() {
                   <div style={{ overflowX: "auto", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)" }}>
                     <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
                       <thead>
-                        <tr style={{ background: "rgba(255,255,255,0.02)", borderBottom: "1px solid var(--border)" }}>
+                        <tr style={{ background: "var(--bg-surface)", borderBottom: "1px solid var(--border)" }}>
                           <th style={{ padding: "10px 12px", textAlign: "left", color: "var(--text-muted)" }}>Date</th>
                           <th style={{ padding: "10px 12px", textAlign: "left", color: "var(--text-muted)" }}>Narration / Particulars</th>
                           <th style={{ padding: "10px 12px", textAlign: "right", color: "var(--text-muted)" }}>Debit / Withdrawal (₹)</th>
@@ -616,7 +616,7 @@ export default function DocumentUtilitiesPage() {
                     padding: "24px",
                     textAlign: "center",
                     cursor: "pointer",
-                    background: "rgba(255,255,255,0.01)",
+                    background: "var(--bg-surface)",
                   }}
                 >
                   <input
@@ -630,7 +630,7 @@ export default function DocumentUtilitiesPage() {
                   <div style={{ fontSize: 12, fontWeight: 600 }}>
                     {splitterFile ? splitterFile.name : "Drag heavy PDF here or browse"}
                   </div>
-                  <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 4 }}>
+                  <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
                     {splitterFile ? formatBytes(splitterFile.size) : "PDF files exceeding portal file limits"}
                   </div>
                 </div>
@@ -655,7 +655,7 @@ export default function DocumentUtilitiesPage() {
                         cursor: "pointer",
                       }}
                     />
-                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9, color: "var(--text-muted)", marginTop: 4 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
                       <span>1.0 MB</span>
                       <span>Target safety margin</span>
                       <span>4.8 MB</span>
@@ -738,7 +738,7 @@ export default function DocumentUtilitiesPage() {
                     padding: "24px",
                     textAlign: "center",
                     cursor: "pointer",
-                    background: "rgba(255,255,255,0.01)",
+                    background: "var(--bg-surface)",
                   }}
                 >
                   <input
@@ -752,7 +752,7 @@ export default function DocumentUtilitiesPage() {
                   <div style={{ fontSize: 12, fontWeight: 600 }}>
                     {enhancerFile ? enhancerFile.name : "Drag scan image here or browse"}
                   </div>
-                  <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 4 }}>
+                  <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
                     {enhancerFile ? formatBytes(enhancerFile.size) : "JPG, PNG, JPEG snapshots"}
                   </div>
                 </div>
@@ -815,7 +815,7 @@ export default function DocumentUtilitiesPage() {
               <div>
                 <h3 style={{ fontSize: 16, fontWeight: 700, margin: "0 0 4px 0" }}>PDF Compressor</h3>
                 <p style={{ fontSize: 12, color: "var(--text-muted)", margin: 0 }}>
-                  Optimizes PDF size by downscaling images and cleaning up garbage page trees. Shows exact byte savings.
+                  Optimizes PDF size by downscaling images and cleaning up unused data. Shows exact byte savings.
                 </p>
               </div>
 
@@ -835,7 +835,7 @@ export default function DocumentUtilitiesPage() {
                     padding: "24px",
                     textAlign: "center",
                     cursor: "pointer",
-                    background: "rgba(255,255,255,0.01)",
+                    background: "var(--bg-surface)",
                   }}
                 >
                   <input
@@ -849,7 +849,7 @@ export default function DocumentUtilitiesPage() {
                   <div style={{ fontSize: 12, fontWeight: 600 }}>
                     {compressorFile ? compressorFile.name : "Drag PDF here or browse"}
                   </div>
-                  <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 4 }}>
+                  <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
                     {compressorFile ? formatBytes(compressorFile.size) : "Standard bulky PDF files"}
                   </div>
                 </div>
@@ -874,7 +874,7 @@ export default function DocumentUtilitiesPage() {
                         cursor: "pointer",
                       }}
                     />
-                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9, color: "var(--text-muted)", marginTop: 4 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
                       <span>10% (Max compression)</span>
                       <span>50% (Recommended)</span>
                       <span>90% (Max clarity)</span>
@@ -900,15 +900,15 @@ export default function DocumentUtilitiesPage() {
                   {originalSize && compressedSize && (
                     <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16 }}>
                       <div className="glass" style={{ padding: "14px 18px", borderRadius: "var(--radius-sm)", textAlign: "center" }}>
-                        <div style={{ fontSize: 10, color: "var(--text-muted)", fontWeight: 600, textTransform: "uppercase" }}>Original Size</div>
+                        <div style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 600, textTransform: "uppercase" }}>Original Size</div>
                         <div style={{ fontSize: 16, fontWeight: 800, color: "var(--text-secondary)", marginTop: 4, fontFamily: "monospace" }}>{formatBytes(originalSize)}</div>
                       </div>
                       <div className="glass" style={{ padding: "14px 18px", borderRadius: "var(--radius-sm)", textAlign: "center", border: "1px solid var(--green)" }}>
-                        <div style={{ fontSize: 10, color: "var(--text-muted)", fontWeight: 600, textTransform: "uppercase" }}>Compressed Size</div>
+                        <div style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 600, textTransform: "uppercase" }}>Compressed Size</div>
                         <div style={{ fontSize: 16, fontWeight: 800, color: "var(--green)", marginTop: 4, fontFamily: "monospace" }}>{formatBytes(compressedSize)}</div>
                       </div>
                       <div className="glass" style={{ padding: "14px 18px", borderRadius: "var(--radius-sm)", textAlign: "center", background: "var(--green-soft)" }}>
-                        <div style={{ fontSize: 10, color: "var(--text-muted)", fontWeight: 600, textTransform: "uppercase" }}>Compaction Savings</div>
+                        <div style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 600, textTransform: "uppercase" }}>Compaction Savings</div>
                         <div style={{ fontSize: 16, fontWeight: 800, color: "var(--green)", marginTop: 4, fontFamily: "monospace" }}>
                           {Math.round(((originalSize - compressedSize) / originalSize) * 100)}%
                         </div>
@@ -978,7 +978,7 @@ export default function DocumentUtilitiesPage() {
                     padding: "24px",
                     textAlign: "center",
                     cursor: "pointer",
-                    background: "rgba(255,255,255,0.01)",
+                    background: "var(--bg-surface)",
                   }}
                 >
                   <input
@@ -992,7 +992,7 @@ export default function DocumentUtilitiesPage() {
                   <div style={{ fontSize: 12, fontWeight: 600 }}>
                     {ocrFile ? ocrFile.name : "Drag scanned PDF here or browse"}
                   </div>
-                  <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 4 }}>
+                  <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
                     {ocrFile ? formatBytes(ocrFile.size) : "Non-searchable scanned PDF files"}
                   </div>
                 </div>
@@ -1068,7 +1068,7 @@ export default function DocumentUtilitiesPage() {
                     style={{
                       width: "100%",
                       height: 240,
-                      background: "rgba(0,0,0,0.25)",
+                      background: "var(--bg-surface)",
                       border: "1px solid var(--border)",
                       borderRadius: "var(--radius-sm)",
                       padding: "16px",

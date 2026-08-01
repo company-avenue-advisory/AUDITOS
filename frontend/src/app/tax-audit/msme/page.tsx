@@ -380,7 +380,7 @@ export default function MSMEAuditPage() {
               padding: "32px 24px",
               textAlign: "center",
               cursor: "pointer",
-              background: dragActive ? "var(--accent-soft)" : "rgba(255,255,255,0.015)",
+              background: dragActive ? "var(--accent-soft)" : "var(--bg-surface)",
               transition: "all 0.2s ease",
               display: "flex",
               flexDirection: "column",
@@ -560,7 +560,7 @@ export default function MSMEAuditPage() {
                   </div>
                   <div
                     style={{
-                      fontSize: 10,
+                      fontSize: 11,
                       fontWeight: 600,
                       color: "var(--text-muted)",
                       textTransform: "uppercase",
@@ -592,7 +592,7 @@ export default function MSMEAuditPage() {
               display: "flex",
               alignItems: "center",
               justifyContent: "space-between",
-              background: "rgba(255,255,255,0.01)",
+              background: "var(--bg-surface)",
             }}
           >
             <div style={{ display: "flex", gap: 8 }}>
@@ -627,7 +627,7 @@ export default function MSMEAuditPage() {
                 display: "inline-flex",
                 alignItems: "center",
                 gap: 6,
-                background: "rgba(255,255,255,0.05)",
+                background: "var(--bg-surface)",
                 border: "1px solid var(--border)",
                 borderRadius: "var(--radius-sm)",
                 padding: "6px 12px",
@@ -637,8 +637,8 @@ export default function MSMEAuditPage() {
                 cursor: "pointer",
                 transition: "all 0.15s ease",
               }}
-              onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(255,255,255,0.08)")}
-              onMouseLeave={(e) => (e.currentTarget.style.background = "rgba(255,255,255,0.05)")}
+              onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-card-hover)")}
+              onMouseLeave={(e) => (e.currentTarget.style.background = "var(--bg-surface)")}
             >
               <Plus size={12} />
               Add Ledger Item
@@ -657,7 +657,7 @@ export default function MSMEAuditPage() {
               <thead>
                 <tr
                   style={{
-                    background: "rgba(255,255,255,0.015)",
+                    background: "var(--bg-surface)",
                     borderBottom: "1px solid var(--border)",
                   }}
                 >
@@ -741,7 +741,7 @@ export default function MSMEAuditPage() {
                           style={{ width: "100%" }}
                         />
                         {!row.paymentDate && (
-                          <div style={{ fontSize: 8, color: "var(--red)", marginTop: 2, paddingLeft: 6 }}>
+                          <div style={{ fontSize: 11, color: "var(--red)", marginTop: 2, paddingLeft: 6 }}>
                             Unpaid (Comp. today)
                           </div>
                         )}
@@ -770,7 +770,7 @@ export default function MSMEAuditPage() {
                             border: "1px solid var(--border)",
                             borderRadius: 6,
                             padding: "2px 6px",
-                            fontSize: 10,
+                            fontSize: 11,
                             fontWeight: 700,
                             outline: "none",
                             cursor: "pointer",
@@ -819,7 +819,7 @@ export default function MSMEAuditPage() {
                         ) : (
                           <span style={{ color: "var(--green)" }}>0d</span>
                         )}
-                        <span style={{ fontSize: 8, color: "var(--text-muted)", display: "block" }}>
+                        <span style={{ fontSize: 11, color: "var(--text-muted)", display: "block" }}>
                           ({details.limitDays}d limit)
                         </span>
                       </td>
@@ -867,7 +867,7 @@ export default function MSMEAuditPage() {
                               borderRadius: 6,
                               padding: "4px 6px",
                               color: isVerified ? "var(--green)" : "var(--accent)",
-                              fontSize: 9,
+                              fontSize: 11,
                               fontWeight: 600,
                               cursor: row.isVerifying || !row.udyamNumber ? "not-allowed" : "pointer",
                               opacity: !row.udyamNumber ? 0.4 : 1,
@@ -974,7 +974,7 @@ const thStyle: React.CSSProperties = {
   textAlign: "left",
   color: "var(--text-muted)",
   fontWeight: 600,
-  fontSize: 10,
+  fontSize: 11,
   textTransform: "uppercase",
   letterSpacing: "0.06em",
   whiteSpace: "nowrap",
