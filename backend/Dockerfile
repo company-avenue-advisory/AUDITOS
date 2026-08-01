@@ -9,6 +9,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Set working directory
 WORKDIR /app
+# Belt-and-braces alongside celery_app.py's own sys.path fix: celery's
+# import_from_cwd() temporarily adds/removes cwd from sys.path around loading
+# the app module, which breaks deferred in-task imports without this.
+ENV PYTHONPATH=/app
 
 # Copy requirements
 COPY requirements.txt .

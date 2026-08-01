@@ -5,10 +5,13 @@ import asyncio
 from celery import Celery
 from dotenv import load_dotenv
 
-# Ensure the backend directory is in python path
+# Insert unconditionally: celery's import_from_cwd() runs this module inside
+# cwd_in_path(), which temporarily puts cwd on sys.path and REMOVES it after --
+# a `not in sys.path` guard silently no-ops (already present at that point)
+# and leaves workers unable to resolve deferred in-task imports (async_tasks,
+# services.*, database, models) once celery_app.py finishes loading.
 backend_dir = os.path.dirname(os.path.abspath(__file__))
-if backend_dir not in sys.path:
-    sys.path.append(backend_dir)
+sys.path.insert(0, backend_dir)
 
 # Load environment variables
 env_path = os.path.join(backend_dir, ".env")
