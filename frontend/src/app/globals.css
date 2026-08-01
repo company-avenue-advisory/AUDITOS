@@ -1,16 +1,44 @@
 @import "tailwindcss";
 
 /*
- * Design tokens — restrained, flat, fintech-grade. Reference: Nanonets and
- * CORAA's actual product UI (checked directly this session) - both use
- * light-first, generous whitespace, one muted accent, no glow/blur/gradient
- * effects. The previous dark-neon-glow + glassmorphism direction read as a
- * generic "AI-generated demo" rather than a serious compliance tool -
- * flattened here while keeping the SAME variable names so every page that
- * already consumes var(--accent)/var(--bg-card)/etc. picks up the new look
- * without needing its own changes.
+ * Design tokens — clean, white-first, professional.
+ * Inspired by aiAccountant.com: pure white backgrounds, professional blue
+ * accent, generous whitespace, subtle card shadows. The previous dark-first
+ * direction read as a developer platform rather than a serious CA-firm tool.
+ * Same variable names so every page picks up the new look automatically.
  */
 :root {
+  --bg-base:       #ffffff;
+  --bg-surface:    #f8fafc;
+  --bg-card:       #ffffff;
+  --bg-card-hover: #f1f5f9;
+  --border:        #e2e8f0;
+  --border-strong: #cbd5e1;
+  --text-primary:  #0f172a;
+  --text-secondary:#475569;
+  --text-muted:    #94a3b8;
+  --accent:        #2563eb;
+  --accent-glow:   rgba(37,99,235,0.08);
+  --accent-soft:   rgba(37,99,235,0.06);
+  --amber:         #b8790f;
+  --amber-soft:    rgba(184,121,15,0.08);
+  --green:         #16a34a;
+  --green-soft:    rgba(22,163,74,0.08);
+  --red:           #dc2626;
+  --red-soft:      rgba(220,38,38,0.08);
+  --blue:          #2563eb;
+  --blue-soft:     rgba(37,99,235,0.08);
+  --radius-sm:     8px;
+  --radius-md:     10px;
+  --radius-lg:     14px;
+  --radius-xl:     18px;
+  --scrollbar-thumb: rgba(0,0,0,0.12);
+  --scrollbar-thumb-hover: rgba(0,0,0,0.22);
+  --sidebar-hover: rgba(0,0,0,0.03);
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace;
+}
+
+[data-theme="dark"] {
   --bg-base:       #0d0d0f;
   --bg-surface:    #131316;
   --bg-card:       #18181b;
@@ -31,40 +59,9 @@
   --red-soft:      rgba(242,102,90,0.12);
   --blue:          #6fa4ff;
   --blue-soft:     rgba(111,164,255,0.12);
-  --radius-sm:     8px;
-  --radius-md:     10px;
-  --radius-lg:     14px;
-  --radius-xl:     18px;
   --scrollbar-thumb: rgba(255,255,255,0.12);
   --scrollbar-thumb-hover: rgba(255,255,255,0.22);
   --sidebar-hover: rgba(255,255,255,0.04);
-  --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace;
-}
-
-[data-theme="light"] {
-  --bg-base:       #ffffff;
-  --bg-surface:    #fafafa;
-  --bg-card:       #f7f7f8;
-  --bg-card-hover: #f0f0f2;
-  --border:        rgba(0,0,0,0.08);
-  --border-strong: rgba(0,0,0,0.14);
-  --text-primary:  #18181b;
-  --text-secondary:#5c5c63;
-  --text-muted:    #8a8a90;
-  --accent:        #3468e0;
-  --accent-glow:   rgba(52,104,224,0.12);
-  --accent-soft:   rgba(52,104,224,0.08);
-  --amber:         #b8790f;
-  --amber-soft:    rgba(184,121,15,0.08);
-  --green:         #157f4a;
-  --green-soft:    rgba(21,127,74,0.08);
-  --red:           #c33a2e;
-  --red-soft:      rgba(195,58,46,0.08);
-  --blue:          #3468e0;
-  --blue-soft:     rgba(52,104,224,0.08);
-  --scrollbar-thumb: rgba(0,0,0,0.12);
-  --scrollbar-thumb-hover: rgba(0,0,0,0.22);
-  --sidebar-hover: rgba(0,0,0,0.03);
 }
 
 *, *::before, *::after { box-sizing: border-box; }
@@ -75,18 +72,31 @@ body {
   background: var(--bg-base);
   color: var(--text-primary);
   font-family: var(--font-inter), system-ui, -apple-system, sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   min-height: 100vh;
 }
 
-/* ─── Flat surface card (no blur, no glow) ─── */
+/* ─── Clean card with subtle shadow (light) / flat (dark) ─── */
 .glass {
   background: var(--bg-card);
   border: 1px solid var(--border);
-  transition: border-color 0.15s ease;
+  border-radius: var(--radius-lg);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
-.glass:hover { border-color: var(--border-strong); }
+.glass:hover {
+  border-color: var(--border-strong);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+}
+[data-theme="dark"] .glass {
+  box-shadow: none;
+}
+[data-theme="dark"] .glass:hover {
+  box-shadow: none;
+}
 
 /* ─── Focus ring ─── */
 .focus-ring:focus-visible {
@@ -119,27 +129,32 @@ body {
   -webkit-text-fill-color: unset;
 }
 
-/* Flat accent button - no gradient, no glow shadow */
+/* Flat accent button with subtle shadow on white */
 .btn-primary {
   background: var(--accent);
   color: #fff;
   border: none;
   border-radius: var(--radius-md);
   font-weight: 600;
+  font-size: 14px;
   letter-spacing: -0.01em;
-  transition: opacity 0.15s ease, transform 0.1s ease;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+  transition: opacity 0.15s ease, transform 0.1s ease, box-shadow 0.15s ease;
 }
-.btn-primary:hover:not(:disabled) { opacity: 0.88; }
+.btn-primary:hover:not(:disabled) { opacity: 0.92; box-shadow: 0 2px 6px rgba(37,99,235,0.18); }
 .btn-primary:active:not(:disabled) { transform: scale(0.98); }
 .btn-primary:disabled { opacity: 0.35; cursor: not-allowed; }
+[data-theme="dark"] .btn-primary { box-shadow: none; }
+[data-theme="dark"] .btn-primary:hover:not(:disabled) { box-shadow: none; }
 
 /* Ghost button */
 .btn-ghost {
-  background: var(--bg-card);
+  background: var(--bg-surface);
   border: 1px solid var(--border);
   color: var(--text-secondary);
   border-radius: var(--radius-sm);
   font-weight: 500;
+  font-size: 13px;
   transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
 }
 .btn-ghost:hover { background: var(--bg-card-hover); border-color: var(--border-strong); color: var(--text-primary); }
