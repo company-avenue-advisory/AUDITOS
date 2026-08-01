@@ -554,7 +554,7 @@ export default function ReconciliationPage() {
                   />
                   <div
                     style={{
-                      fontSize: 10,
+                      fontSize: 11,
                       fontWeight: 600,
                       color: s.col,
                       textTransform: "uppercase",
@@ -842,7 +842,7 @@ export default function ReconciliationPage() {
                               const itc = r.itc_eligibility as string | undefined;
                               if (!itc || itc === "ITC_UNKNOWN") return <span style={{ color: "var(--text-muted)", fontSize: 10 }}>—</span>;
                               const col = itc === "ITC_ELIGIBLE" ? "var(--green)" : itc === "ITC_BLOCKED" ? "var(--red)" : itc === "ITC_RESTRICTED" ? "var(--amber)" : "var(--text-muted)";
-                              return <span style={{ fontSize: 10, fontWeight: 700, color: col, background: `${col}18`, borderRadius: 4, padding: "2px 6px" }}>{itc.replace("ITC_", "")}</span>;
+                              return <span style={{ fontSize: 11, fontWeight: 700, color: col, background: `${col}18`, borderRadius: 4, padding: "2px 6px" }}>{itc.replace("ITC_", "")}</span>;
                             })()}
                           </td>
                         </tr>

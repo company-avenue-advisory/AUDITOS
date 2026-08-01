@@ -261,7 +261,7 @@ export default function FirmSettingsPage() {
               />
             </div>
             <div>
-              <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-secondary)", display: "block", marginBottom: 6 }}>Slug <span style={{ fontWeight: 400, color: "var(--text-muted)" }}>(URL-safe, auto-generated)</span></label>
+              <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-secondary)", display: "block", marginBottom: 6 }}>URL Name <span style={{ fontWeight: 400, color: "var(--text-muted)" }}>(auto-generated)</span></label>
               <input style={input} placeholder="avenue-advisory-llp" value={newFirmSlug}
                 onChange={(e) => setNewFirmSlug(e.target.value.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, ""))}
                 required
@@ -285,7 +285,6 @@ export default function FirmSettingsPage() {
                 <div style={{ fontSize: 11, fontWeight: 700, color: "var(--accent)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>Your Firm</div>
                 <div style={{ fontSize: 20, fontWeight: 800, letterSpacing: "-0.02em" }}>{firm.name}</div>
                 <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 4, fontFamily: "monospace" }}>/{firm.slug}</div>
-                <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 6 }}>ID: {firm.id}</div>
               </div>
               {!editing && (
                 <button onClick={() => setEditing(true)} style={btn("secondary")}>
@@ -300,7 +299,7 @@ export default function FirmSettingsPage() {
                   <input style={input} value={editName} onChange={(e) => setEditName(e.target.value)} required />
                 </div>
                 <div>
-                  <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-secondary)", display: "block", marginBottom: 6 }}>Slug</label>
+                  <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-secondary)", display: "block", marginBottom: 6 }}>URL Name</label>
                   <input style={input} value={editSlug}
                     onChange={(e) => setEditSlug(e.target.value.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, ""))}
                     required
@@ -384,7 +383,7 @@ export default function FirmSettingsPage() {
           <div style={{ ...card, background: "var(--accent-soft)", border: "1px solid var(--accent-glow)" }}>
             <div style={{ fontSize: 12, fontWeight: 600, color: "var(--accent)", marginBottom: 8 }}>Firm GSTIN</div>
             <div style={{ fontSize: 13, color: "var(--text-secondary)", marginBottom: 4 }}>
-              Set in <code style={{ background: "var(--bg-card)", padding: "1px 6px", borderRadius: 4, fontSize: 12 }}>backend/.env</code> as <code style={{ background: "var(--bg-card)", padding: "1px 6px", borderRadius: 4, fontSize: 12 }}>FIRM_GSTIN</code>.
+              Contact your administrator to update the firm GSTIN.
             </div>
             <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
               The first 2 digits determine your state code for B2B/B2CS/B2CL inter-state split in GSTR-1 exports. Update this before exporting.

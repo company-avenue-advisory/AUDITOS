@@ -343,7 +343,7 @@ export default function Sidebar() {
             </div>
             <div
               style={{
-                fontSize: 9,
+                fontSize: 10,
                 fontWeight: 700,
                 color: "var(--accent)",
                 textTransform: "uppercase",
