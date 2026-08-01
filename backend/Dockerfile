@@ -23,6 +23,16 @@ RUN pip install --no-cache-dir -r requirements.txt uvicorn fastapi python-multip
 # Copy backend files
 COPY . .
 
+# backend/core uses absolute imports like `from backend.core.schema import ...`,
+# written assuming the process runs from the repo root with `backend/` as a
+# real subpackage. This image instead copies backend/'s contents straight
+# into /app, so there's no `backend` package on disk -- those imports raise
+# ModuleNotFoundError: No module named 'backend'. Rather than rewrite ~40
+# files across two inconsistent import conventions (some bare like
+# `services.xxx`, some `backend.core.xxx`), self-link /app as its own
+# `backend` child so both resolve.
+RUN ln -s /app /app/backend
+
 # Expose port 8000
 EXPOSE 8000
 
