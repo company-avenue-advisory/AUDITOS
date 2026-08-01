@@ -51,7 +51,8 @@ class GoogleDriveSyncPipeline:
 
     def __init__(self, tenant_id: str, google_drive_folder_id: str,
                  excel_output_path: str, invoice_type: str = "both",
-                 period: str = None):
+                 period: str = None, max_files: int = None,
+                 subfolder_id: str = None):
         """
         Initialize sync pipeline.
 
@@ -60,6 +61,16 @@ class GoogleDriveSyncPipeline:
             google_drive_folder_id: Google Drive folder ID containing invoices
             excel_output_path: Path where Excel file should be saved
             invoice_type: "sales", "purchase", or "both"
+            max_files: Cap on how many new/changed files this run will
+                process, across credit notes, archives and invoices
+                combined. Extraction is LLM-bound (~80-90s/file) against a
+                1-hour Celery hard time limit, so a large folder must be
+                drained over several bounded triggers rather than one
+                unbounded run. None = no cap. Anything over the cap is
+                simply left untracked, so the next run picks it up.
+            subfolder_id: Restrict this run to one subfolder of the
+                configured tree (e.g. a single month), instead of walking
+                from google_drive_folder_id. None = walk the whole tree.
             period: "YYYY-MM" for the month this folder represents. When
                 set (only passed by sales_ingestion_task's scheduled runs -
                 the legacy google_drive_sync_task still passes None), a
@@ -79,8 +90,14 @@ class GoogleDriveSyncPipeline:
         self.excel_output_path = excel_output_path
         self.invoice_type = invoice_type
         self.period = period
+        self.max_files = max_files if (max_files is None or max_files > 0) else None
+        self.subfolder_id = subfolder_id
+        # Remaining per-run file budget, decremented as files are consumed.
+        # None = unlimited.
+        self._files_budget = self.max_files
+        self._files_deferred = 0
 
-        self.drive = GoogleDriveConnector(google_drive_folder_id)
+        self.drive = GoogleDriveConnector(subfolder_id or google_drive_folder_id)
         self.db = SessionLocal()
         self.file_tracker = DBTracker(self.db)
 
@@ -191,6 +208,15 @@ class GoogleDriveSyncPipeline:
                 md5 = drive_file.md5_checksum or ""
 
                 if not self.file_tracker.is_file_processed(file_id, md5):
+                    # Respect the remaining max_files budget (credit notes and
+                    # archives above have already drawn from it). Over-budget
+                    # files are left entirely untracked so the next triggered
+                    # run picks them up.
+                    if self._budget_exhausted():
+                        self._files_deferred += 1
+                        continue
+                    self._consume_budget()
+
                     files_to_process.append(drive_file)
                     if self.file_tracker.db.query(GoogleDriveFileTracker).filter(
                         GoogleDriveFileTracker.google_drive_id == file_id
@@ -200,7 +226,11 @@ class GoogleDriveSyncPipeline:
                         sync_job.new_files += 1
 
             self.db.commit()
-            logger.info(f"[GoogleDriveSync] {len(files_to_process)} new/updated files to process")
+            logger.info(
+                f"[GoogleDriveSync] {len(files_to_process)} new/updated files to process"
+                + (f" ({self._files_deferred} deferred by max_files={self.max_files})"
+                   if self._files_deferred else "")
+            )
 
             if not files_to_process:
                 logger.info("[GoogleDriveSync] No new files to process. Sync complete.")
@@ -291,9 +321,21 @@ class GoogleDriveSyncPipeline:
         """
         def lister(folder_id: str):
             return self.drive.list_files(file_types=None, folder_id=folder_id)
+        # subfolder_id (when given) scopes the whole run to one branch of
+        # the tree - e.g. a single month - instead of the configured root.
+        walk_root = self.subfolder_id or self.google_drive_folder_id
         if self.invoice_type == "purchase":
-            return walk_and_classify_purchase(lister, self.google_drive_folder_id)
-        return walk_and_classify(lister, self.google_drive_folder_id)
+            return walk_and_classify_purchase(lister, walk_root)
+        return walk_and_classify(lister, walk_root)
+
+    def _budget_exhausted(self) -> bool:
+        """True once this run has consumed its max_files budget."""
+        return self._files_budget is not None and self._files_budget <= 0
+
+    def _consume_budget(self, n: int = 1):
+        """Charge n files against this run's max_files budget (no-op if uncapped)."""
+        if self._files_budget is not None:
+            self._files_budget -= n
 
     def _track_unprocessed(self, files: List[ClassifiedFile], reason: str):
         """
@@ -393,6 +435,13 @@ class GoogleDriveSyncPipeline:
             if self.file_tracker.is_file_processed(file_id, md5):
                 continue
 
+            if self._budget_exhausted():
+                self._files_deferred += 1
+                logger.info(f"[GoogleDriveSync] max_files budget reached - deferring credit note {filename}")
+                continue
+
+            self._consume_budget()
+
             try:
                 self.file_tracker.mark_as_processing(file_id, self.tenant_id, filename, md5, modified_time)
 
@@ -452,6 +501,15 @@ class GoogleDriveSyncPipeline:
 
             if self.file_tracker.is_file_processed(file_id, md5):
                 continue
+
+            # A zip is charged as a single unit, matching how it's deduped
+            # (see docstring) - its nested files have no Drive id of their own.
+            if self._budget_exhausted():
+                self._files_deferred += 1
+                logger.info(f"[GoogleDriveSync] max_files budget reached - deferring archive {filename}")
+                continue
+
+            self._consume_budget()
 
             try:
                 self.file_tracker.mark_as_processing(file_id, self.tenant_id, filename, md5, modified_time)
@@ -653,5 +711,10 @@ class GoogleDriveSyncPipeline:
             "archives_processed": getattr(self, "_archives_processed", 0),
             "archives_failed": getattr(self, "_archives_failed", 0),
             "unknown_found": getattr(self, "_unknown_found", 0),
+            # how the run was scoped, and what it left behind for the next
+            # trigger because of the cap (0 when uncapped / fully drained)
+            "max_files": self.max_files,
+            "subfolder_id": self.subfolder_id,
+            "files_deferred": self._files_deferred,
             "period_review": getattr(self, "_period_review_result", {"attempted": False}),
         }

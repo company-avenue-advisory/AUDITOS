@@ -148,24 +148,38 @@ def ocr_extract_task(self, pdf_bytes_b64: str, provider: str = "auto") -> str:
 @celery_app.task(name="tasks.google_drive_sync_task", bind=True, max_retries=1, time_limit=3600)
 def google_drive_sync_task(self, tenant_id: str, google_drive_folder_id: str,
                            excel_output_path: str, invoice_type: str = "both",
-                           model_config: dict = None) -> dict:
+                           model_config: dict = None, max_files: int = None,
+                           subfolder_id: str = None) -> dict:
     """
     Scheduled sync task — monitors Google Drive for new/updated invoices,
     processes them, and appends results to Excel.
 
-    Runs on the schedule registered via setup_google_drive_sync.py.
+    Runs on the schedule registered via setup_google_drive_sync.py, and
+    on demand from POST /api/google-drive-sync/trigger.
     Respects dedup via Google Drive file ID + md5Checksum.
+
+    max_files caps how many new/changed files a single run processes -
+    extraction is LLM-bound (~80-90s/file) against this task's own 1-hour
+    hard time_limit, so a large folder is drained over several bounded
+    triggers. subfolder_id scopes the run to one branch of the tree (e.g.
+    a single month) instead of the whole configured folder. Both default
+    to None (unbounded, whole tree), preserving the scheduled behaviour.
     """
     from services.google_drive_sync import GoogleDriveSyncPipeline
 
     try:
-        print(f"[Celery:google_drive_sync] Starting sync for tenant {tenant_id}")
+        print(
+            f"[Celery:google_drive_sync] Starting sync for tenant {tenant_id} "
+            f"(max_files={max_files}, subfolder_id={subfolder_id})"
+        )
 
         pipeline = GoogleDriveSyncPipeline(
             tenant_id=tenant_id,
             google_drive_folder_id=google_drive_folder_id,
             excel_output_path=excel_output_path,
-            invoice_type=invoice_type
+            invoice_type=invoice_type,
+            max_files=max_files,
+            subfolder_id=subfolder_id,
         )
 
         result = pipeline.run(model_config=model_config)
