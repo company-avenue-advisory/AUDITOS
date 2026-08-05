@@ -4,6 +4,7 @@ import React, { useState, useEffect } from "react";
 import { usePathname } from "next/navigation";
 import Link from "next/link";
 import { fetchPreferences, savePreferences } from "../utils/sessionSync";
+import BrandMark from "./BrandMark";
 import {
   LayoutDashboard,
   FileSpreadsheet,
@@ -166,14 +167,12 @@ export default function Sidebar() {
             style={{
               width: 34,
               height: 34,
-              borderRadius: 10,
-              background: "var(--accent)",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
             }}
           >
-            <Shield size={17} style={{ color: "#fff" }} />
+            <BrandMark size={34} />
           </div>
           <div>
             <div

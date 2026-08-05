@@ -584,7 +584,7 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
     <>
       <style dangerouslySetInnerHTML={{ __html: `
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-        .app-container { font-family: 'Inter', sans-serif; background: var(--bg-base); min-height: 100vh; color: var(--text-primary); padding: 0; }
+        .app-container { font-family: var(--font-sans), system-ui, sans-serif; background: var(--bg-base); min-height: 100vh; color: var(--text-primary); padding: 0; }
         .topnav { display: flex; align-items: center; justify-content: space-between; padding: 14px 28px; border-bottom: 0.5px solid rgba(255,255,255,0.07); }
         .topnav .logo { display: flex; align-items: center; gap: 10px; }
         .logo-mark { width: 28px; height: 28px; border-radius: 7px; background: var(--accent); display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 700; color: #fff; }
