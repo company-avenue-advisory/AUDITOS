@@ -2,7 +2,8 @@
 
 import React, { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Shield, Sparkles, LogIn, UserPlus, Eye, EyeOff } from "lucide-react";
+import { Sparkles, LogIn, UserPlus, Eye, EyeOff } from "lucide-react";
+import BrandMark from "../../components/BrandMark";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -98,17 +99,13 @@ export default function LoginPage() {
         <div style={{ display: "flex", flexDirection: "column", alignItems: "center", marginBottom: "32px" }}>
           <div
             style={{
-              width: "48px",
-              height: "48px",
-              borderRadius: "14px",
-              background: "var(--accent)",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
               marginBottom: "16px",
             }}
           >
-            <Shield size={24} style={{ color: "#fff" }} />
+            <BrandMark size={48} />
           </div>
           <h1
             style={{

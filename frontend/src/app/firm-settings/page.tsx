@@ -221,7 +221,7 @@ export default function FirmSettingsPage() {
         <div>
           <h1 style={{ fontSize: 22, fontWeight: 800, margin: 0, letterSpacing: "-0.03em" }}>Firm Settings</h1>
           <p style={{ fontSize: 13, color: "var(--text-muted)", margin: "4px 0 0" }}>
-            Manage your CA firm's name, slug, and team members.
+            Manage your CA firm's name, URL, and team members.
           </p>
         </div>
         <button onClick={fetchFirm} style={{ marginLeft: "auto", ...btn("secondary") }}>
