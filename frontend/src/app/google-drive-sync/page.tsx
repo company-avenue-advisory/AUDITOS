@@ -10,6 +10,8 @@ import {
 import { apiRequest } from "@/utils/api";
 import StatusBadge from "../../components/ui/StatusBadge";
 import MetricCard from "../../components/ui/MetricCard";
+import { usePeriod } from "../../utils/PeriodContext";
+import { labelForPeriod } from "../../utils/periods";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -69,25 +71,6 @@ function extractFolderIdFromUrl(input: string): string {
   return "";
 }
 
-/** Generate last 12 months as options, most recent first. */
-function generateMonthOptions(): { label: string; value: string }[] {
-  const options: { label: string; value: string }[] = [];
-  const now = new Date();
-  for (let i = 0; i < 12; i++) {
-    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-    const year = d.getFullYear();
-    const month = d.getMonth() + 1;
-    const monthName = d.toLocaleString("en-IN", { month: "long" });
-    options.push({
-      label: `${monthName} ${year}`,
-      value: `${year}-${String(month).padStart(2, "0")}`,
-    });
-  }
-  return options;
-}
-
-const MONTH_OPTIONS = generateMonthOptions();
-
 const PIPELINE_LABELS: Record<Pipeline, string> = {
   sales: "Sales Invoices",
   purchase: "Purchase Invoices",
@@ -138,7 +121,7 @@ export default function GoogleDriveSyncPage() {
   const [monthFolderPattern, setMonthFolderPattern] = useState("{n}. {month_name} {year}");
 
   // Month selector
-  const [selectedPeriod, setSelectedPeriod] = useState(MONTH_OPTIONS[0].value);
+  const { period: selectedPeriod } = usePeriod();
 
   // Pipeline task tracking
   const [pipelineTaskIds, setPipelineTaskIds] = useState<Record<Pipeline, string | null>>({
@@ -335,7 +318,7 @@ export default function GoogleDriveSyncPage() {
   );
 
   const latestJob = history.find(j => j.status === "completed");
-  const selectedMonthLabel = MONTH_OPTIONS.find(o => o.value === selectedPeriod)?.label ?? selectedPeriod;
+  const selectedMonthLabel = labelForPeriod(selectedPeriod);
 
   // ── Render ────────────────────────────────────────────────────────────────
 
@@ -368,29 +351,6 @@ export default function GoogleDriveSyncPage() {
           gap: 16,
           flexWrap: "wrap",
         }}>
-          {/* Month selector */}
-          <div style={{ minWidth: 200 }}>
-            <label style={{ ...labelStyle, marginBottom: 4 }}>Month</label>
-            <select
-              value={selectedPeriod}
-              onChange={e => setSelectedPeriod(e.target.value)}
-              style={{
-                ...inputStyle,
-                padding: "10px 14px",
-                fontSize: 14,
-                fontWeight: 500,
-                cursor: "pointer",
-              }}
-            >
-              {MONTH_OPTIONS.map(opt => (
-                <option key={opt.value} value={opt.value}>{opt.label}</option>
-              ))}
-            </select>
-          </div>
-
-          {/* Spacer pushes buttons to the right on wide screens */}
-          <div style={{ flex: 1, minWidth: 16 }} />
-
           {/* Action buttons */}
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
             <button

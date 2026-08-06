@@ -3,7 +3,9 @@
 import React, { useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import Sidebar from "./Sidebar";
+import TopBar from "./TopBar";
 import { fetchActiveSession, clearActiveSession, type ResumableSession } from "../utils/sessionSync";
+import { PeriodProvider } from "../utils/PeriodContext";
 
 // Setup global fetch interceptor
 if (typeof window !== "undefined") {
@@ -126,7 +128,7 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
   };
 
   return (
-    <>
+    <PeriodProvider>
       <Sidebar />
       <div
         id="main-content-area"
@@ -138,6 +140,7 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
           flexDirection: "column",
         }}
       >
+        <TopBar />
         {children}
       </div>
 
@@ -207,6 +210,6 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
           </div>
         </div>
       )}
-    </>
+    </PeriodProvider>
   );
 }

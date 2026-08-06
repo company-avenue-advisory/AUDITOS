@@ -12,6 +12,8 @@ import {
 } from "lucide-react";
 import StatusBadge from "../../components/ui/StatusBadge";
 import MetricCard from "../../components/ui/MetricCard";
+import { usePeriod } from "../../utils/PeriodContext";
+import { labelForPeriod } from "../../utils/periods";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -69,7 +71,7 @@ export default function PurchaseGstr2bReviewPage() {
   const [actionLoading, setActionLoading] = useState(false);
   const [error, setError] = useState("");
 
-  const [period, setPeriod] = useState("");
+  const { period } = usePeriod();
   const [gstin, setGstin] = useState("");
   const [gstr2bFile, setGstr2bFile] = useState<File | null>(null);
   const [generating, setGenerating] = useState(false);
@@ -105,7 +107,7 @@ export default function PurchaseGstr2bReviewPage() {
 
   const handleGenerate = async () => {
     if (!period || !gstin || !gstr2bFile) {
-      setError("Enter a period, GSTIN, and choose a GSTR-2B JSON file.");
+      setError("Enter a GSTIN and choose a GSTR-2B JSON file.");
       return;
     }
     setGenerating(true);
@@ -198,22 +200,23 @@ export default function PurchaseGstr2bReviewPage() {
         <div style={{ width: 320, flexShrink: 0 }}>
           <div className="glass" style={{ borderRadius: "var(--radius-md)", padding: 16, marginBottom: 16 }}>
             <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>Generate a review</div>
-            <input
-              type="text"
-              placeholder="2026-06"
-              value={period}
-              onChange={(e) => setPeriod(e.target.value)}
+            <div
               style={{
-                width: "100%",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
                 padding: "8px 10px",
                 marginBottom: 8,
                 borderRadius: "var(--radius-sm)",
                 border: "1px solid var(--border)",
-                background: "var(--bg-card)",
-                color: "var(--text-primary)",
-                fontSize: 13,
+                background: "var(--bg-base)",
               }}
-            />
+            >
+              <span style={{ fontSize: 11, color: "var(--text-muted)" }}>Period</span>
+              <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
+                {labelForPeriod(period)}
+              </span>
+            </div>
             <input
               type="text"
               placeholder="27AADCO0061H1ZQ"
