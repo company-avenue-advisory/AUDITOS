@@ -17,21 +17,28 @@ Setup (once):
 
     123456 is the 6-digit pairing code generated in the AuditOS UI (Push to
     Tally -> Set up local agent). Saves the resulting agent token to a local
-    config file (tally_relay_agent_config.json, next to this script) — never
-    re-enter the code again after this.
+    config file (tally_relay_agent_config.json, next to this script/exe) —
+    never re-enter the code again after this.
 
 Run (every time after that):
     python tally_relay_agent.py
 
-    Starts the poll loop. Leave this running in the background (Task
-    Scheduler / a Windows service is the natural next step — not built yet,
-    see README's Tally architecture diagram for what's still "planned").
+    Starts the poll loop. Leave this running in the background, or register
+    it to launch automatically at login (Windows only, no admin rights
+    needed — this writes a user-level Run registry key, not a full Windows
+    Service, since accountant machines can't be assumed to have admin):
+
+        python tally_relay_agent.py --install-startup
+        python tally_relay_agent.py --uninstall-startup
+
+Packaging into a standalone .exe (no Python install needed on the
+accountant's machine): see tools/build_tally_relay_agent_exe.ps1. This file
+is written to work identically frozen or not — see IS_FROZEN below.
 """
 
 import argparse
 import json
 import logging
-import os
 import sys
 import time
 import urllib.error
@@ -39,11 +46,22 @@ import urllib.request
 from pathlib import Path
 from typing import Optional
 
-# Import tally_connector.py whether this script sits inside the repo
-# (backend/tools/, sibling of backend/services/) or was copied standalone
-# onto an accountant's machine next to a copy of tally_connector.py.
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "services"))
+# Running frozen (PyInstaller --onefile) vs. as a plain script changes where
+# "next to this program" actually is: frozen, __file__ points into a
+# temporary extraction directory (sys._MEIPASS) that's wiped after the
+# process exits, so persistent state (config, startup registration) must
+# anchor on sys.executable's directory instead. Unfrozen, __file__ is fine.
+IS_FROZEN = getattr(sys, "frozen", False)
+PROGRAM_DIR = Path(sys.executable).resolve().parent if IS_FROZEN else Path(__file__).resolve().parent
+
+if not IS_FROZEN:
+    # Import tally_connector.py whether this script sits inside the repo
+    # (backend/tools/, sibling of backend/services/) or was copied standalone
+    # onto an accountant's machine next to a copy of tally_connector.py.
+    # Frozen builds bundle tally_connector.py directly (see the build
+    # script), so no path juggling is needed there.
+    sys.path.insert(0, str(PROGRAM_DIR))
+    sys.path.insert(0, str(PROGRAM_DIR.parent / "services"))
 try:
     from tally_connector import TallyConfig, TallyConnectionError, TallyConnector
 except ImportError:
@@ -52,7 +70,8 @@ except ImportError:
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("tally_relay_agent")
 
-CONFIG_PATH = Path(__file__).resolve().parent / "tally_relay_agent_config.json"
+CONFIG_PATH = PROGRAM_DIR / "tally_relay_agent_config.json"
+STARTUP_REGISTRY_NAME = "AuditOSTallyRelayAgent"
 POLL_INTERVAL_SECONDS = 5
 BACKOFF_ON_ERROR_SECONDS = 15
 REQUEST_TIMEOUT_SECONDS = 20
@@ -154,6 +173,61 @@ def run_poll_loop(cfg: dict) -> None:
         except KeyboardInterrupt:
             logger.info("Stopped.")
             return
+        except Exception as e:
+            # Anything unexpected (a bad job payload, a transient OS error,
+            # etc.) must not kill an unattended background process — log and
+            # keep polling rather than exiting silently. Startup-registered
+            # agents have no one watching the terminal to notice a crash.
+            logger.error(f"Unexpected error in poll loop, continuing: {e}")
+            time.sleep(BACKOFF_ON_ERROR_SECONDS)
+
+
+def _startup_command() -> str:
+    """The command line written to the Run registry key. Frozen: just the
+    exe. Unfrozen: prefer pythonw.exe (no console window popping up at every
+    login) over python.exe if it's sitting next to the interpreter in use."""
+    if IS_FROZEN:
+        return f'"{sys.executable}"'
+
+    python_exe = Path(sys.executable)
+    pythonw = python_exe.with_name("pythonw.exe")
+    interpreter = str(pythonw) if pythonw.exists() else str(python_exe)
+    return f'"{interpreter}" "{Path(__file__).resolve()}"'
+
+
+def install_startup() -> None:
+    """Registers this agent to launch automatically at Windows login via a
+    per-user Run key — deliberately not a full Windows Service, since
+    accountant machines can't be assumed to have admin rights and a Service
+    install would need them. Idempotent (overwrites any existing entry)."""
+    if sys.platform != "win32":
+        raise RuntimeError("--install-startup is Windows-only")
+    if not _load_config():
+        raise RuntimeError(f"Pair first (--pair CODE --backend-url URL) before installing startup — no config at {CONFIG_PATH}")
+
+    import winreg
+    key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_SET_VALUE)
+    try:
+        winreg.SetValueEx(key, STARTUP_REGISTRY_NAME, 0, winreg.REG_SZ, _startup_command())
+    finally:
+        winreg.CloseKey(key)
+    logger.info(f"Installed: will launch automatically at login (registry value {STARTUP_REGISTRY_NAME!r}).")
+
+
+def uninstall_startup() -> None:
+    if sys.platform != "win32":
+        raise RuntimeError("--uninstall-startup is Windows-only")
+
+    import winreg
+    key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_SET_VALUE)
+    try:
+        try:
+            winreg.DeleteValue(key, STARTUP_REGISTRY_NAME)
+            logger.info("Removed from startup.")
+        except FileNotFoundError:
+            logger.info("Was not registered for startup — nothing to remove.")
+    finally:
+        winreg.CloseKey(key)
 
 
 def main() -> None:
@@ -163,12 +237,35 @@ def main() -> None:
     parser.add_argument("--name", help="Optional label for this agent, e.g. 'Reception PC'")
     parser.add_argument("--tally-host", default=None, help="Override the local Tally host (default: localhost)")
     parser.add_argument("--tally-port", type=int, default=None, help="Override the local Tally port (default: 9000)")
+    parser.add_argument("--install-startup", action="store_true", help="Launch automatically at Windows login (no admin needed)")
+    parser.add_argument("--uninstall-startup", action="store_true", help="Undo --install-startup")
     args = parser.parse_args()
 
     if args.pair:
         if not args.backend_url:
             parser.error("--backend-url is required with --pair")
-        pair(args.backend_url, args.pair, args.name)
+        try:
+            pair(args.backend_url, args.pair, args.name)
+        except RuntimeError as e:
+            # A raw traceback here is bad UX for a non-technical accountant
+            # running the packaged .exe — caught live: an unreachable/wrong
+            # backend URL surfaced as "Failed to execute script" with a full
+            # Python stack, no indication what actually went wrong.
+            parser.error(str(e))
+        return
+
+    if args.install_startup:
+        try:
+            install_startup()
+        except RuntimeError as e:
+            parser.error(str(e))
+        return
+
+    if args.uninstall_startup:
+        try:
+            uninstall_startup()
+        except RuntimeError as e:
+            parser.error(str(e))
         return
 
     cfg = _load_config()

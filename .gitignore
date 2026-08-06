@@ -38,6 +38,11 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
+*.spec
+
+# Tally local bridge agent — this file holds a live per-agent auth token,
+# generated locally by tally_relay_agent.py --pair, never checked in.
+tally_relay_agent_config.json
 
 # Excel and data files
 *.xlsx
