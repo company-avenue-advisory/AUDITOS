@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useRef, useEffect, useMemo } from "react";
+import Link from "next/link";
 import { ChevronLeft } from "lucide-react";
 import ReviewPanel from "@/components/ReviewPanel";
 import { useSessionSync, clearActiveSession } from "@/utils/sessionSync";
@@ -40,17 +41,6 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
   const [isTraceLoading, setIsTraceLoading] = useState(false);
   // Phase 4A: Review Panel state
   const [reviewTask, setReviewTask] = useState<{ taskId: string; filename: string } | null>(null);
-
-  // Tally connector: push ERP_READY items to TallyPrime as vouchers
-  const [showTallyModal, setShowTallyModal] = useState(false);
-  const [tallyHost, setTallyHost] = useState("");
-  const [tallyPort, setTallyPort] = useState("9000");
-  const [tallyCompany, setTallyCompany] = useState("");
-  const [isPushingToTally, setIsPushingToTally] = useState(false);
-  const [tallyPushResult, setTallyPushResult] = useState<any>(null);
-  const [tallyCompanies, setTallyCompanies] = useState<{ name: string; formal_name: string }[]>([]);
-  const [isLoadingTallyCompanies, setIsLoadingTallyCompanies] = useState(false);
-  const [tallyCompaniesError, setTallyCompaniesError] = useState<string | null>(null);
 
   // Auto-save session state so users can resume across devices/interfaces
   const sessionState = useMemo(() => ({
@@ -443,95 +433,6 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
       URL.revokeObjectURL(url);
     } catch (e: any) {
       alert("Error downloading GSTR-1 JSON: " + e.message);
-    }
-  };
-
-  const fetchTallyCompanies = async (host: string, port: string) => {
-    if (!host.trim()) return;
-    setIsLoadingTallyCompanies(true);
-    setTallyCompaniesError(null);
-    try {
-      const res = await fetch(
-        `${API_BASE_URL}/api/tally/companies?host=${encodeURIComponent(host.trim())}&port=${parseInt(port, 10) || 9000}`,
-        { headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } }
-      );
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.detail || "Could not reach TallyPrime");
-      setTallyCompanies(data.companies || []);
-      if (!data.companies?.length) {
-        setTallyCompaniesError("No companies open in Tally right now — open one, then refresh.");
-      }
-    } catch (e: any) {
-      setTallyCompanies([]);
-      setTallyCompaniesError(e.message || "Could not reach TallyPrime");
-    } finally {
-      setIsLoadingTallyCompanies(false);
-    }
-  };
-
-  const openTallyModal = async () => {
-    setTallyPushResult(null);
-    setTallyCompanies([]);
-    setTallyCompaniesError(null);
-    setShowTallyModal(true);
-    let host = tallyHost;
-    let port = tallyPort;
-    try {
-      const res = await fetch(`${API_BASE_URL}/api/tally/config`, {
-        headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.configured && data.config) {
-          host = data.config.host || "";
-          port = String(data.config.port || 9000);
-          setTallyHost(host);
-          setTallyPort(port);
-          setTallyCompany(data.config.company || "");
-        }
-      }
-    } catch {
-      // No saved config yet, or fetch failed — leave fields blank for manual entry.
-    }
-    if (host.trim()) {
-      fetchTallyCompanies(host, port);
-    }
-  };
-
-  const handlePushToTally = async () => {
-    if (!batchId) {
-      alert("No active batch to push.");
-      return;
-    }
-    if (!tallyHost.trim() || !tallyCompany.trim()) {
-      alert("Enter both the TallyPrime host/IP and the company name.");
-      return;
-    }
-    setIsPushingToTally(true);
-    setTallyPushResult(null);
-    try {
-      const res = await fetch(`${API_BASE_URL}/api/tally/push/${batchId}`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${localStorage.getItem("token")}`,
-        },
-        body: JSON.stringify({
-          host: tallyHost.trim(),
-          port: parseInt(tallyPort, 10) || 9000,
-          company: tallyCompany.trim(),
-          type: "both",
-        }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(data.detail || "Push to Tally failed");
-      }
-      setTallyPushResult(data);
-    } catch (e: any) {
-      setTallyPushResult({ error: e.message || "Push to Tally failed" });
-    } finally {
-      setIsPushingToTally(false);
     }
   };
 
@@ -1479,19 +1380,20 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
                       </button>
                     )}
                     {(salesItems.length > 0 || purchaseItems.length > 0) && (
-                      <button
+                      <Link
+                        href={batchId ? `/tally-sync?batchId=${batchId}` : "/tally-sync"}
                         className="dl-btn secondary"
-                        onClick={openTallyModal}
+                        style={{ textDecoration: "none" }}
                       >
                         <div className="dl-btn-left">
                           <span className="dl-btn-icon">⇄</span>
                           <div>
-                            <div className="dl-btn-title">Push to Tally</div>
+                            <div className="dl-btn-title">Manage in Tally Sync</div>
                             <div className="dl-btn-sub">Direct connect · ERP_READY items only</div>
                           </div>
                         </div>
                         <span className="dl-btn-arrow">→</span>
-                      </button>
+                      </Link>
                     )}
                   </div>
 
@@ -1883,148 +1785,6 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
                 </div>
               )}
             </div>
-          </div>
-        </div>
-      )}
-
-      {/* Tally connector: push ERP_READY items as vouchers */}
-      {showTallyModal && (
-        <div
-          style={{
-            position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)",
-            display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000,
-          }}
-          onClick={() => !isPushingToTally && setShowTallyModal(false)}
-        >
-          <div
-            style={{
-              background: "#0c0c14", border: "1px solid var(--border)", borderRadius: 12,
-              padding: 24, width: 420, maxWidth: "90vw",
-            }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h3 style={{ margin: 0, marginBottom: 4, color: "var(--text-primary)" }}>Push to Tally</h3>
-            <p style={{ fontSize: 13, color: "var(--text-secondary)", marginTop: 0, marginBottom: 16 }}>
-              Pushes only items marked <strong>ERP_READY</strong> (passed reconciliation review) as vouchers to TallyPrime over your LAN.
-            </p>
-
-            {!tallyPushResult && (
-              <>
-                <label style={{ fontSize: 13, color: "var(--text-secondary)", display: "block", marginBottom: 4 }}>TallyPrime Host / IP</label>
-                <input
-                  value={tallyHost}
-                  onChange={(e) => setTallyHost(e.target.value)}
-                  placeholder="192.168.1.100"
-                  disabled={isPushingToTally}
-                  style={{ width: "100%", padding: "8px 10px", marginBottom: 12, background: "#15151f", border: "1px solid var(--border)", borderRadius: 6, color: "var(--text-primary)" }}
-                />
-                <label style={{ fontSize: 13, color: "var(--text-secondary)", display: "block", marginBottom: 4 }}>Port</label>
-                <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-                  <input
-                    value={tallyPort}
-                    onChange={(e) => setTallyPort(e.target.value)}
-                    placeholder="9000"
-                    disabled={isPushingToTally}
-                    style={{ flex: 1, padding: "8px 10px", background: "#15151f", border: "1px solid var(--border)", borderRadius: 6, color: "var(--text-primary)" }}
-                  />
-                  <button
-                    className="dl-btn secondary"
-                    style={{ padding: "8px 12px", fontSize: 13, whiteSpace: "nowrap" }}
-                    disabled={isPushingToTally || isLoadingTallyCompanies || !tallyHost.trim()}
-                    onClick={() => fetchTallyCompanies(tallyHost, tallyPort)}
-                  >
-                    {isLoadingTallyCompanies ? "Finding…" : "Find companies"}
-                  </button>
-                </div>
-
-                <label style={{ fontSize: 13, color: "var(--text-secondary)", display: "block", marginBottom: 4 }}>Tally Company</label>
-                {tallyCompanies.length > 0 ? (
-                  <select
-                    value={tallyCompany}
-                    onChange={(e) => setTallyCompany(e.target.value)}
-                    disabled={isPushingToTally}
-                    style={{ width: "100%", padding: "8px 10px", marginBottom: 20, background: "#15151f", border: "1px solid var(--border)", borderRadius: 6, color: "var(--text-primary)" }}
-                  >
-                    {!tallyCompanies.some((c) => c.name === tallyCompany) && tallyCompany && (
-                      <option value={tallyCompany}>{tallyCompany}</option>
-                    )}
-                    {tallyCompanies.map((c) => (
-                      <option key={c.name} value={c.name}>{c.formal_name || c.name}</option>
-                    ))}
-                  </select>
-                ) : (
-                  <>
-                    <input
-                      value={tallyCompany}
-                      onChange={(e) => setTallyCompany(e.target.value)}
-                      placeholder="Your Company Name"
-                      disabled={isPushingToTally}
-                      style={{ width: "100%", padding: "8px 10px", marginBottom: tallyCompaniesError ? 4 : 20, background: "#15151f", border: "1px solid var(--border)", borderRadius: 6, color: "var(--text-primary)" }}
-                    />
-                    {tallyCompaniesError && (
-                      <p style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 0, marginBottom: 16 }}>
-                        {tallyCompaniesError}
-                      </p>
-                    )}
-                  </>
-                )}
-
-                <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
-                  <button
-                    className="dl-btn secondary"
-                    style={{ padding: "8px 16px" }}
-                    disabled={isPushingToTally}
-                    onClick={() => setShowTallyModal(false)}
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    className="dl-btn primary"
-                    style={{ padding: "8px 16px" }}
-                    disabled={isPushingToTally}
-                    onClick={handlePushToTally}
-                  >
-                    {isPushingToTally ? "Pushing…" : "Push Now"}
-                  </button>
-                </div>
-              </>
-            )}
-
-            {tallyPushResult && (
-              <div>
-                {tallyPushResult.error ? (
-                  <div className="alert err">✗ {tallyPushResult.error}</div>
-                ) : (
-                  <>
-                    <div style={{ fontSize: 14, marginBottom: 12, color: "var(--text-primary)" }}>
-                      <strong>{tallyPushResult.succeeded}</strong> pushed ·{" "}
-                      <strong>{tallyPushResult.skipped_already_pushed ?? 0}</strong> already-pushed (skipped) ·{" "}
-                      <strong style={{ color: tallyPushResult.failed > 0 ? "#EF4444" : "inherit" }}>{tallyPushResult.failed}</strong> failed
-                    </div>
-                    {tallyPushResult.results?.filter((r: any) => !r.success).length > 0 && (
-                      <div style={{ maxHeight: 200, overflowY: "auto", marginBottom: 16 }}>
-                        {tallyPushResult.results
-                          .filter((r: any) => !r.success)
-                          .map((r: any, i: number) => (
-                            <div key={i} style={{ fontSize: 12, color: "var(--text-secondary)", marginBottom: 6, paddingLeft: 8, borderLeft: "2px solid #EF4444" }}>
-                              <strong>{r.invoice_no || r.file_name}</strong> ({r.voucher_type}): {r.error}
-                            </div>
-                          ))}
-                      </div>
-                    )}
-                  </>
-                )}
-                <div style={{ display: "flex", justifyContent: "flex-end" }}>
-                  <button
-                    className="dl-btn primary"
-                    style={{ padding: "8px 16px" }}
-                    onClick={() => { setShowTallyModal(false); setTallyPushResult(null); }}
-                  >
-                    Close
-                  </button>
-                </div>
-              </div>
-            )}
           </div>
         </div>
       )}

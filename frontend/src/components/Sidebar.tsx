@@ -18,66 +18,113 @@ import {
   Building2,
   Cloud,
   ClipboardCheck,
+  ArrowLeftRight,
 } from "lucide-react";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 /* ─────────── Navigation Items ─────────── */
-const NAV_ITEMS = [
+interface NavItem {
+  href: string;
+  label: string;
+  icon: React.ComponentType<{ size?: number; style?: React.CSSProperties }>;
+  description: string;
+  ownerOnly?: boolean;
+}
+
+// Badge counts (e.g. pending totals on Drive Sync / Review & File) are deferred
+// pending a lightweight counts endpoint — do not add placeholder/static numbers here.
+const NAV_GROUPS: { label: string | null; items: NavItem[] }[] = [
   {
-    href: "/",
-    label: "Dashboard",
-    icon: LayoutDashboard,
-    description: "Executive overview",
+    label: null,
+    items: [
+      {
+        href: "/",
+        label: "Dashboard",
+        icon: LayoutDashboard,
+        description: "Executive overview",
+      },
+    ],
   },
   {
-    href: "/invoice-extractor",
-    label: "Extractor",
-    icon: FileSpreadsheet,
-    description: "PDF → GST Ledger",
+    label: "Import",
+    items: [
+      {
+        href: "/invoice-extractor",
+        label: "Extractor",
+        icon: FileSpreadsheet,
+        description: "PDF → GST Ledger",
+      },
+      {
+        href: "/google-drive-sync",
+        label: "Drive Sync",
+        icon: Cloud,
+        description: "Auto-sync from Google Drive",
+      },
+    ],
   },
   {
-    href: "/reconciliation",
-    label: "Reconciliation",
-    icon: GitCompareArrows,
-    description: "GSTR-2B matching",
+    label: "Review & File",
+    items: [
+      {
+        href: "/sales-period-review",
+        label: "Sales Review",
+        icon: ClipboardCheck,
+        description: "Approve before filing",
+      },
+      {
+        href: "/purchase-gstr2b-review",
+        label: "GSTR-2B Review",
+        icon: ClipboardCheck,
+        description: "Approve before ITC claim",
+      },
+      {
+        href: "/tax-audit/msme",
+        label: "MSME Audit",
+        icon: Shield,
+        description: "43B(h) compliance",
+      },
+    ],
   },
   {
-    href: "/sales-period-review",
-    label: "Sales Review",
-    icon: ClipboardCheck,
-    description: "Approve before filing",
+    label: "Reconcile",
+    items: [
+      {
+        href: "/reconciliation",
+        label: "Reconciliation",
+        icon: GitCompareArrows,
+        description: "GSTR-2B matching",
+      },
+      {
+        href: "/tally-sync",
+        label: "Tally Sync",
+        icon: ArrowLeftRight,
+        description: "Push vouchers to TallyPrime",
+      },
+    ],
   },
   {
-    href: "/purchase-gstr2b-review",
-    label: "GSTR-2B Review",
-    icon: ClipboardCheck,
-    description: "Approve before ITC claim",
+    label: "Tools",
+    items: [
+      {
+        href: "/document-utilities",
+        label: "Doc Utilities",
+        icon: FileText,
+        description: "Admin file toolbox",
+      },
+    ],
   },
   {
-    href: "/tax-audit/msme",
-    label: "MSME Audit",
-    icon: Shield,
-    description: "43B(h) compliance",
-  },
-  {
-    href: "/document-utilities",
-    label: "Doc Utilities",
-    icon: FileText,
-    description: "Admin file toolbox",
-  },
-  {
-    href: "/google-drive-sync",
-    label: "Drive Sync",
-    icon: Cloud,
-    description: "Auto-sync from Google Drive",
-  },
-  {
-    href: "/firm-settings",
-    label: "Firm Settings",
-    icon: Building2,
-    description: "Team & firm management",
-    ownerOnly: true,
+    label: "Firm",
+    items: [
+      {
+        href: "/firm-settings",
+        label: "Firm Settings",
+        icon: Building2,
+        description: "Team & firm management",
+        ownerOnly: true,
+      },
+    ],
   },
 ];
 
@@ -209,100 +256,120 @@ export default function Sidebar() {
 
       {/* ── Navigation ── */}
       <nav style={{ flex: 1, padding: "16px 12px", display: "flex", flexDirection: "column", gap: 4 }}>
-        <div
-          style={{
-            fontSize: 10,
-            fontWeight: 600,
-            color: "var(--text-muted)",
-            textTransform: "uppercase",
-            letterSpacing: "0.08em",
-            padding: "4px 8px 8px",
-          }}
-        >
-          Modules
-        </div>
-        {NAV_ITEMS.filter((item: any) => {
+        {(() => {
           const role = userRole.toLowerCase();
-          if ((item as any).ownerOnly && role !== "owner" && role !== "developer") return false;
-          if (role === "developer") return true;
-          if (role === "ca" || role === "auditor" || role === "owner") return true;
-          if (role === "accountant") return item.href !== "/tax-audit/msme";
-          if (role === "client") return item.href === "/" || item.href === "/invoice-extractor";
-          return true;
-        }).map((item) => {
-          const isActive =
-            pathname === item.href ||
-            (item.href !== "/" && pathname.startsWith(item.href));
-          const Icon = item.icon;
+          const isVisible = (item: NavItem) => {
+            if (item.ownerOnly && role !== "owner" && role !== "developer") return false;
+            if (role === "developer") return true;
+            if (role === "ca" || role === "auditor" || role === "owner") return true;
+            if (role === "accountant") return item.href !== "/tax-audit/msme";
+            if (role === "client") return item.href === "/" || item.href === "/invoice-extractor";
+            return true;
+          };
 
-          return (
-            <Link
-              key={item.href}
-              href={item.href}
-              id={`nav-${item.label.toLowerCase().replace(/\s/g, "-")}`}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 12,
-                padding: "10px 12px",
-                borderRadius: "var(--radius-sm)",
-                textDecoration: "none",
-                transition: "background 0.15s ease, border-color 0.15s ease",
-                background: isActive ? "var(--accent-soft)" : "transparent",
-                border: isActive
-                  ? "1px solid var(--accent-glow)"
-                  : "1px solid transparent",
-                cursor: "pointer",
-              }}
-            >
-              <div
-                style={{
-                  width: 32,
-                  height: 32,
-                  borderRadius: 8,
-                  background: isActive
-                    ? "var(--accent-soft)"
-                    : "var(--bg-card)",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  transition: "background 0.15s ease",
-                }}
-              >
-                <Icon
-                  size={15}
-                  style={{
-                    color: isActive ? "var(--accent)" : "var(--text-muted)",
-                    transition: "color 0.15s ease",
-                  }}
-                />
-              </div>
-              <div>
-                <div
-                  style={{
-                    fontSize: 13,
-                    fontWeight: isActive ? 600 : 500,
-                    color: isActive
-                      ? "var(--text-primary)"
-                      : "var(--text-secondary)",
-                    lineHeight: 1.2,
-                  }}
-                >
-                  {item.label}
-                </div>
-                <div
-                  style={{
-                    fontSize: 10,
-                    color: "var(--text-muted)",
-                    marginTop: 1,
-                  }}
-                >
-                  {item.description}
-                </div>
-              </div>
-            </Link>
-          );
-        })}
+          let renderedGroups = 0;
+
+          return NAV_GROUPS.map((group, groupIdx) => {
+            const items = group.items.filter(isVisible);
+            if (items.length === 0) return null;
+            const isFirstRendered = renderedGroups === 0;
+            renderedGroups++;
+
+            return (
+              <React.Fragment key={group.label ?? `group-${groupIdx}`}>
+                {group.label && (
+                  <div
+                    style={{
+                      fontSize: 10,
+                      fontWeight: 600,
+                      color: "var(--text-muted)",
+                      textTransform: "uppercase",
+                      letterSpacing: "0.08em",
+                      padding: "4px 8px 8px",
+                      marginTop: isFirstRendered ? 0 : 12,
+                    }}
+                  >
+                    {group.label}
+                  </div>
+                )}
+                {items.map((item) => {
+                  const isActive =
+                    pathname === item.href ||
+                    (item.href !== "/" && pathname.startsWith(item.href));
+                  const Icon = item.icon;
+
+                  return (
+                    <Link
+                      key={item.href}
+                      href={item.href}
+                      id={`nav-${item.label.toLowerCase().replace(/\s/g, "-")}`}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 12,
+                        padding: "10px 12px",
+                        borderRadius: "var(--radius-sm)",
+                        textDecoration: "none",
+                        transition: "background 0.15s ease, border-color 0.15s ease",
+                        background: isActive ? "var(--accent-soft)" : "transparent",
+                        border: isActive
+                          ? "1px solid var(--accent-glow)"
+                          : "1px solid transparent",
+                        cursor: "pointer",
+                      }}
+                    >
+                      <div
+                        style={{
+                          width: 32,
+                          height: 32,
+                          borderRadius: 8,
+                          background: isActive
+                            ? "var(--accent-soft)"
+                            : "var(--bg-card)",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          transition: "background 0.15s ease",
+                        }}
+                      >
+                        <Icon
+                          size={15}
+                          style={{
+                            color: isActive ? "var(--accent)" : "var(--text-muted)",
+                            transition: "color 0.15s ease",
+                          }}
+                        />
+                      </div>
+                      <div>
+                        <div
+                          style={{
+                            fontSize: 13,
+                            fontWeight: isActive ? 600 : 500,
+                            color: isActive
+                              ? "var(--text-primary)"
+                              : "var(--text-secondary)",
+                            lineHeight: 1.2,
+                          }}
+                        >
+                          {item.label}
+                        </div>
+                        <div
+                          style={{
+                            fontSize: 10,
+                            color: "var(--text-muted)",
+                            marginTop: 1,
+                          }}
+                        >
+                          {item.description}
+                        </div>
+                      </div>
+                    </Link>
+                  );
+                })}
+              </React.Fragment>
+            );
+          });
+        })()}
       </nav>
 
       {/* ── Footer ── */}
