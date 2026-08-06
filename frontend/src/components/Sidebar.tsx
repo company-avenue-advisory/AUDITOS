@@ -17,6 +17,7 @@ import {
   Building2,
   Cloud,
   ClipboardCheck,
+  Link2,
 } from "lucide-react";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -70,6 +71,12 @@ const NAV_ITEMS = [
     label: "Drive Sync",
     icon: Cloud,
     description: "Auto-sync from Google Drive",
+  },
+  {
+    href: "/tally-sync",
+    label: "Tally Sync",
+    icon: Link2,
+    description: "Local bridge agent",
   },
   {
     href: "/firm-settings",

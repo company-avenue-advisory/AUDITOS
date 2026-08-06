@@ -208,6 +208,81 @@ class TallyPushLog(Base):
     pushed_by_user_id  = Column(String, nullable=True)
 
 
+# ── Tally Local Bridge Agent ──────────────────────────────────────────────────
+# Lets a cloud-hosted AuditOS backend reach a firm's on-prem TallyPrime without
+# any inbound firewall/IP config — the accountant runs a small local agent
+# (tools/tally_relay_agent.py) that opens only OUTBOUND connections to this
+# backend (poll for jobs, post results) and talks to Tally on localhost/LAN
+# itself. Same pattern as Zoom/ngrok/TeamViewer relays. See
+# memory/project_tally_connector.md's "CTO framing" note and README's Tally
+# architecture diagram for why this exists (a cloud server can't initiate a
+# connection into a firm's private LAN).
+
+class TallyRelayPairingCode(Base):
+    """
+    Short-lived (10 min) 6-digit code an owner/auditor generates in the
+    AuditOS UI and types into the agent once, to link the agent to their
+    tenant without ever handling a long-lived secret by hand. Consumed
+    (deleted) the moment an agent successfully pairs with it — see
+    services/tally_relay.py.
+    """
+    __tablename__ = "tally_relay_pairing_codes"
+
+    code       = Column(String, primary_key=True)  # 6 digits, unique while unexpired
+    tenant_id  = Column(String, ForeignKey("tenants.id"), nullable=False, index=True)
+    created_by = Column(String, ForeignKey("users.id"), nullable=True)
+    expires_at = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class TallyRelayAgent(Base):
+    """
+    One row per paired local agent. `token_hash` is a SHA-256 hash (not
+    bcrypt — this is a 32-byte random API-style secret the agent generates
+    itself, not a user-chosen password, so a fast hash is the right tool and
+    avoids adding bcrypt latency to every poll request, which happens every
+    few seconds for as long as the agent runs). The raw token is shown to
+    the agent exactly once at pairing time and never stored.
+    """
+    __tablename__ = "tally_relay_agents"
+
+    id            = Column(String, primary_key=True, default=lambda: str(uuid4()))
+    tenant_id     = Column(String, ForeignKey("tenants.id"), nullable=False, index=True)
+    name          = Column(String, nullable=True)   # optional label, e.g. "Reception PC"
+    token_hash    = Column(String, nullable=False, unique=True, index=True)
+    paired_at     = Column(DateTime, default=datetime.utcnow, nullable=False)
+    last_seen_at  = Column(DateTime, nullable=True)  # updated on every poll
+    revoked_at    = Column(DateTime, nullable=True)
+
+
+class TallyRelayJob(Base):
+    """
+    One row per relayed Tally operation. The backend enqueues a job
+    (status="pending"), the paired agent's poll loop claims it
+    (status="claimed"), executes it against its local Tally instance, and
+    reports back (status="success"/"failed"). The push endpoint
+    (main.py:push_batch_to_tally) blocks briefly polling this row's status
+    after enqueueing — same synchronous per-item response shape the direct
+    (same-LAN) push path already returns, so the frontend needed no changes
+    for relay mode. `payload_json`/`result_json` mirror the shapes
+    TallyConnector.push_voucher already takes/returns.
+    """
+    __tablename__ = "tally_relay_jobs"
+
+    id           = Column(String, primary_key=True, default=lambda: str(uuid4()))
+    tenant_id    = Column(String, ForeignKey("tenants.id"), nullable=False, index=True)
+    agent_id     = Column(String, ForeignKey("tally_relay_agents.id"), nullable=True, index=True)
+    job_type     = Column(String, nullable=False, default="push_voucher")
+    payload_json = Column(Text, nullable=False)
+    status       = Column(String, default="pending", nullable=False)
+    # pending -> claimed -> success | failed
+    result_json  = Column(Text, nullable=True)
+    error        = Column(String, nullable=True)
+    created_at   = Column(DateTime, default=datetime.utcnow, nullable=False)
+    claimed_at   = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+
+
 # ── Role-Based User Model ────────────────────────────────────────────────────────
 
 class User(Base):

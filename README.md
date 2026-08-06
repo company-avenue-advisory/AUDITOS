@@ -24,6 +24,17 @@ AuditOS is a highly specialized, enterprise-grade AI pipeline designed to automa
 - **43B(h) MSME Compliance:** Tracks vendor payment timelines against Section 43B(h) limits and flags at-risk outstanding balances.
 - **Duplicate Invoice Detection:** Cross-batch deduplication using composite key hashing (GSTIN + invoice number + date + amount) to prevent double-booking.
 
+### GSTR-2B Reconciliation-Gap Workflow (Bucket A / Bucket B)
+Section 13.1 of the reconciliation design: once GSTR-2B is matched against the Purchase Register, the two open-gap buckets (`not_in_books` — supplier filed it, we never booked it; `missing_in_2b` — we booked it, supplier hasn't filed) get investigated and, where warranted, trigger outbound messaging — without re-verifying the whole register on every run.
+
+- **Targeted Drive-verify** (`services/gstr2b_drive_verify.py`): for `not_in_books` gaps only, checks the client's own Google Drive (just the unmatched invoices' expected month folders, never a full re-sync) for the source PDF, matching deterministically on GSTIN + invoice number found in the extracted PDF text — never on filename alone. Found in Drive → it was simply never booked (internal "entry missing in Tally" task, no client contact). Not found → genuinely missing document.
+- **Gap-trigger engine** (`services/gstr2b_trigger_engine.py`): tracks every open gap's outbound-messaging state in `Gstr2bGapTrigger` across however many times reconciliation re-runs for a period, auto-resolving gaps that close on a later run.
+  - **Bucket A** (`not_in_books`, Drive=No): client request, accountant-gated by default (`pending_review` → approve/reject) — a firm can flip `Tenant.bucket_a_require_review` off to auto-approve instead.
+  - **Bucket B** (`missing_in_2b`): vendor-follow-up nudge, auto-queued and sent whenever `Tenant.auto_vendor_followup_enabled` is on — no accountant step, since the fact (we hold an invoice the supplier hasn't filed) is already certain.
+  - Both re-trigger once per month while the gap stays open (never spams on every re-run), and both go through the same injectable `send_fn` — currently a stub that audit-logs only, pending a real email/WhatsApp provider decision.
+- **Reconciliation Excel export** (`services/gstr2b_excel_export.py`): Section 13.1 columns (`In Drive?`, `Entry Missing in Tally`, `Client Action`) render per-bucket directly from the same Drive-verify pass the trigger engine consumes — one Drive check feeds both outputs.
+- **API surface:** `POST /api/reconcile/from-batch/{batch_id}/export` (runs reconciliation + Drive-verify + trigger sync + returns the workbook), `GET/POST /api/gstr2b/triggers*` (list, approve, reject, run due triggers), `PUT /api/gstr2b/trigger-settings` (contact email + both policy toggles).
+
 ### TallyPrime Direct Connector
 - **XML-over-HTTP connector** (`services/tally_connector.py`) talks directly to TallyPrime's built-in server (default port 9000) over LAN — no cloud API, no manual Excel re-import into Tally.
 - **Read:** company list, chart of accounts (ledgers with GSTIN/state/opening balance), and vouchers by date range.
@@ -35,21 +46,35 @@ AuditOS is a highly specialized, enterprise-grade AI pipeline designed to automa
 - Connection settings (host/port/company) are saved per-tenant after the first successful push, so the modal pre-fills instead of asking every time.
 - See [`backend/docs/TALLY_CONNECTOR_SETUP.md`](backend/docs/TALLY_CONNECTOR_SETUP.md) for onboarding a new client's Tally machine — firewall rules, subnet troubleshooting, and the port-collision check that matters on shared machines.
 
-**Current flow — requires AuditOS's backend and the Tally machine on the same LAN** (true for local dev and any on-prem deployment; not yet true once the backend is cloud-hosted, since a cloud server can't reach into a firm's private network):
+**Local Bridge Agent** (`services/tally_relay.py` + `tools/tally_relay_agent.py`) — lets a cloud-hosted backend reach a firm's on-prem Tally without any inbound firewall/IP config, the same relay pattern Zoom/ngrok/TeamViewer use:
+- A small outbound-only agent (pure stdlib, no install beyond Python — copy `tally_relay_agent.py` + `tally_connector.py` onto the accountant's machine) polls the backend for pending push jobs and executes them against its own local Tally, posting results back. The backend never opens a connection into the firm's LAN.
+- **Pairing:** a 10-minute 6-digit code generated in the UI (`POST /api/tally/relay/pairing-code`), typed into the agent once (`python tally_relay_agent.py --pair CODE --backend-url URL`) — exchanges for a persistent per-agent token (SHA-256 hashed server-side), never re-entered again.
+- **Routing:** `POST /api/tally/push/{batch_id}` automatically relays through a tenant's paired agent if one has polled within the last 2 minutes (`services/tally_relay.get_active_agent`), otherwise falls back to the direct same-LAN connection — no API or frontend change needed either way, same per-item success/skip/fail response shape.
+- **Idempotency carries through unchanged:** `TallyPushLog` is written identically regardless of whether a voucher went through the direct connector or the relay.
+- **Not yet built:** packaging the agent as an installable Windows service (today it's a script you run and leave open), LAN auto-discovery, and a UI flow for generating/showing the pairing code — the relay protocol itself is done and logic-tested end-to-end.
 
 ```mermaid
 graph LR
     UI["Push to Tally button<br/>invoice-extractor UI"]:::built --> API
-    API["POST /api/tally/push<br/>ERP_READY items only"]:::built --> CONN
-    CONN["tally_connector.py<br/>XML-over-HTTP"]:::built --> TALLY
-    LOG["TallyPushLog<br/>idempotency"]:::built -.->|checked before every push| CONN
-    CFG["TallyConnectionConfig<br/>saved host/port/company"]:::built -.->|pre-fills| UI
+    API["POST /api/tally/push<br/>ERP_READY items only"]:::built --> ROUTE
+    ROUTE{"Agent paired<br/>+ online?"}:::built
+    ROUTE -->|no| CONN
+    ROUTE -->|yes| RELAYJOB
 
-    subgraph LAN["Same LAN (required today)"]
-        TALLY["TallyPrime<br/>Server mode, port 9000"]:::built
+    CONN["tally_connector.py<br/>direct XML-over-HTTP"]:::built --> TALLY_LAN
+    LOG["TallyPushLog<br/>idempotency"]:::built -.->|checked before every push, either path| API
+    CFG["TallyConnectionConfig<br/>saved host/port/company"]:::built -.->|pre-fills, direct mode only| UI
+
+    RELAYJOB["TallyRelayJob<br/>enqueued, backend waits briefly"]:::built --> POLL
+    POLL["tally_relay_agent.py<br/>polls every 5s, outbound only"]:::built --> TALLY_REMOTE
+
+    subgraph LAN1["Same LAN (direct mode)"]
+        TALLY_LAN["TallyPrime<br/>Server mode, port 9000"]:::built
     end
 
-    BRIDGE["Local Bridge Agent<br/>outbound-only relay, LAN auto-discovery<br/>lets cloud-hosted AuditOS reach any firm's Tally"]:::planned -.->|replaces direct LAN link| CONN
+    subgraph LAN2["Firm's own LAN (relay mode)"]
+        TALLY_REMOTE["TallyPrime<br/>Server mode, port 9000"]:::built
+    end
 
     classDef built fill:#d1f3ea,stroke:#0f6e56,color:#04342c
     classDef planned fill:#f1efe8,stroke:#888780,color:#2c2c2a,stroke-dasharray: 5 5

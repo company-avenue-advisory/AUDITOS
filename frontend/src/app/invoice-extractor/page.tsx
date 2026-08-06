@@ -1904,8 +1904,12 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
             onClick={(e) => e.stopPropagation()}
           >
             <h3 style={{ margin: 0, marginBottom: 4, color: "var(--text-primary)" }}>Push to Tally</h3>
-            <p style={{ fontSize: 13, color: "var(--text-secondary)", marginTop: 0, marginBottom: 16 }}>
+            <p style={{ fontSize: 13, color: "var(--text-secondary)", marginTop: 0, marginBottom: 8 }}>
               Pushes only items marked <strong>ERP_READY</strong> (passed reconciliation review) as vouchers to TallyPrime over your LAN.
+            </p>
+            <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 0, marginBottom: 16 }}>
+              Pushing from a different network? <a href="/tally-sync" style={{ color: "var(--accent)" }}>Set up the local bridge agent</a> —
+              it relays automatically once paired, no changes needed here.
             </p>
 
             {!tallyPushResult && (

@@ -5,7 +5,7 @@ import sentry_sdk
 from sentry_sdk.integrations.fastapi import FastApiIntegration
 from sentry_sdk.integrations.sqlalchemy import SqlalchemyIntegration
 from sentry_sdk.integrations.celery import CeleryIntegration
-from fastapi import FastAPI, File, UploadFile, Request, HTTPException, Form, Response, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, UploadFile, Request, HTTPException, Form, Response, WebSocket, WebSocketDisconnect, Header
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 import os
@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from database import get_db, engine, Base, SessionLocal
-from models import BatchJob, InvoiceTask, TaskStatus, SalesLineItem, PurchaseLineItem, ObservabilityLog, UserSession, UserPreferences, UserAnnotation, Tenant, GoogleDriveSyncJob, GoogleDriveSyncConfig, SalesPeriodReview, PurchaseGstr2bReview, TallyPushLog, TallyConnectionConfig, Gstr2bGapTrigger
+from models import BatchJob, InvoiceTask, TaskStatus, SalesLineItem, PurchaseLineItem, ObservabilityLog, UserSession, UserPreferences, UserAnnotation, Tenant, GoogleDriveSyncJob, GoogleDriveSyncConfig, SalesPeriodReview, PurchaseGstr2bReview, TallyPushLog, TallyConnectionConfig, Gstr2bGapTrigger, TallyRelayAgent, TallyRelayJob
 from async_tasks import process_batch
 from ws_manager import manager
 
@@ -1222,6 +1222,146 @@ async def list_tally_companies(
     return {"companies": companies}
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# Tally Local Bridge Agent — see services/tally_relay.py and
+# tools/tally_relay_agent.py. Lets a cloud-hosted backend reach a firm's
+# on-prem Tally via a small outbound-only agent instead of a direct LAN
+# connection (which stops being reachable once this backend is cloud-hosted).
+# ─────────────────────────────────────────────────────────────────────────
+
+@app.post("/api/tally/relay/pairing-code")
+async def create_tally_relay_pairing_code(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RoleChecker(["owner", "auditor"])),
+):
+    """Generates a 6-digit, 10-minute code to type into the agent once —
+    lets the agent link to this tenant without handling a long-lived secret
+    by hand. Shown in the Push to Tally UI's "Set up local agent" flow."""
+    from services.tally_relay import generate_pairing_code
+
+    if not current_user.tenant_id:
+        raise HTTPException(status_code=400, detail="Current user has no tenant assigned")
+    return generate_pairing_code(db, current_user.tenant_id, current_user.id)
+
+
+class TallyRelayPairRequest(BaseModel):
+    code: str
+    agent_name: Optional[str] = None
+
+
+@app.post("/api/tally/relay/pair")
+async def pair_tally_relay_agent(req: TallyRelayPairRequest, db: Session = Depends(get_db)):
+    """Called by the agent itself (tools/tally_relay_agent.py --pair), not a
+    logged-in user — the pairing code is the only credential needed here.
+    Returns the agent's persistent token exactly once; the agent must store
+    it locally, since only its hash is kept server-side."""
+    from services.tally_relay import pair_agent
+
+    try:
+        return pair_agent(db, req.code, req.agent_name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+def _authenticate_relay_agent(
+    db: Session,
+    x_agent_id: str = Header(...),
+    x_agent_token: str = Header(...),
+) -> TallyRelayAgent:
+    from services.tally_relay import authenticate_agent
+    try:
+        return authenticate_agent(db, x_agent_id, x_agent_token)
+    except ValueError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+
+
+@app.post("/api/tally/relay/poll")
+async def poll_tally_relay_jobs(
+    db: Session = Depends(get_db),
+    x_agent_id: str = Header(...),
+    x_agent_token: str = Header(...),
+):
+    """Long-poll-free simple poll: the agent calls this every few seconds.
+    Returns the next pending job for this agent's tenant, if any, and always
+    updates last_seen_at (see services.tally_relay.get_active_agent, which
+    the push endpoint uses to decide relay vs direct mode)."""
+    from services.tally_relay import claim_next_job
+
+    agent = _authenticate_relay_agent(db, x_agent_id, x_agent_token)
+    job = claim_next_job(db, agent)
+    if not job:
+        return {"job": None}
+    return {"job": {"id": job.id, "job_type": job.job_type, "payload": json.loads(job.payload_json)}}
+
+
+class TallyRelayResultRequest(BaseModel):
+    job_id: str
+    success: bool
+    result: dict = {}
+    error: Optional[str] = None
+
+
+@app.post("/api/tally/relay/result")
+async def report_tally_relay_result(
+    req: TallyRelayResultRequest,
+    db: Session = Depends(get_db),
+    x_agent_id: str = Header(...),
+    x_agent_token: str = Header(...),
+):
+    from services.tally_relay import report_job_result
+
+    agent = _authenticate_relay_agent(db, x_agent_id, x_agent_token)
+    try:
+        job = report_job_result(db, agent, req.job_id, req.success, req.result, req.error)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"job_id": job.id, "status": job.status}
+
+
+@app.get("/api/tally/relay/status")
+async def tally_relay_status(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Whether this tenant has a local bridge agent paired, and whether it's
+    currently online — lets the frontend show "Local agent: connected" and
+    skip asking for host/port in the Push to Tally modal."""
+    from services.tally_relay import get_active_agent, AGENT_FRESHNESS_WINDOW
+
+    if not current_user.tenant_id:
+        return {"paired": False, "online": False, "agent": None}
+    agent = db.query(TallyRelayAgent).filter(
+        TallyRelayAgent.tenant_id == current_user.tenant_id,
+        TallyRelayAgent.revoked_at.is_(None),
+    ).order_by(TallyRelayAgent.paired_at.desc()).first()
+    if not agent:
+        return {"paired": False, "online": False, "agent": None}
+    online = get_active_agent(db, current_user.tenant_id) is not None
+    return {
+        "paired": True,
+        "online": online,
+        "agent": {
+            "id": agent.id, "name": agent.name, "paired_at": agent.paired_at.isoformat(),
+            "last_seen_at": agent.last_seen_at.isoformat() if agent.last_seen_at else None,
+        },
+    }
+
+
+@app.post("/api/tally/relay/{agent_id}/revoke")
+async def revoke_tally_relay_agent(
+    agent_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RoleChecker(["owner", "auditor"])),
+):
+    agent = db.query(TallyRelayAgent).filter(TallyRelayAgent.id == agent_id).first()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    require_same_tenant(agent.tenant_id, current_user)
+    agent.revoked_at = datetime.utcnow()
+    db.commit()
+    return {"revoked": True}
+
+
 class TallyPushRequest(BaseModel):
     host: str
     port: int = 9000
@@ -1251,9 +1391,40 @@ def _already_pushed(db: Session, item_type: str, item_id: int, company: str) -> 
     return existing is not None
 
 
+def _direct_push_fn(connector):
+    """push_fn for the same-LAN path: calls TallyConnector in-process."""
+    from services.tally_connector import TallyConnectionError
+
+    def fn(row: dict, voucher_type: str):
+        try:
+            result = connector.push_voucher(row, voucher_type=voucher_type)
+            return result.success, result.error
+        except TallyConnectionError as e:
+            return False, str(e)
+
+    return fn
+
+
+def _relay_push_fn(db: Session, tenant_id: str, company: str):
+    """push_fn for the local-bridge-agent path: enqueues a TallyRelayJob and
+    blocks (briefly) for the agent's result — see services/tally_relay.py."""
+    from services.tally_relay import enqueue_job, wait_for_job_result
+
+    def fn(row: dict, voucher_type: str):
+        job = enqueue_job(db, tenant_id, {"row": row, "voucher_type": voucher_type, "company": company})
+        completed = wait_for_job_result(db, job.id)
+        if completed is None:
+            return False, "Relay job vanished unexpectedly"
+        if completed.status == "success":
+            return True, None
+        return False, completed.error or "Relay agent reported failure"
+
+    return fn
+
+
 def _push_one_item(
     db: Session,
-    connector,
+    push_fn,
     item,
     item_type: str,
     voucher_type: str,
@@ -1262,8 +1433,6 @@ def _push_one_item(
     company: str,
     user_id: str,
 ) -> TallyPushItemResult:
-    from services.tally_connector import TallyConnectionError
-
     if _already_pushed(db, item_type, item.id, company):
         return TallyPushItemResult(
             task_id=task.id, file_name=task.file_name, voucher_type=voucher_type,
@@ -1272,11 +1441,7 @@ def _push_one_item(
         )
 
     row = {c.name: getattr(item, c.name) for c in item.__table__.columns if c.name not in ("id", "task_id")}
-    try:
-        push_result = connector.push_voucher(row, voucher_type=voucher_type)
-        success, error = push_result.success, push_result.error
-    except TallyConnectionError as e:
-        success, error = False, str(e)
+    success, error = push_fn(row, voucher_type)
 
     db.add(TallyPushLog(
         tenant_id=task.batch.tenant_id if task.batch else None,
@@ -1301,6 +1466,7 @@ async def push_batch_to_tally(
     current_user: User = Depends(RoleChecker(["owner", "auditor"])),
 ):
     from services.tally_connector import TallyConnector, TallyConfig, TallyConnectionError
+    from services.tally_relay import get_active_agent
 
     batch = db.query(BatchJob).filter(BatchJob.id == batch_id).first()
     if not batch:
@@ -1317,22 +1483,37 @@ async def push_batch_to_tally(
             detail="No ERP_READY items in this batch. Items must pass reconciliation review before pushing to Tally.",
         )
 
-    connector = TallyConnector(TallyConfig(host=req.host, port=req.port, company=req.company))
-    try:
-        connector.test_connection()
-    except TallyConnectionError as e:
-        raise HTTPException(status_code=502, detail=str(e))
+    # If a local bridge agent is actively polling for this tenant, relay
+    # through it instead of connecting directly — required once the backend
+    # is cloud-hosted and can no longer reach a firm's LAN itself. host/port
+    # are meaningless in relay mode (the agent talks to its own local Tally);
+    # only `company` matters there. Falls back to the direct same-LAN path
+    # (unchanged) when no agent is paired/online — still valid for local dev
+    # or an on-prem AuditOS deployment sharing a LAN with Tally.
+    active_agent = get_active_agent(db, batch.tenant_id) if batch.tenant_id else None
 
-    # Connectivity confirmed — remember this host/port/company for next time
-    # so the modal pre-fills instead of asking again (models.TallyConnectionConfig).
-    tally_cfg = db.query(TallyConnectionConfig).filter(
-        TallyConnectionConfig.tenant_id == current_user.tenant_id
-    ).first()
-    if not tally_cfg:
-        tally_cfg = TallyConnectionConfig(tenant_id=current_user.tenant_id)
-        db.add(tally_cfg)
-    tally_cfg.host, tally_cfg.port, tally_cfg.company = req.host, req.port, req.company
-    db.commit()
+    if active_agent:
+        push_fn = _relay_push_fn(db, batch.tenant_id, req.company)
+    else:
+        connector = TallyConnector(TallyConfig(host=req.host, port=req.port, company=req.company))
+        try:
+            connector.test_connection()
+        except TallyConnectionError as e:
+            raise HTTPException(status_code=502, detail=str(e))
+        push_fn = _direct_push_fn(connector)
+
+        # Connectivity confirmed — remember this host/port/company for next
+        # time so the modal pre-fills instead of asking again. Only saved on
+        # the direct path — a relay agent's host/port are its own local
+        # concern, not something the cloud dictates (see models.TallyConnectionConfig).
+        tally_cfg = db.query(TallyConnectionConfig).filter(
+            TallyConnectionConfig.tenant_id == current_user.tenant_id
+        ).first()
+        if not tally_cfg:
+            tally_cfg = TallyConnectionConfig(tenant_id=current_user.tenant_id)
+            db.add(tally_cfg)
+        tally_cfg.host, tally_cfg.port, tally_cfg.company = req.host, req.port, req.company
+        db.commit()
 
     results: List[TallyPushItemResult] = []
 
@@ -1345,14 +1526,14 @@ async def push_batch_to_tally(
             for item in (task.sales_items or []):
                 vtype = item.voucher_type or "Sales"
                 results.append(_push_one_item(
-                    db, connector, item, "sales", vtype, task, batch_id, req.company, current_user.id,
+                    db, push_fn, item, "sales", vtype, task, batch_id, req.company, current_user.id,
                 ))
 
         if req.type in ("purchase", "both"):
             for item in (task.purchase_items or []):
                 vtype = item.voucher_type or "Purchase"
                 results.append(_push_one_item(
-                    db, connector, item, "purchase", vtype, task, batch_id, req.company, current_user.id,
+                    db, push_fn, item, "purchase", vtype, task, batch_id, req.company, current_user.id,
                 ))
 
     succeeded = sum(1 for r in results if r.success)
@@ -1363,6 +1544,7 @@ async def push_batch_to_tally(
         "succeeded": succeeded,
         "skipped_already_pushed": skipped,
         "failed": len(results) - succeeded,
+        "via": "relay" if active_agent else "direct",
         "results": results,
     }
 
