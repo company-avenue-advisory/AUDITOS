@@ -3,11 +3,15 @@ export interface MonthOption {
   value: string;
 }
 
-/** Generate last 12 months as options, most recent first. */
+/**
+ * Generate the last 24 months as options, most recent first. 24 (not 12) so
+ * late GST filings and amendments - commonly needed up to ~20 months after
+ * the original period - stay reachable, not just the current filing year.
+ */
 export function generateMonthOptions(): MonthOption[] {
   const options: MonthOption[] = [];
   const now = new Date();
-  for (let i = 0; i < 12; i++) {
+  for (let i = 0; i < 24; i++) {
     const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
     const year = d.getFullYear();
     const month = d.getMonth() + 1;
