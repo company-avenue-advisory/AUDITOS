@@ -1,19 +1,18 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React from "react";
 import { usePeriod } from "../utils/PeriodContext";
 import { useTenantName } from "../utils/useTenant";
 import { MONTH_OPTIONS } from "../utils/periods";
 
-/** Global top bar: client indicator, period switcher, and user info. */
+/**
+ * Global top bar: client indicator + period switcher only. User identity
+ * (email, role) and logout stay in Sidebar's footer, where they already
+ * lived - this bar doesn't duplicate them.
+ */
 export default function TopBar() {
   const tenantName = useTenantName();
   const { period, setPeriod } = usePeriod();
-  const [userEmail, setUserEmail] = useState<string | null>(null);
-
-  useEffect(() => {
-    setUserEmail(localStorage.getItem("user_email"));
-  }, []);
 
   return (
     <div
@@ -83,33 +82,6 @@ export default function TopBar() {
           ))}
         </select>
       </div>
-
-      {/* Spacer */}
-      <div style={{ flex: 1 }} />
-
-      {/* User */}
-      {userEmail && (
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>{userEmail}</span>
-          <div
-            style={{
-              width: 32,
-              height: 32,
-              borderRadius: "50%",
-              background: "var(--accent)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              color: "#fff",
-              fontSize: 13,
-              fontWeight: 700,
-              textTransform: "uppercase",
-            }}
-          >
-            {userEmail.charAt(0)}
-          </div>
-        </div>
-      )}
     </div>
   );
 }

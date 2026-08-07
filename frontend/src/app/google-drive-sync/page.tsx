@@ -348,6 +348,7 @@ export default function GoogleDriveSyncPage() {
         <div style={{
           display: "flex",
           alignItems: "center",
+          justifyContent: "flex-end",
           gap: 16,
           flexWrap: "wrap",
         }}>

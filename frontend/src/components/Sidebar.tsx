@@ -21,8 +21,6 @@ import {
   ArrowLeftRight,
 } from "lucide-react";
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-
 /* ─────────── Navigation Items ─────────── */
 interface NavItem {
   href: string;
@@ -134,7 +132,6 @@ export default function Sidebar() {
   const [theme, setTheme] = useState("light");
   const [userEmail, setUserEmail] = useState("");
   const [userRole, setUserRole] = useState("");
-  const [firmName, setFirmName] = useState<string | null>(null);
 
   useEffect(() => {
     const email = localStorage.getItem("user_email") || "";
@@ -154,19 +151,6 @@ export default function Sidebar() {
       const currentTheme = document.documentElement.getAttribute("data-theme") || "light";
       setTheme(currentTheme);
     });
-
-    // Fetch tenant name (firm name) to show in sidebar
-    const token = localStorage.getItem("token");
-    if (token) {
-      fetch(`${API_BASE_URL}/api/me/tenant`, {
-        headers: { Authorization: `Bearer ${token}` },
-      })
-        .then((r) => r.json())
-        .then((data) => {
-          if (data?.tenant?.name) setFirmName(data.tenant.name);
-        })
-        .catch(() => {});
-    }
   }, []);
 
   const toggleTheme = () => {
@@ -236,19 +220,14 @@ export default function Sidebar() {
             <div
               style={{
                 fontSize: 10,
-                color: firmName ? "var(--accent)" : "var(--text-muted)",
-                fontWeight: firmName ? 600 : 500,
+                color: "var(--text-muted)",
+                fontWeight: 500,
                 letterSpacing: "0.04em",
                 textTransform: "uppercase",
                 marginTop: 2,
-                maxWidth: 140,
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
               }}
-              title={firmName || "Compliance Platform"}
             >
-              {firmName || "Compliance Platform"}
+              Compliance Platform
             </div>
           </div>
         </div>
