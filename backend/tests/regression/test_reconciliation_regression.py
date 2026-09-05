@@ -147,9 +147,17 @@ class TestReconciliationVarianceBlocking(unittest.TestCase):
         self.assertNotEqual(report.status, "ERP_READY")
 
     def test_review_context_populated_on_block(self):
-        """Blocked report must have at least one review context item."""
+        """Blocked report must have at least one review context item.
+
+        Corrupts both the summary taxable value AND the grand total (not just
+        the summary taxable value alone) so the master equation check — which
+        anchors to line items + grand total and can vouch for an invoice even
+        when only the printed summary block is wrong — also fails here,
+        keeping this a genuine block under the master-equation-aware engine.
+        """
         inv = _build_intrastate_invoice()
         inv.tax_summary.taxable_value = _pv(99999.0)
+        inv.tax_summary.grand_total = _pv(88888.0)
 
         report = self.engine.reconcile(inv)
         self.assertFalse(report.is_reconciled)

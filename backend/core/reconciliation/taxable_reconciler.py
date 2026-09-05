@@ -7,7 +7,7 @@ class DualStateTaxableReconciler:
     Stage 5: Evaluates if an invoice's taxable representation is gross-based or net-based.
     Maps discount, round-off, freight, packing, and insurance parameters dynamically.
     """
-    def __init__(self, tolerance: float = 1.50):
+    def __init__(self, tolerance: float = TOLERANCE_INR):
         self.tolerance = tolerance
 
     def reconcile_dual_state(self, summary_taxable: float, gross_taxable: float, discount: float, 

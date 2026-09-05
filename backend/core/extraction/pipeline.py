@@ -3,7 +3,7 @@ from openai import OpenAI
 from backend.core.schema import DocumentBundle, ValidationReport, AuditMetadata
 from backend.core.schema.processing import ProcessingContext
 from backend.core.extraction.loader import load_document
-from backend.core.extraction.ocr import extract_ocr_document, extract_page_text_only
+from backend.core.extraction.ocr import extract_ocr_document, pages_from_ocr_document
 from backend.core.extraction.layout import analyze_layout
 from backend.core.extraction.candidate_detector import run_all_detectors
 from backend.core.resolver import resolve_all_candidates
@@ -22,9 +22,9 @@ def process_document(document_path: str, context: ProcessingContext) -> Document
     # 1. Loader
     document = load_document(document_path, upload_metadata={"run_id": context.run_id, "firm_id": context.firm_id})
     
-    # 2. OCR Engine
+    # 2. OCR Engine (Docling — single parse, shared with Document.pages)
     ocr_doc = extract_ocr_document(document_path)
-    document.pages = extract_page_text_only(document_path)
+    document.pages = pages_from_ocr_document(ocr_doc)
     
     # 3. Layout Analysis
     layout_analysis = analyze_layout(ocr_doc)

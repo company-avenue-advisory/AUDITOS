@@ -74,13 +74,73 @@ class GoogleDriveConnector:
             logger.error(f"Failed to authenticate with Google Drive: {e}")
             raise
 
-    def list_files(self, file_types: List[str] = None) -> List[Dict]:
+    FOLDER_MIME_TYPE = "application/vnd.google-apps.folder"
+
+    def _list_children(self, parent_id: str, mime_query: str = None) -> List[Dict]:
+        """List direct children of a single folder (one page loop, no recursion)."""
+        query = f"'{parent_id}' in parents and trashed=false"
+        if mime_query:
+            query += f" and ({mime_query})"
+
+        children = []
+        page_token = None
+        while True:
+            results = self.service.files().list(
+                q=query,
+                spaces="drive",
+                pageSize=100,
+                fields="nextPageToken, files(id, name, mimeType, md5Checksum, modifiedTime, webViewLink, size)",
+                pageToken=page_token
+            ).execute()
+
+            children.extend(results.get("files", []))
+            page_token = results.get("nextPageToken")
+            if not page_token:
+                break
+
+        return children
+
+    def _get_all_subfolder_ids(self, root_id: str) -> List[str]:
+        """Walk the folder tree under root_id and return every subfolder ID (BFS)."""
+        folder_ids = []
+        queue = [root_id]
+        mime_query = f"mimeType='{self.FOLDER_MIME_TYPE}'"
+
+        while queue:
+            current = queue.pop(0)
+            subfolders = self._list_children(current, mime_query=mime_query)
+            for sub in subfolders:
+                folder_ids.append(sub["id"])
+                queue.append(sub["id"])
+
+        return folder_ids
+
+    def list_subfolders(self, parent_id: str = None) -> List[Dict]:
         """
-        List files in the monitored folder.
+        List the immediate child folders of parent_id (defaults to the monitored
+        root folder). Used to populate a "which month?" picker in the UI — the
+        client's Drive folder is commonly organized into month/year subfolders
+        (e.g. "1. April 2026", "2. May 2026"), and syncing one month at a time
+        is a natural, cost-bounded unit of work instead of a raw file count.
+
+        Returns list of {id, name}, sorted by name.
+        """
+        mime_query = f"mimeType='{self.FOLDER_MIME_TYPE}'"
+        folders = self._list_children(parent_id or self.folder_id, mime_query=mime_query)
+        return sorted(
+            [{"id": f["id"], "name": f["name"]} for f in folders],
+            key=lambda f: f["name"],
+        )
+
+    def list_files(self, file_types: List[str] = None, recursive: bool = True) -> List[Dict]:
+        """
+        List files in the monitored folder (and, by default, all of its subfolders).
 
         Args:
             file_types: MIME types to filter (e.g., ["application/pdf"])
                        If None, returns all files.
+            recursive: If True (default), also walks into subfolders. Clients
+                       commonly organize invoices into month/year subfolders.
 
         Returns:
             List of file metadata dicts with keys:
@@ -94,32 +154,23 @@ class GoogleDriveConnector:
         if not self.service:
             raise RuntimeError("Not authenticated with Google Drive")
 
-        files = []
+        mime_query = None
+        if file_types:
+            mime_query = " or ".join([f"mimeType='{mime}'" for mime in file_types])
+
         try:
-            # Build query for files in the folder
-            query = f"'{self.folder_id}' in parents and trashed=false"
+            folder_ids = [self.folder_id]
+            if recursive:
+                folder_ids += self._get_all_subfolder_ids(self.folder_id)
 
-            # Filter by MIME type if specified (PDFs only for invoices)
-            if file_types:
-                mime_filters = " or ".join([f"mimeType='{mime}'" for mime in file_types])
-                query += f" and ({mime_filters})"
+            files = []
+            for folder_id in folder_ids:
+                files.extend(self._list_children(folder_id, mime_query=mime_query))
 
-            page_token = None
-            while True:
-                results = self.service.files().list(
-                    q=query,
-                    spaces="drive",
-                    pageSize=100,
-                    fields="nextPageToken, files(id, name, mimeType, md5Checksum, modifiedTime, webViewLink, size)",
-                    pageToken=page_token
-                ).execute()
-
-                files.extend(results.get("files", []))
-                page_token = results.get("nextPageToken")
-                if not page_token:
-                    break
-
-            logger.info(f"Found {len(files)} files in Google Drive folder {self.folder_id}")
+            logger.info(
+                f"Found {len(files)} files across {len(folder_ids)} folder(s) "
+                f"under Google Drive folder {self.folder_id}"
+            )
             return files
 
         except Exception as e:

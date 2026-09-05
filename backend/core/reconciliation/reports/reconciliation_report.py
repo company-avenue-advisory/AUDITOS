@@ -22,5 +22,9 @@ class ReconciliationReport(BaseModel):
     )
     calculation_trace: Dict[str, Any] = Field(default_factory=dict, description="Math calculation trace tree")
     field_evidence: Dict[str, FinancialEvidence] = Field(default_factory=dict, description="Evidence details per field")
+    canonical_values: Dict[str, Dict[str, Any]] = Field(
+        default_factory=dict,
+        description="Per-field canonical financial value with provenance: {value, source, corrected}"
+    )
     review_context: ReviewContext = Field(..., description="Review dashboard parameters for UI")
     execution_time_ms: float = Field(0.0, description="Reconciliation run latency in milliseconds")

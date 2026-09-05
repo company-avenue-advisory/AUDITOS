@@ -26,7 +26,7 @@ def safe_json_loads(text: str) -> Dict[str, Any]:
         text = "\n".join(lines).strip()
     return json.loads(text)
 
-def extract_metadata(text: str, candidates: List[Candidate], client, model_name: str, vendor_hints: str = "") -> Dict[str, Any]:
+def extract_metadata(text: str, candidates: List[Candidate], client, model_name: str, vendor_hints: str = "", invoice_type: str = "sales") -> Dict[str, Any]:
     """
     Calls the LLM to extract invoice header metadata using resolved candidates.
     """
@@ -38,13 +38,33 @@ def extract_metadata(text: str, candidates: List[Candidate], client, model_name:
     ]), 600)
 
     hint_block = f"{vendor_hints}\n\n" if vendor_hints else ""
+
+    # "party" means opposite directions depending on which ledger this invoice
+    # is being extracted for. Sales: OneStack/Marquecom is the seller, so
+    # party = the customer/buyer. Purchase: OneStack is the BUYER receiving
+    # this bill, so party must be the SUPPLIER/vendor who issued it — even
+    # though OneStack's own name/GSTIN also appears in the document (as the
+    # recipient) and must NOT be picked instead.
+    if invoice_type.lower() == "purchase":
+        party_rule = (
+            'IMPORTANT: This is a PURCHASE invoice — "One Stack Solution" / "Marquecom" (or any of '
+            'their GSTINs, e.g. any GSTIN with PAN AADCO0061H) is the BUYER/recipient here, NOT the party. '
+            "party_ledger_name and party_gstin must identify the SUPPLIER/vendor who issued this invoice "
+            "(the company whose letterhead, signatory, and bank details appear on the bill), never the buyer."
+        )
+    else:
+        party_rule = (
+            'IMPORTANT: Do NOT return "One Stack Solution" or "Marquecom" as party_ledger_name — '
+            "those are the seller. party_ledger_name is the customer/buyer."
+        )
+
     prompt = f"""{hint_block}Extract invoice metadata as JSON matching this schema:
 {json.dumps(METADATA_SCHEMA)}
 
-IMPORTANT: Do NOT return "One Stack Solution" or "Marquecom" as party_ledger_name — those are the seller. party_ledger_name is the customer/buyer.
+{party_rule}
 
 Metadata region:
-{_truncate(text, 2000)}
+{_truncate(text, 6000 if invoice_type.lower() == "purchase" else 2000)}
 
 Detected candidates:
 {candidates_summary}
@@ -53,7 +73,13 @@ Return JSON only."""
     res_text = ""
     try:
         res_text = llm_call(client, model_name, prompt)
-        return safe_json_loads(res_text)
+        result = safe_json_loads(res_text)
+        if isinstance(result, list):
+            # Model occasionally returns a bare array when it perceives multiple
+            # invoices/pages in one document — this pipeline handles one invoice
+            # per PDF, so take the first entry rather than crashing on .get().
+            result = result[0] if result and isinstance(result[0], dict) else {}
+        return result
     except Exception as e:
         print(f"Error in metadata extraction: {e}")
         if res_text:

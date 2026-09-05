@@ -1,6 +1,7 @@
 fastapi[standard]
 python-multipart
 pymupdf
+docling==2.109.0
 pandas
 openpyxl
 pydantic

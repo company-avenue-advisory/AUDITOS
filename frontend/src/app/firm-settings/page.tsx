@@ -188,7 +188,6 @@ export default function FirmSettingsPage() {
     gap: 6,
     padding: "10px 18px",
     borderRadius: 8,
-    border: "none",
     cursor: "pointer",
     fontWeight: 600,
     fontSize: 13,

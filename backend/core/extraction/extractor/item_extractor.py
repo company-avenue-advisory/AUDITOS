@@ -122,14 +122,20 @@ Rules:
    - taxable_value = the foreign currency amount shown (use numeric value as-is)
    - HSN/SAC = the SAC code from the invoice
 4. DECIMAL FORMAT: European invoices use period as thousands separator and comma as decimal (e.g. "1.200,00" = 1200.00, "4.200,00" = 4200.00). US invoices use standard decimals (900.00 = 900.00).
-5. "Late Fee Charges" / "Late Charges" → separate line item.
-6. taxable_value = (qty × rate) − discount. For export, discount column "-" means 0.
+5. "Late Fee Charges" / "Late Charges" / "Late Payment Charges" / interest-on-overdue rows: these often have a DIFFERENT column layout than product rows — a "Units" or quantity-looking column may actually hold the overdue/outstanding BASE amount, and a "Rate"-looking column may hold a PENALTY PERCENTAGE, not a GST rate. In that case do NOT compute base×rate% yourself — the row's own printed final Amount column is the correct taxable_value. Still extract as its own separate line item.
+6. taxable_value = (qty × rate) − discount, for a line where the discount applies directly to that one product. For export, discount column "-" means 0.
 7. For domestic invoices: compute cgst_amount = taxable_value × cgst_rate, sgst_amount = taxable_value × sgst_rate.
 8. gstr1_category: B2B (customer has Indian GSTIN), B2C (no GSTIN, domestic), EXPORT (foreign buyer / LUT), SEZ, or NIL_EXEMPT.
 9. Intrastate supply → cgst+sgst only (igst=0). Interstate → igst only (cgst/sgst=0). Export → all taxes = 0.
+10. DO NOT SILENTLY DROP ANY ROW WITH A PRINTED RUPEE AMOUNT. Every monetary row in the table — including deductions — must appear as a line item in your output, even if it doesn't look like a normal product/service charge:
+    - A standalone row like "Discount on X", "Less: ...", or any deduction that applies to a SECTION/GROUP of rows rather than a single product (i.e. not already netted into one line's own taxable_value per Rule 6) → emit as its own line item: particulars = the row's printed label, discount = the rupee amount as a POSITIVE number, taxable_value = 0, qty/rate = 0.
+    - A row like "Advance Paid", "Advance Adjustment", or a credit against a prior payment (distinct from a discount — this reduces the amount currently payable, not the price of a service) → emit as its own line item: particulars = the row's printed label, advances = the rupee amount as a POSITIVE number, taxable_value = 0, qty/rate = 0.
+    - Freight, Packing, Insurance, or any other named charge → include as its own normal taxable line item if it has a rupee amount, same as any product row.
+    - If a monetary row does not clearly fit any category above, still include it as a line item with your best-guess particulars and its printed amount in taxable_value rather than omitting it — an uncategorized row that reconciles is better than a dropped row that doesn't.
+    - Sum of all extracted line items' (taxable_value + cgst_amount + sgst_amount + igst_amount − discount − advances) MUST equal the invoice's own Grand Total / Total Invoice Value. Verify this before returning your answer.
 
 Table region:
-{_truncate(text, 4000)}
+{_truncate(text, 8000)}
 
 Return JSON only."""
     try:
@@ -161,7 +167,7 @@ Rules:
 7. HSN ≠ invoice number — different fields.
 
 Purchase table region:
-{_truncate(text, 4000)}
+{_truncate(text, 8000)}
 
 Return JSON only."""
     try:

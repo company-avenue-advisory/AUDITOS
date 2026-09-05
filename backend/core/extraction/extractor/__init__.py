@@ -9,12 +9,40 @@ def run_ai_extraction(regions, candidates: List[Candidate], client, model_name: 
     Coordinates metadata, line items, and totals extraction.
     Uses a purchase-specific prompt with ITC eligibility rules when invoice_type is 'purchase'.
     """
-    metadata_res = extract_metadata(regions.get_region_text("metadata_region"), candidates, client, model_name, vendor_hints=vendor_hints)
-
     # Route to the correct extractor based on invoice type
     is_purchase = invoice_type.lower() in ("purchase", "both")
     is_sales    = invoice_type.lower() in ("sales", "both")
-    items_table = regions.get_region_text("items_table_region")
+    # The keyword-based region splitter (layout.py) is unreliable on generic
+    # vendor invoices: a stray mention of a table-header word (e.g. "HSN" in a
+    # legend paragraph) can start "items_table_region" early on boilerplate
+    # text, while the real HSN/tax breakdown table then gets swallowed into
+    # totals_region because its own header row contains a totals keyword
+    # (e.g. "Total Tax"). Concatenating both regions is a safe superset fix —
+    # both extract_items and extract_purchase_items prompts already instruct
+    # the LLM to exclude subtotal/grand-total rows, so this never causes
+    # double-counting, it just prevents real line/tax data from being dropped
+    # entirely when the splitter misclassifies it.
+    items_table = "\n".join(filter(None, [
+        regions.get_region_text("items_table_region"),
+        regions.get_region_text("totals_region"),
+    ]))
+
+    # Purchase invoices from third-party vendors commonly print their own
+    # GST registration number in footer/registration boilerplate, not near
+    # the header — and that boilerplate frequently lands in items_table_region
+    # (see above) rather than metadata_region because of the same splitter
+    # bug. Give the purchase-side metadata call the whole document so the
+    # supplier's real GSTIN/name isn't missed; sales keeps its narrower,
+    # already-verified metadata_region input unchanged.
+    metadata_text = regions.get_region_text("metadata_region")
+    if is_purchase and not is_sales:
+        metadata_text = "\n".join(filter(None, [metadata_text, items_table]))
+
+    metadata_res = extract_metadata(
+        metadata_text, candidates, client, model_name,
+        vendor_hints=vendor_hints,
+        invoice_type="purchase" if invoice_type.lower() == "purchase" else "sales",
+    )
 
     if is_purchase and not is_sales:
         # Pure purchase — use purchase-specific prompt + ITC rules

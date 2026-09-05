@@ -1,14 +1,23 @@
 import os
 import sys
+
+# Ensure the backend directory is on sys.path BEFORE anything else imports —
+# the celery CLI entry point (Scripts/celery) resolves "-A celery_app" via its
+# own module-loading path, which does not reliably leave the backend
+# directory importable afterward (observed: "services" and other backend-local
+# packages fail to import inside a task even though this same file loaded
+# fine — insert(0, ...) takes priority over whatever the celery launcher
+# already put on sys.path, where append() did not).
+backend_dir = os.path.dirname(os.path.abspath(__file__))
+if backend_dir in sys.path:
+    sys.path.remove(backend_dir)
+sys.path.insert(0, backend_dir)
+
 import json
 import asyncio
 from celery import Celery
+from kombu import Queue
 from dotenv import load_dotenv
-
-# Ensure the backend directory is in python path
-backend_dir = os.path.dirname(os.path.abspath(__file__))
-if backend_dir not in sys.path:
-    sys.path.append(backend_dir)
 
 # Load environment variables
 env_path = os.path.join(backend_dir, ".env")
@@ -41,8 +50,24 @@ if broker_url:
         task_routes={
             "tasks.ocr_extract_task": {"queue": "ocr"},
             "tasks.process_batch_task": {"queue": "default"},
-            "tasks.google_drive_sync_task": {"queue": "default"},
+            # Own queue: a long Drive sync (hours, many files) must not sit in
+            # front of other tenants' interactive batch uploads on "default".
+            "tasks.google_drive_sync_task": {"queue": "drive_sync"},
         },
+        # Explicit queue declaration so a worker started with no -Q flag (the
+        # actual deploy command in render.yaml / START_ALL_WINDOWS.bat) still
+        # consumes all of them. Without this, Celery only listens on the
+        # single implicit "celery" queue — task_routes above would silently
+        # route "ocr"/"default"/"drive_sync" tasks to queues nobody drains,
+        # leaving them stuck PENDING forever. Verified empirically: worker
+        # startup with only task_routes set (no task_queues) reported
+        # amqp.queues == {"celery"} only.
+        task_queues=(
+            Queue("celery"),
+            Queue("default"),
+            Queue("ocr"),
+            Queue("drive_sync"),
+        ),
     )
 
 
@@ -130,27 +155,33 @@ def ocr_extract_task(self, pdf_bytes_b64: str, provider: str = "auto") -> str:
 @celery_app.task(name="tasks.google_drive_sync_task", bind=True, max_retries=1, time_limit=3600)
 def google_drive_sync_task(self, tenant_id: str, google_drive_folder_id: str,
                            excel_output_path: str, invoice_type: str = "both",
-                           model_config: dict = None) -> dict:
+                           model_config: dict = None, max_files: int = None,
+                           subfolder_id: str = None) -> dict:
     """
     Scheduled sync task — monitors Google Drive for new/updated invoices,
     processes them, and appends results to Excel.
 
     Runs on the schedule registered via setup_google_drive_sync.py.
     Respects dedup via Google Drive file ID + md5Checksum.
+
+    subfolder_id: if given, scan only this Drive subfolder (e.g. one month)
+    instead of the tenant's whole configured folder tree — a natural,
+    cost-bounded unit of work when invoices are organized by month.
     """
     from services.google_drive_sync import GoogleDriveSyncPipeline
 
     try:
-        print(f"[Celery:google_drive_sync] Starting sync for tenant {tenant_id}")
+        scan_root = subfolder_id or google_drive_folder_id
+        print(f"[Celery:google_drive_sync] Starting sync for tenant {tenant_id} (root={scan_root})")
 
         pipeline = GoogleDriveSyncPipeline(
             tenant_id=tenant_id,
-            google_drive_folder_id=google_drive_folder_id,
+            google_drive_folder_id=scan_root,
             excel_output_path=excel_output_path,
             invoice_type=invoice_type
         )
 
-        result = pipeline.run(model_config=model_config)
+        result = pipeline.run(model_config=model_config, max_files=max_files)
         print(f"[Celery:google_drive_sync] Sync completed: {json.dumps(result, default=str)}")
         return result
 

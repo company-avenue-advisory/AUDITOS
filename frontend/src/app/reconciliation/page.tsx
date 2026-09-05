@@ -44,11 +44,21 @@ interface BatchMeta { id: string; status: string; created_at: string; total_file
 /* ─────────── Config ─────────── */
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
-function authHdr() {
-  const t = typeof window !== "undefined" ? localStorage.getItem("token") : null;
-  return t ? { Authorization: `Bearer ${t}`, "Content-Type": "application/json" } : { "Content-Type": "application/json" };
-}
+function authHdr(): HeadersInit {
+  const t =
+    typeof window !== "undefined" ? localStorage.getItem("token") : null;
 
+  if (t) {
+    return {
+      Authorization: `Bearer ${t}`,
+      "Content-Type": "application/json",
+    };
+  }
+
+  return {
+    "Content-Type": "application/json",
+  };
+}
 const STATUS_FILTERS = ["all", "matched", "mismatch", "missing_in_2b", "not_in_books"] as const;
 type StatusFilter = typeof STATUS_FILTERS[number];
 

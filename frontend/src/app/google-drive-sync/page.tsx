@@ -19,6 +19,11 @@ interface DriveConfig {
   updated_at: string | null;
 }
 
+interface DriveSubfolder {
+  id: string;
+  name: string;
+}
+
 interface SyncJob {
   id: string;
   batch_id: string;
@@ -43,9 +48,25 @@ interface TaskStatus {
     processed_files: number;
     failed_files: number;
     duration_seconds: number | null;
+    remaining_files?: number;
   };
   error?: string;
 }
+
+// Batch-size presets for "Pull from Drive". Extraction is LLM-bound at
+// ~80-90s/invoice, and the backend Celery task has a hard 1-hour time limit —
+// an unbounded pull against a large folder never finishes in one run (it gets
+// killed mid-way). Default to a small, cheap batch so a first sync is a quick,
+// low-cost sanity check rather than an unbounded multi-hour job.
+const BATCH_SIZE_OPTIONS: { value: number | null; label: string }[] = [
+  { value: 1, label: "1 file (quick test)" },
+  { value: 2, label: "2 files (quick test)" },
+  { value: 5, label: "5 files" },
+  { value: 10, label: "10 files" },
+  { value: 20, label: "20 files" },
+  { value: 50, label: "50 files (~1hr, near the time-limit)" },
+  { value: null, label: "All new files (not recommended for large folders)" },
+];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -103,6 +124,10 @@ export default function GoogleDriveSyncPage() {
   const [taskId, setTaskId]             = useState<string | null>(null);
   const [taskStatus, setTaskStatus]     = useState<TaskStatus | null>(null);
   const [syncError, setSyncError]       = useState<string | null>(null);
+  const [maxFiles, setMaxFiles]         = useState<number | null>(2); // default: cheap 2-file test batch
+  const [subfolders, setSubfolders]     = useState<DriveSubfolder[]>([]);
+  const [subfoldersLoading, setSubfoldersLoading] = useState(false);
+  const [selectedSubfolder, setSelectedSubfolder] = useState<string>(""); // "" = whole configured folder tree
 
   // History panel
   const [history, setHistory]           = useState<SyncJob[]>([]);
@@ -129,6 +154,25 @@ export default function GoogleDriveSyncPage() {
     }
   }, []);
 
+  // Subfolders (e.g. month folders) under the configured Drive folder — lets
+  // the user scope a run to one month instead of the whole tree.
+  const loadSubfolders = useCallback(async () => {
+    setSubfoldersLoading(true);
+    try {
+      const res = await apiRequest("/api/google-drive-sync/subfolders");
+      if (res.ok) {
+        const data = await res.json();
+        setSubfolders(data.subfolders ?? []);
+      } else {
+        setSubfolders([]);
+      }
+    } catch {
+      setSubfolders([]);
+    } finally {
+      setSubfoldersLoading(false);
+    }
+  }, []);
+
   const loadHistory = useCallback(async () => {
     setHistoryLoading(true);
     try {
@@ -145,7 +189,8 @@ export default function GoogleDriveSyncPage() {
   useEffect(() => {
     loadConfig();
     loadHistory();
-  }, [loadConfig, loadHistory]);
+    loadSubfolders();
+  }, [loadConfig, loadHistory, loadSubfolders]);
 
   // ── Poll task status ──────────────────────────────────────────────────────
 
@@ -185,7 +230,9 @@ export default function GoogleDriveSyncPage() {
       });
       if (res.ok) {
         setConfigMsg({ ok: true, text: "Config saved. Drive folder connected." });
+        setSelectedSubfolder(""); // folder changed — reset any stale month selection
         loadConfig();
+        loadSubfolders();
       } else {
         const err = await res.json();
         setConfigMsg({ ok: false, text: err.detail ?? "Failed to save config." });
@@ -201,7 +248,10 @@ export default function GoogleDriveSyncPage() {
     setTaskStatus(null);
     setTaskId(null);
     try {
-      const res = await apiRequest("/api/google-drive-sync/trigger", { method: "POST", body: JSON.stringify({}) });
+      const res = await apiRequest("/api/google-drive-sync/trigger", {
+        method: "POST",
+        body: JSON.stringify({ max_files: maxFiles, subfolder_id: selectedSubfolder || null }),
+      });
       if (res.ok) {
         const data = await res.json();
         setTaskId(data.task_id);
@@ -381,6 +431,55 @@ export default function GoogleDriveSyncPage() {
               </div>
             )}
 
+            {/* Scope + batch size controls */}
+            <div className="mb-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm text-gray-400 mb-1.5">
+                  Month / Subfolder
+                </label>
+                <select
+                  value={selectedSubfolder}
+                  onChange={e => setSelectedSubfolder(e.target.value)}
+                  disabled={syncing || subfoldersLoading}
+                  className="w-full px-3 py-2.5 bg-slate-700 border border-slate-600 rounded-lg text-sm text-gray-200 focus:outline-none focus:border-blue-500 disabled:opacity-50"
+                >
+                  <option value="">
+                    {subfoldersLoading ? "Loading months…" : "All folders (entire Drive tree)"}
+                  </option>
+                  {subfolders.map(sf => (
+                    <option key={sf.id} value={sf.id}>{sf.name}</option>
+                  ))}
+                </select>
+                <p className="mt-1 text-xs text-gray-500">
+                  {subfolders.length > 0
+                    ? "Pick one month to sync just that folder — clients typically organize invoices this way."
+                    : "No subfolders detected — invoices are read directly from the connected folder."}
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-sm text-gray-400 mb-1.5">
+                  Files per run
+                </label>
+                <select
+                  value={maxFiles === null ? "all" : String(maxFiles)}
+                  onChange={e => setMaxFiles(e.target.value === "all" ? null : Number(e.target.value))}
+                  disabled={syncing}
+                  className="w-full px-3 py-2.5 bg-slate-700 border border-slate-600 rounded-lg text-sm text-gray-200 focus:outline-none focus:border-blue-500 disabled:opacity-50"
+                >
+                  {BATCH_SIZE_OPTIONS.map(opt => (
+                    <option key={opt.label} value={opt.value === null ? "all" : opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+                <p className="mt-1 text-xs text-gray-500">
+                  Extraction costs ~80–90s of LLM time per invoice. Already-synced files are always
+                  skipped, so running this again continues where the last batch left off.
+                </p>
+              </div>
+            </div>
+
             {/* Error banner */}
             {syncError && (
               <div className="mb-4 flex items-start gap-2 p-3 bg-red-900/30 border border-red-700/50 rounded-lg text-sm text-red-300">
@@ -416,6 +515,15 @@ export default function GoogleDriveSyncPage() {
                   <p className="mt-2 text-xs text-gray-500">
                     Completed in {taskStatus.result.duration_seconds.toFixed(1)}s
                   </p>
+                )}
+
+                {taskStatus.status === "SUCCESS" && !!taskStatus.result?.remaining_files && (
+                  <div className="mt-3 flex items-center gap-2 p-2.5 bg-yellow-900/20 border border-yellow-700/40 rounded-lg text-xs text-yellow-300">
+                    <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
+                    {taskStatus.result.remaining_files} more new file(s) still in Drive, not processed
+                    this run — click &quot;Pull Invoices from Drive&quot; again to continue the batch
+                    (already-processed files are skipped automatically).
+                  </div>
                 )}
               </div>
             )}
