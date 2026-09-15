@@ -25,17 +25,20 @@ Scheduled via Celery Beat (monthly or on-demand).
 """
 
 import os
+import asyncio
 import logging
 import tempfile
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 from datetime import datetime
 from uuid import uuid4
 
+from sqlalchemy import func
 from database import SessionLocal
 from models import (
     Tenant, InvoiceTask, BatchJob, TaskStatus, SalesLineItem, PurchaseLineItem,
     GoogleDriveFileTracker, GoogleDriveSyncJob
 )
+from services.duplicate_detector import _norm as _dup_norm
 from services.drive_classifier import (
     walk_and_classify, walk_and_classify_purchase, classify_local_directory_purchase,
     DocumentType, ClassifiedFile,
@@ -52,7 +55,7 @@ class GoogleDriveSyncPipeline:
     def __init__(self, tenant_id: str, google_drive_folder_id: str,
                  excel_output_path: str, invoice_type: str = "both",
                  period: str = None, max_files: int = None,
-                 subfolder_id: str = None):
+                 subfolder_id: str = None, celery_task_id: str = None):
         """
         Initialize sync pipeline.
 
@@ -92,6 +95,7 @@ class GoogleDriveSyncPipeline:
         self.period = period
         self.max_files = max_files if (max_files is None or max_files > 0) else None
         self.subfolder_id = subfolder_id
+        self.celery_task_id = celery_task_id
         # Remaining per-run file budget, decremented as files are consumed.
         # None = unlimited.
         self._files_budget = self.max_files
@@ -123,7 +127,8 @@ class GoogleDriveSyncPipeline:
                 id=sync_job_id,
                 tenant_id=self.tenant_id,
                 sync_timestamp=start_time,
-                status="in_progress"
+                status="in_progress",
+                celery_task_id=self.celery_task_id,
             )
             self.db.add(sync_job)
             self.db.commit()
@@ -558,7 +563,6 @@ class GoogleDriveSyncPipeline:
         Returns task_id if successful, None otherwise.
         """
         from invoice_processor import process_pdf
-        from services.observability import ObsLogger, now_utc, calc_cost_inr
         import time
 
         try:
@@ -660,6 +664,338 @@ class GoogleDriveSyncPipeline:
                 task.status = TaskStatus.FAILED
                 task.error_message = str(e)
                 self.db.commit()
+            except Exception:
+                pass
+            return None
+
+    def _check_duplicate(self, invoice_no: str, party_gstin: str, voucher_date: str, exclude_task_id: str) -> Optional[str]:
+        """
+        Look for an existing SalesLineItem/PurchaseLineItem for this tenant with the
+        same (invoice_no, party_gstin, voucher_date), belonging to a different task.
+        Returns a human-readable description of the match, or None.
+
+        Mirrors the key used by services/duplicate_detector.py's within-batch/
+        cross-batch checks so the "same invoice re-uploaded under a different
+        filename" case (confirmed to happen in real client Drive folders) is
+        caught before it double-counts in Excel/GSTR exports.
+        """
+        inv_no = _dup_norm(invoice_no)
+        if not inv_no:
+            return None
+        gstin = _dup_norm(party_gstin)
+
+        for model in (SalesLineItem, PurchaseLineItem):
+            match = (
+                self.db.query(model)
+                .join(InvoiceTask, model.task_id == InvoiceTask.id)
+                .join(BatchJob, InvoiceTask.batch_id == BatchJob.id)
+                .filter(
+                    BatchJob.tenant_id == self.tenant_id,
+                    InvoiceTask.id != exclude_task_id,
+                    func.upper(func.trim(model.invoice_no)) == inv_no,
+                    func.upper(func.trim(model.party_gstin)) == gstin,
+                    model.voucher_date == voucher_date,
+                )
+                .first()
+            )
+            if match:
+                other_task = self.db.query(InvoiceTask).filter(InvoiceTask.id == match.task_id).first()
+                return f"invoice {inv_no} already processed in {other_task.file_name if other_task else match.task_id}"
+        return None
+
+    def _run_reconciliation(self, task, res) -> str:
+        """
+        Run the same FinancialReconciliationEngine used by the regular upload
+        path (async_tasks.py) so Drive-synced invoices get the same accuracy
+        gate: ERP_READY | NEEDS_REVIEW | BLOCKED based on whether the extracted
+        line items actually sum to the invoice's own printed totals.
+        """
+        try:
+            from core.reconciliation.engine import FinancialReconciliationEngine
+            from core.reconciliation.adapter import build_canonical_invoice
+
+            canonical = build_canonical_invoice(
+                sales_items=res.sales_items,
+                purchase_items=res.purchase_items,
+                overall_taxable_value=res.overall_taxable_value,
+                overall_cgst_amount=res.overall_cgst_amount,
+                overall_sgst_amount=res.overall_sgst_amount,
+                overall_igst_amount=res.overall_igst_amount,
+                overall_total_invoice_value=res.overall_total_invoice_value,
+                overall_round_off=getattr(res, "overall_round_off", 0.0),
+                source="google_drive_sync",
+            )
+            recon_engine = FinancialReconciliationEngine()
+            recon_report = recon_engine.reconcile(canonical)
+            task.recon_status = recon_report.status
+            task.recon_report_json = recon_report.model_dump_json(exclude_none=True)
+            self.db.commit()
+            return recon_report.status
+        except Exception as e:
+            logger.error(f"[GoogleDriveSync] Reconciliation error: {e}")
+            # Fail closed: unknown reconciliation state is treated as needing review,
+            # never silently treated as clean.
+            task.recon_status = "NEEDS_REVIEW"
+            self.db.commit()
+            return "NEEDS_REVIEW"
+
+    def _set_tracker_status(self, google_drive_id: str, status: str, detail: str = None):
+        tracker = self.db.query(GoogleDriveFileTracker).filter(
+            GoogleDriveFileTracker.google_drive_id == google_drive_id
+        ).first()
+        if tracker:
+            tracker.processing_status = status
+            if detail:
+                tracker.error_message = str(detail)
+            tracker.updated_at = datetime.utcnow()
+            self.db.commit()
+
+    MAX_EXTRACTION_ATTEMPTS = 3
+
+    def _extract_with_retry(self, file_path: str, model_config: Dict, process_type: str, filename: str):
+        """
+        Extraction is not deterministic — the same PDF can produce a clean,
+        reconciled result on one call and a garbled one (wrong column picked,
+        line items missed) on the next (confirmed empirically: re-running the
+        same invoice through process_pdf() twice gave ERP_READY once and
+        BLOCKED with a ~3 lakh variance the next time).
+
+        Re-run extraction up to MAX_EXTRACTION_ATTEMPTS times, checking
+        reconciliation status after each attempt (without touching the DB),
+        and stop as soon as one attempt reaches ERP_READY. If none do, return
+        the attempt with the smallest total variance so the human reviewer
+        gets the closest candidate, not an arbitrary one.
+
+        Returns (res, recon_status, attempts_used).
+        """
+        from invoice_processor import process_pdf
+        from core.reconciliation.engine import FinancialReconciliationEngine
+        from core.reconciliation.adapter import build_canonical_invoice
+
+        recon_engine = FinancialReconciliationEngine()
+        best_res, best_status, best_variance = None, None, float("inf")
+
+        for attempt in range(1, self.MAX_EXTRACTION_ATTEMPTS + 1):
+            res = process_pdf(file_path, model_config or {}, process_type)
+            try:
+                canonical = build_canonical_invoice(
+                    sales_items=res.sales_items,
+                    purchase_items=res.purchase_items,
+                    overall_taxable_value=res.overall_taxable_value,
+                    overall_cgst_amount=res.overall_cgst_amount,
+                    overall_sgst_amount=res.overall_sgst_amount,
+                    overall_igst_amount=res.overall_igst_amount,
+                    overall_total_invoice_value=res.overall_total_invoice_value,
+                    overall_round_off=getattr(res, "overall_round_off", 0.0),
+                    source="google_drive_sync_retry_probe",
+                )
+                report = recon_engine.reconcile(canonical)
+                status = report.status
+                variance = abs(report.variance_taxable or 0.0) + abs(report.variance_total or 0.0)
+            except Exception as e:
+                logger.error(f"[GoogleDriveSync] Reconciliation probe failed on attempt {attempt} for {filename}: {e}")
+                status, variance = "NEEDS_REVIEW", float("inf")
+
+            logger.info(f"[GoogleDriveSync] {filename} attempt {attempt}/{self.MAX_EXTRACTION_ATTEMPTS}: {status} (variance={variance:.2f})")
+
+            if variance < best_variance:
+                best_res, best_status, best_variance = res, status, variance
+
+            if status == "ERP_READY":
+                return res, status, attempt
+
+        return best_res, best_status, self.MAX_EXTRACTION_ATTEMPTS
+
+    async def _extract_batch_concurrent(self, jobs: List[Dict], model_config: Dict) -> Dict[str, Tuple]:
+        """
+        Run LLM extraction for multiple plain-PDF jobs concurrently, bounded by
+        the same llm_semaphore + RpmGuard already tuned in async_tasks.py for
+        the interactive upload pipeline. This is the only part of the sync that
+        actually benefits from concurrency — DB/Excel writes are fast and stay
+        sequential in run() (see _finish_invoice).
+
+        jobs: list of {"drive_file": ..., "local_path": ..., "task": ...}
+        Returns: {drive_file_id: (res, pre_recon_status, attempts_used, error)}
+        """
+        from async_tasks import llm_semaphore, _get_rpm_guard
+
+        process_type = self.invoice_type if self.invoice_type != "both" else "both"
+        rpm_guard = _get_rpm_guard(model_config or {})
+
+        async def _run_one(job: Dict):
+            drive_file = job["drive_file"]
+            file_id = drive_file["id"]
+            filename = drive_file["name"]
+            local_path = job["local_path"]
+            try:
+                await rpm_guard.acquire()
+                async with llm_semaphore:
+                    res, status, attempts = await asyncio.to_thread(
+                        self._extract_with_retry, local_path, model_config, process_type, filename
+                    )
+                logger.info(
+                    f"[GoogleDriveSync] {filename}: extraction settled at {status} "
+                    f"after {attempts} attempt(s)"
+                )
+                return file_id, (res, status, attempts, None)
+            except Exception as e:
+                logger.error(f"[GoogleDriveSync] Concurrent extraction failed for {filename}: {e}")
+                return file_id, (None, None, 0, e)
+
+        results = await asyncio.gather(*(_run_one(job) for job in jobs))
+        return dict(results)
+
+    def _create_pending_task(self, filename: str) -> InvoiceTask:
+        """Create the BatchJob (if needed) + a PENDING InvoiceTask row ahead of
+        extraction, so a failed extraction still leaves a FAILED task in the
+        audit trail — matches the previous sequential behavior."""
+        batch_id = f"sync_{self.tenant_id}_{datetime.now().strftime('%Y%m%d')}"
+
+        batch = self.db.query(BatchJob).filter(BatchJob.id == batch_id).first()
+        if not batch:
+            batch = BatchJob(
+                id=batch_id,
+                tenant_id=self.tenant_id,
+                total_files=0,
+                status=TaskStatus.PENDING
+            )
+            self.db.add(batch)
+            self.db.commit()
+
+        task_id = str(uuid4())
+        task = InvoiceTask(
+            id=task_id,
+            batch_id=batch_id,
+            file_name=filename,
+            status=TaskStatus.PENDING,
+            invoice_type=self.invoice_type
+        )
+        self.db.add(task)
+        self.db.commit()
+        return task
+
+    def _process_invoice(self, file_path: str, filename: str, model_config: Dict = None) -> Dict:
+        """
+        Sequential extraction + persistence, used for PDFs pulled out of zip
+        archives (rare enough not to be worth including in the concurrent
+        batch — see _extract_batch_concurrent). Plain PDFs go through
+        _create_pending_task + _extract_batch_concurrent + _finish_invoice
+        instead (see run()).
+        """
+        task = self._create_pending_task(filename)
+        process_type = self.invoice_type if self.invoice_type != "both" else "both"
+        try:
+            res, pre_recon_status, attempts_used = self._extract_with_retry(
+                file_path, model_config, process_type, filename
+            )
+        except Exception as e:
+            logger.error(f"[GoogleDriveSync] Error extracting {filename}: {e}")
+            try:
+                task.status = TaskStatus.FAILED
+                task.error_message = str(e)
+                self.db.commit()
+            except Exception:
+                pass
+            return None
+        return self._finish_invoice(task, filename, res, pre_recon_status, attempts_used)
+
+    def _finish_invoice(self, task: InvoiceTask, filename: str, res, pre_recon_status: str, attempts_used: int) -> Dict:
+        """
+        Persist an already-extracted invoice against an existing (PENDING)
+        InvoiceTask row: write line items, run duplicate detection, then
+        reconciliation. Split out from _process_invoice so extraction can run
+        concurrently across files while these DB writes — which share
+        self.db and are not thread-safe — stay sequential in run().
+
+        Returns dict: {task_id, recon_status, is_duplicate, duplicate_reason}
+        or None on hard failure.
+        """
+        task_id = task.id
+        try:
+            logger.info(
+                f"[GoogleDriveSync] {filename}: extraction settled at {pre_recon_status} "
+                f"after {attempts_used} attempt(s)"
+            )
+
+            # Save extraction results to DB
+            if res.sales_items:
+                for item in res.sales_items:
+                    db_item = SalesLineItem(
+                        task_id=task.id,
+                        voucher_date=item.voucher_date,
+                        voucher_type=item.voucher_type,
+                        invoice_no=item.invoice_no,
+                        party_ledger_name=item.party_ledger_name,
+                        party_gstin=item.party_gstin,
+                        place_of_supply=item.place_of_supply,
+                        particulars=item.particulars,
+                        hsn=item.hsn,
+                        qty=item.qty,
+                        rate=item.rate,
+                        taxable_value=item.taxable_value,
+                        discount=item.discount,
+                        advances=item.advances,
+                        cgst_amount=item.cgst_amount,
+                        sgst_amount=item.sgst_amount,
+                        igst_amount=item.igst_amount,
+                        total_invoice_value=item.total_invoice_value,
+                        gstr1_category=item.gstr1_category,
+                        narration=item.narration
+                    )
+                    self.db.add(db_item)
+
+            if res.purchase_items:
+                for item in res.purchase_items:
+                    db_item = PurchaseLineItem(
+                        task_id=task.id,
+                        voucher_date=item.voucher_date,
+                        voucher_type=item.voucher_type,
+                        invoice_no=item.invoice_no,
+                        party_ledger_name=item.party_ledger_name,
+                        party_gstin=item.party_gstin,
+                        place_of_supply=item.place_of_supply,
+                        particulars=item.particulars,
+                        hsn=item.hsn,
+                        qty=item.qty,
+                        rate=item.rate,
+                        taxable_value=item.taxable_value,
+                        cgst_amount=item.cgst_amount,
+                        sgst_amount=item.sgst_amount,
+                        igst_amount=item.igst_amount,
+                        total_invoice_value=item.total_invoice_value,
+                        itc_eligibility=item.itc_category,
+                        narration=item.narration
+                    )
+                    self.db.add(db_item)
+
+            task.status = TaskStatus.COMPLETED
+            self.db.commit()
+
+            # Duplicate check: same (invoice_no, party_gstin, voucher_date) already
+            # exists for this tenant under a different task/filename.
+            first_item = (res.sales_items or res.purchase_items or [None])[0]
+            duplicate_reason = None
+            if first_item is not None:
+                duplicate_reason = self._check_duplicate(
+                    first_item.invoice_no, first_item.party_gstin, first_item.voucher_date, task_id
+                )
+
+            if duplicate_reason:
+                # Mark on the task itself (not just the file tracker) so generic export
+                # endpoints querying InvoiceTask directly by batch_id can also exclude it.
+                task.recon_status = "DUPLICATE"
+                self.db.commit()
+                return {"task_id": task_id, "recon_status": "DUPLICATE", "is_duplicate": True, "duplicate_reason": duplicate_reason}
+
+            recon_status = self._run_reconciliation(task, res)
+            return {"task_id": task_id, "recon_status": recon_status, "is_duplicate": False, "duplicate_reason": None}
+
+        except Exception as e:
+            logger.error(f"[GoogleDriveSync] Error processing {filename}: {e}")
+            try:
+                task.status = TaskStatus.FAILED
+                task.error_message = str(e)
+                self.db.commit()
             except:
                 pass
             return None
@@ -687,9 +1023,50 @@ class GoogleDriveSyncPipeline:
             logger.error(f"[GoogleDriveSync] Error appending to Excel: {e}")
             raise
 
+    def _append_to_review_excel(self, task_id: str, source_filename: str, recon_status: str):
+        """
+        Append extraction results that failed reconciliation (NEEDS_REVIEW / BLOCKED)
+        to a separate '_review.xlsx' file instead of the main output. Keeps unverified
+        data out of anything that feeds GSTR-1/ITC exports until a human confirms it.
+        """
+        from services.excel_sync import ExcelSyncService
+
+        try:
+            task = self.db.query(InvoiceTask).filter(InvoiceTask.id == task_id).first()
+            if not task:
+                return
+
+            if not hasattr(self, "_review_sales"):
+                self._review_sales = ExcelSyncService(
+                    self.excel_output_path.replace(".xlsx", "_review_sales.xlsx"), "sales"
+                )
+            if not hasattr(self, "_review_purchase"):
+                self._review_purchase = ExcelSyncService(
+                    self.excel_output_path.replace(".xlsx", "_review_purchase.xlsx"), "purchase"
+                )
+
+            tagged_filename = f"[{recon_status}] {source_filename}"
+            if task.sales_items:
+                self._review_sales.append_batch(task.sales_items, tagged_filename, is_sales=True)
+            if task.purchase_items:
+                self._review_purchase.append_batch(task.purchase_items, tagged_filename, is_sales=False)
+
+            logger.info(f"[GoogleDriveSync] Routed {source_filename} ({recon_status}) to review Excel")
+
+        except Exception as e:
+            logger.error(f"[GoogleDriveSync] Error appending to review Excel: {e}")
+            raise
+
     def _build_summary(self, sync_job) -> Dict:
         """Build summary of sync results, including batch_id for Excel download."""
         batch_id = f"sync_{sync_job.tenant_id}_{sync_job.sync_timestamp.strftime('%Y%m%d')}"
+
+        tracker_rows = self.db.query(GoogleDriveFileTracker).filter(
+            GoogleDriveFileTracker.tenant_id == sync_job.tenant_id
+        ).all()
+        duplicate_count = sum(1 for t in tracker_rows if t.processing_status == "duplicate_skipped")
+        needs_review_count = sum(1 for t in tracker_rows if t.processing_status == "needs_review")
+
         return {
             "sync_job_id": sync_job.id,
             "batch_id": batch_id,
@@ -699,6 +1076,8 @@ class GoogleDriveSyncPipeline:
             "updated_files": sync_job.updated_files,
             "processed_files": sync_job.processed_files,
             "failed_files": sync_job.failed_files,
+            "duplicate_files_skipped": duplicate_count,
+            "needs_review_files": needs_review_count,
             "excel_output_path": sync_job.excel_output_path,
             "duration_seconds": (sync_job.completed_at - sync_job.sync_timestamp).total_seconds() if sync_job.completed_at else None,
             # not persisted on GoogleDriveSyncJob (no migration for this yet) -

@@ -346,55 +346,31 @@ async def process_batch(batch_id: str, tasks: list, model_config: dict, type_val
             # falling through with a stale value from a previous loop iteration.
             recon_report = None
             try:
-                import json as _json
                 from core.reconciliation.engine import FinancialReconciliationEngine
-                from core.schema import CanonicalInvoice
-                from core.schema.tax import TaxSummary
-                from core.schema.confidence import ProvenancedValue
-                from core.schema.document import DocumentMetadata
-                from core.schema.supplier import Supplier
+                from core.reconciliation.adapter import build_canonical_invoice
 
                 recon_engine = FinancialReconciliationEngine()
-
-                def _tf(v): return ProvenancedValue(value=float(v or 0.0), confidence=0.9, sources=["async_task"])
-
-                tax_summary = TaxSummary(
-                    taxable_value=_tf(res.overall_taxable_value),
-                    cgst_amount=_tf(res.overall_cgst_amount),
-                    sgst_amount=_tf(res.overall_sgst_amount),
-                    igst_amount=_tf(res.overall_igst_amount),
-                    cess_amount=_tf(0.0),
-                    round_off=_tf(0.0),
-                    grand_total=_tf(res.overall_total_invoice_value),
-                )
-
-                line_items_raw = []
-                for it in res.sales_items:
-                    line_items_raw.append({
-                        "particulars": it.particulars, "hsn": it.hsn,
-                        "taxable_value": it.taxable_value, "cgst_amount": it.cgst_amount,
-                        "sgst_amount": it.sgst_amount, "igst_amount": it.igst_amount,
-                        "total_invoice_value": it.total_invoice_value
-                    })
-                for it in res.purchase_items:
-                    line_items_raw.append({
-                        "particulars": it.particulars, "hsn": it.hsn,
-                        "taxable_value": it.taxable_value, "cgst_amount": it.cgst_amount,
-                        "sgst_amount": it.sgst_amount, "igst_amount": it.igst_amount,
-                        "total_invoice_value": it.total_invoice_value
-                    })
-
-                canonical = CanonicalInvoice(
-                    metadata=DocumentMetadata(invoice_no=None, voucher_date=None, voucher_type=None),
-                    supplier=Supplier(),
-                    tax_summary=tax_summary,
-                    line_items=line_items_raw,
+                canonical = build_canonical_invoice(
+                    sales_items=res.sales_items,
+                    purchase_items=res.purchase_items,
+                    overall_taxable_value=res.overall_taxable_value,
+                    overall_cgst_amount=res.overall_cgst_amount,
+                    overall_sgst_amount=res.overall_sgst_amount,
+                    overall_igst_amount=res.overall_igst_amount,
+                    overall_total_invoice_value=res.overall_total_invoice_value,
+                    overall_round_off=getattr(res, "overall_round_off", 0.0),
+                    source="async_task",
                 )
                 recon_report = recon_engine.reconcile(canonical)
                 task.recon_status = recon_report.status
                 task.recon_report_json = recon_report.model_dump_json(exclude_none=True)
             except Exception as _re:
+                import traceback as _tb
                 print(f"[Recon4A] Error running reconciliation for task {task_id}: {_re}")
+                print(_tb.format_exc())
+                # Fail closed: an unrecoverable reconciliation error must never be
+                # mistaken for a clean/verified invoice.
+                task.recon_status = "NEEDS_REVIEW"
 
             task.status = TaskStatus.COMPLETED
             db.commit()

@@ -94,6 +94,16 @@ class SuvitPurchaseItem(BaseModel):
                 return 0.0
         return v
 
+# Maps ReconciliationReport.canonical_values field names to the corresponding
+# InvoiceExtractionResponse "overall_*" attribute.
+_CANONICAL_TO_OVERALL_ATTR = {
+    "taxable_value": "overall_taxable_value",
+    "grand_total": "overall_total_invoice_value",
+    "cgst_amount": "overall_cgst_amount",
+    "sgst_amount": "overall_sgst_amount",
+    "igst_amount": "overall_igst_amount",
+}
+
 class InvoiceExtractionResponse(BaseModel):
     overall_taxable_value: float = Field(0.0, description="Overall Taxable Value of the entire invoice")
     overall_cgst_amount: float = Field(0.0, description="Overall CGST Amount of the entire invoice")
@@ -352,12 +362,122 @@ def _extract_gst_summary_table(full_text: str) -> dict:
         result['round_off'] = _f(ro.group(1))
 
     # ── Derive advance from Net Cost − Final Total ────────────────────────────
-    if 'net_cost' in result and 'final_total' in result:
-        adv = round(result['net_cost'] - result['final_total'], 2)
+    # Prefer the explicit "Final Total (...)" label match; fall back to the
+    # row-based 'taxable_value' capture (from the GST rate-table row) — on
+    # invoices where the "Final Total" label isn't immediately followed by its
+    # amount in extracted text order, that regex misses even though the GST
+    # summary row itself (which IS the post-advance base actually taxed) was
+    # captured correctly.
+    _final_total = result.get('final_total', result.get('taxable_value'))
+    if 'net_cost' in result and _final_total is not None:
+        adv = round(result['net_cost'] - _final_total, 2)
         if adv > 0.50:
             result['advance_amount'] = adv
 
     return result
+
+
+def _fill_missing_sales_line_items(full_text: str, existing_items: list, variance_amount: float,
+                                    client, model_name: str) -> list:
+    """
+    Targeted follow-up extraction: the sum of already-extracted line items falls
+    short of the invoice's own (deterministically parsed) total by
+    `variance_amount`. Rather than fabricate a placeholder "Unallocated" row,
+    ask the model specifically to find the real missing item(s) in the invoice
+    text that account for this gap.
+
+    Returns a list of SuvitSalesItem (possibly empty if nothing genuine is
+    found, or if the found item(s) don't actually reconcile the gap) — never
+    fabricates data.
+    """
+    import json as _json
+
+    existing_desc = "\n".join(
+        f"- {it.particulars!r} (HSN {it.hsn}, taxable ₹{it.taxable_value})"
+        for it in existing_items
+    ) or "(none)"
+
+    prompt = f"""You already extracted these line items from an invoice:
+{existing_desc}
+
+Their totals are short by ₹{variance_amount:.2f} compared to the invoice's own printed total.
+Look again at the raw invoice text below and find the SPECIFIC line item(s) you missed —
+do NOT invent a number, do NOT split the variance evenly across a guess. Only return items
+whose amounts you can literally see printed in the text below. If a section like "KYC Charges",
+"Late Fees", or a small sub-total was skipped because it looked like a footer or an
+administrative line, that is exactly the kind of thing to look for.
+
+If you genuinely cannot find missing line item(s) whose amounts explain the gap, return an
+empty list — do not guess.
+
+Return JSON: {{"missing_items": [{{"particulars": str, "hsn": str, "taxable_value": number,
+"cgst_amount": number, "sgst_amount": number, "igst_amount": number, "total_invoice_value": number}}]}}
+
+===== RAW INVOICE TEXT =====
+{full_text[:6000]}
+"""
+
+    try:
+        response = client.chat.completions.create(
+            model=model_name,
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+            temperature=0.0,
+            max_tokens=2048,
+        )
+        raw_content = response.choices[0].message.content
+        if not raw_content:
+            return []
+        content = raw_content.strip()
+        json_match = re.search(r'\{.*\}', content, re.DOTALL)
+        if json_match:
+            content = json_match.group(0)
+        data = _json.loads(content)
+        candidates = data.get("missing_items", [])
+        if not candidates:
+            return []
+
+        found_items = []
+        for c in candidates:
+            try:
+                found_items.append(SuvitSalesItem(
+                    voucher_date=existing_items[0].voucher_date if existing_items else "",
+                    invoice_no=existing_items[0].invoice_no if existing_items else "",
+                    party_gstin=existing_items[0].party_gstin if existing_items else "",
+                    party_ledger_name=existing_items[0].party_ledger_name if existing_items else "",
+                    place_of_supply=existing_items[0].place_of_supply if existing_items else "",
+                    particulars=str(c.get("particulars") or "").strip(),
+                    hsn=str(c.get("hsn") or ""),
+                    taxable_value=float(c.get("taxable_value") or 0.0),
+                    cgst_amount=float(c.get("cgst_amount") or 0.0),
+                    sgst_amount=float(c.get("sgst_amount") or 0.0),
+                    igst_amount=float(c.get("igst_amount") or 0.0),
+                    total_invoice_value=float(c.get("total_invoice_value") or 0.0),
+                ))
+            except Exception:
+                continue
+
+        if not found_items:
+            return []
+
+        # Only accept the found item(s) if they actually close the gap — otherwise
+        # this is the model guessing, not finding, and we discard it.
+        # NOTE: variance_amount (passed in by the caller) is a taxable-value-only
+        # figure — compare against the found items' taxable value only, not a
+        # tax-inclusive sum, or a correct find gets rejected as a false mismatch.
+        found_taxable_sum = sum(it.taxable_value or 0.0 for it in found_items)
+        if abs(found_taxable_sum - variance_amount) > max(2.0, variance_amount * 0.05):
+            print(f"  [GapFill] Found items taxable sum (Rs.{found_taxable_sum:.2f}) doesn't reconcile variance "
+                  f"(Rs.{variance_amount:.2f}) - discarding, leaving gap for human review.")
+            return []
+
+        print(f"  [GapFill] Recovered {len(found_items)} missing line item(s) explaining Rs.{variance_amount:.2f} gap: "
+              f"{[it.particulars for it in found_items]}")
+        return found_items
+
+    except Exception as e:
+        print(f"  [GapFill] Follow-up extraction failed: {e}")
+        return []
 
 
 _INVOICE_HEADER_RE = re.compile(
@@ -633,15 +753,13 @@ def resolve_credit_note_gstin(original_invoice_no: str, lookup_fn) -> Optional[s
 
 
 def process_pdf(pdf_path, model_override=None, invoice_type="both", logger=None):
-    import pdfplumber
     import time
     from services.observability import now_utc
-    
+
     # 1. File Intake Stage
     started_intake = now_utc()
     try:
         doc = fitz.open(pdf_path)
-        pdf_plumber_doc = pdfplumber.open(pdf_path)
         total_pages = len(doc)
     except Exception as e:
         print(f"  Error opening PDF {pdf_path}: {e}")
@@ -705,7 +823,22 @@ def process_pdf(pdf_path, model_override=None, invoice_type="both", logger=None)
             base_url = "https://api.groq.com/openai/v1"
             api_key = os.getenv("GROQ_API_KEY", "")
         is_cloud_primary = True
-        
+
+    # Targeted model escalation: invoices with discount/advance/late-fee rows
+    # have non-standard column layouts (negative deduction rows, dual-meaning
+    # columns) that gemini-2.5-flash has been confirmed (empirically, on real
+    # invoices) to mis-extract even with explicit prompt rules in place.
+    # Escalate just these to the Pro model rather than accepting silently
+    # wrong numbers or blanket-upgrading every invoice's cost.
+    _ESCALATION_KEYWORDS = ("discount", "advance paid", "late fee", "late payment", "penalty", "interest charge")
+    if any(kw in full_text.lower() for kw in _ESCALATION_KEYWORDS):
+        if model_name == "gemini-2.5-flash":
+            print("  [ModelEscalation] Discount/advance/late-fee row detected — using gemini-2.5-pro for this invoice.")
+            model_name = "gemini-2.5-pro"
+        elif model_name == "google/gemini-2.5-flash":
+            print("  [ModelEscalation] Discount/advance/late-fee row detected — using google/gemini-2.5-pro for this invoice.")
+            model_name = "google/gemini-2.5-pro"
+
     completed_model = now_utc()
     if logger:
         logger.emit_model_selection(
@@ -772,35 +905,46 @@ def process_pdf(pdf_path, model_override=None, invoice_type="both", logger=None)
     all_res.overall_advance_amount = raw_extracted.get("overall_advance_amount") or 0.0
     all_res.overall_total_invoice_value = raw_extracted.get("overall_total_invoice_value") or 0.0
 
+    # LLM extraction sometimes omits a tax field entirely (JSON null) rather
+    # than writing 0 — e.g. an invoice with only IGST leaves cgst/sgst as
+    # null. Pydantic's float fields reject None outright, so coerce before
+    # constructing the model rather than losing the whole invoice to a
+    # validation error over an absent-but-legitimately-zero field.
+    _NUMERIC_ITEM_FIELDS = ("qty", "rate", "taxable_value", "cgst_amount",
+                             "sgst_amount", "igst_amount", "total_invoice_value")
+
+    def _coerce_numeric_nulls(item):
+        for f in _NUMERIC_ITEM_FIELDS:
+            if item.get(f) is None:
+                item[f] = 0.0
+        return item
+
     for item in raw_extracted.get("sales_items", []):
-        all_res.sales_items.append(SuvitSalesItem(**item))
+        all_res.sales_items.append(SuvitSalesItem(**_coerce_numeric_nulls(item)))
     for item in raw_extracted.get("purchase_items", []):
-        all_res.purchase_items.append(SuvitPurchaseItem(**item))
+        all_res.purchase_items.append(SuvitPurchaseItem(**_coerce_numeric_nulls(item)))
         
-    # ── Ground-truth auto-corrections from Reconciliation Engine ────────────
+    # ── Canonical financial values from Reconciliation Engine ────────────────
+    # recon_report.canonical_values already picks, per field, whichever source
+    # FIELD_SOURCE_AUTHORITY ranks strongest (line-item evidence for
+    # taxable_value/grand_total, invoice-summary for cgst/sgst/igst) — see
+    # core/reconciliation/canonical.py. Only fields marked "corrected" actually
+    # differ from the LLM's own value, so this loop is a no-op for the rest.
     recon_report = bundle.__dict__.get("reconciliation")
     ground_truth_correction = {"applied": False}
-    
+
     if recon_report:
-        taxable_evidence = recon_report.field_evidence.get("taxable_value")
-        if taxable_evidence and taxable_evidence.suggested_correction:
-            suggested = taxable_evidence.suggested_correction.suggested_value
-            ground_truth_correction["overall_taxable_value"] = {
-                "llm_value": all_res.overall_taxable_value,
-                "document_value": suggested
-            }
-            all_res.overall_taxable_value = suggested
-            ground_truth_correction["applied"] = True
-            
-        total_evidence = recon_report.field_evidence.get("grand_total")
-        if total_evidence and total_evidence.suggested_correction:
-            suggested = total_evidence.suggested_correction.suggested_value
-            ground_truth_correction["overall_total_invoice_value"] = {
-                "llm_value": all_res.overall_total_invoice_value,
-                "document_value": suggested
-            }
-            all_res.overall_total_invoice_value = suggested
-            ground_truth_correction["applied"] = True
+        for canon_field, attr_name in _CANONICAL_TO_OVERALL_ATTR.items():
+            entry = recon_report.canonical_values.get(canon_field)
+            if entry and entry.get("corrected"):
+                llm_value = getattr(all_res, attr_name)
+                setattr(all_res, attr_name, entry["value"])
+                ground_truth_correction[attr_name] = {
+                    "llm_value": llm_value,
+                    "document_value": entry["value"],
+                    "source": entry.get("source"),
+                }
+                ground_truth_correction["applied"] = True
 
     # ── Deterministic override from GST summary table ────────────────────────
     # Applied AFTER reconciliation so regex results win over both LLM and
@@ -909,6 +1053,7 @@ def process_pdf(pdf_path, model_override=None, invoice_type="both", logger=None)
         "unallocated_rows_injected": 0,
         "unallocated_row_details": {},
         "tax_type_ambiguous_fallback": False,
+        "canonical_financial_values": ground_truth_correction,
     }
     
     # Detect export invoice from full text (LUT / zero-rated supply markers)
@@ -975,39 +1120,51 @@ def process_pdf(pdf_path, model_override=None, invoice_type="both", logger=None)
             all_res.overall_igst_amount = 0.0
             all_res.overall_total_invoice_value = all_res.overall_taxable_value
 
-        # Unallocated variance injection
-        overall_total = all_res.overall_total_invoice_value
-        sum_total = sum((item.taxable_value or 0.0) + (item.cgst_amount or 0.0) + (item.sgst_amount or 0.0) + (item.igst_amount or 0.0) for item in cleaned_sales)
-        diff = overall_total - sum_total
+        # Gap-fill missing line items (replaces old "Unallocated / Missing Lines"
+        # fabrication). If the LLM's line items don't sum to the invoice's own
+        # total, we used to inject a synthetic placeholder row with a made-up
+        # HSN and no real particulars — that's fabricated data, and it has been
+        # observed to inject amounts (e.g. ~₹2 lakh on a real client invoice)
+        # that don't correspond to anything on the actual document. Instead,
+        # make one targeted follow-up call asking specifically for the missing
+        # item(s), grounded in the invoice text. If that genuinely can't find
+        # anything, leave the gap as-is — the reconciliation engine will
+        # correctly flag the invoice as BLOCKED/NEEDS_REVIEW for human review,
+        # which is the honest outcome, not a plugged number.
+        # Compare on the SAME anchor the reconciliation engine actually checks
+        # (taxable value only, not tax-inclusive total) — using a different
+        # anchor here than the engine uses downstream meant this block could
+        # see no variance while the engine still blocked the invoice (or vice
+        # versa). Line items are gross (pre-advance); when the invoice deducts
+        # an advance payment before computing GST, overall_taxable_value is
+        # already net-of-advance, so add the advance back to get the gross
+        # target line items should actually sum to.
+        _sum_taxable = sum(item.taxable_value or 0.0 for item in cleaned_sales)
+        _expected_taxable = (all_res.overall_taxable_value or 0.0) + (all_res.overall_advance_amount or 0.0)
+        diff = _expected_taxable - _sum_taxable
 
         # Skip phantom injection when diff ≈ tax on existing items (items extracted without per-line taxes)
-        _sum_taxable = sum(item.taxable_value or 0.0 for item in cleaned_sales)
         _diff_is_just_tax = any(abs(diff - _sum_taxable * r) < 5.0 for r in (0.18, 0.12, 0.05, 0.28))
 
-        if overall_total > 0 and diff > 1.0 and not _diff_is_just_tax:
-            taxable_diff = round(diff / 1.18, 2)
-            is_interstate = (cleaned_sales[0].igst_amount or 0) > 0 if cleaned_sales else False
-            
-            dummy_item = SuvitSalesItem(
-                voucher_date=cleaned_sales[0].voucher_date if cleaned_sales else "",
-                invoice_no=cleaned_sales[0].invoice_no if cleaned_sales else "",
-                party_gstin=cleaned_sales[0].party_gstin if cleaned_sales else "",
-                party_ledger_name=cleaned_sales[0].party_ledger_name if cleaned_sales else "",
-                place_of_supply=cleaned_sales[0].place_of_supply if cleaned_sales else "",
-                particulars="Unallocated / Missing Lines",
-                hsn="9971",
-                taxable_value=taxable_diff,
-                cgst_amount=0.0 if is_interstate else round(taxable_diff * 0.09, 2),
-                sgst_amount=0.0 if is_interstate else round(taxable_diff * 0.09, 2),
-                igst_amount=round(taxable_diff * 0.18, 2) if is_interstate else 0.0,
-                total_invoice_value=diff
+        if _expected_taxable > 0 and diff > 1.0 and not _diff_is_just_tax:
+            found_items = _fill_missing_sales_line_items(
+                full_text=full_text,
+                existing_items=cleaned_sales,
+                variance_amount=diff,
+                client=client,
+                model_name=model_name,
             )
-            cleaned_sales.append(dummy_item)
-            correction_meta["unallocated_rows_injected"] = 1
-            correction_meta["unallocated_row_details"] = {
-                "variance_amount": diff
-            }
-            
+            if found_items:
+                cleaned_sales.extend(found_items)
+                correction_meta["gap_fill_rows_found"] = len(found_items)
+                correction_meta["gap_fill_details"] = {
+                    "variance_amount": diff,
+                    "particulars": [it.particulars for it in found_items],
+                }
+            else:
+                correction_meta["gap_fill_rows_found"] = 0
+                correction_meta["unresolved_variance"] = diff
+
         # Math verification agent (GST snaps / recalculations)
         # Priority 1: auto-detect seller GSTIN from invoice text, derive state code.
         # Priority 2: fall back to FIRM_GSTIN env var.
@@ -1103,11 +1260,6 @@ def process_pdf(pdf_path, model_override=None, invoice_type="both", logger=None)
         except Exception as e:
             print(f"Error logging post_processing: {e}")
 
-    try:
-        pdf_plumber_doc.close()
-    except:
-        pass
-        
     all_res.correction_meta = correction_meta
     all_res.prompt_tokens = total_prompt_tokens
     all_res.completion_tokens = total_completion_tokens
@@ -1183,7 +1335,27 @@ def classify_gstr1_item(item, seller_gstin=None) -> str:
         
     gstin = str(item.party_gstin or "").strip()
     has_gstin = len(gstin) >= 15 and gstin != "None" and gstin != ""
-    
+
+    # A 15-char string isn't proof of a real, active registration -- verify
+    # against the GST registry (cached) and auto-correct has_gstin when we
+    # get a confident answer. Best-effort: any failure keeps the length-only
+    # heuristic above rather than blocking classification.
+    gstin_verified_status = None
+    if has_gstin:
+        try:
+            from database import SessionLocal
+            from services.gstin_verification import get_gstin_info
+            db = SessionLocal()
+            try:
+                info = get_gstin_info(gstin, db)
+            finally:
+                db.close()
+            if info and info.get("status"):
+                gstin_verified_status = info["status"]
+                has_gstin = gstin_verified_status.strip().lower() == "active"
+        except Exception:
+            pass  # verification is a bonus, never a hard dependency
+
     # Credit/Debit note check
     voucher_type = str(item.voucher_type or "").lower()
     particulars = str(item.particulars or "").lower()
@@ -1387,37 +1559,17 @@ def build_dataframes(extraction_response):
         # 1. Apply QC Audit (Remove zeroes, map missing HSNs)
         extraction_response.sales_items = qc_audit_sales_items(extraction_response.sales_items)
         
-        # 2. Reconcile missing lines using the LLM's overall totals BEFORE math verification
-        overall_total = extraction_response.overall_total_invoice_value
-        sum_total = sum((item.taxable_value or 0.0) + (item.cgst_amount or 0.0) + (item.sgst_amount or 0.0) + (item.igst_amount or 0.0) for item in extraction_response.sales_items)
-        diff = overall_total - sum_total
+        # NOTE: this used to inject a fabricated "Unallocated / Missing Lines" placeholder row
+        # here (guessed taxable value, 18%-split tax) whenever line items didn't sum to
+        # extraction_response.overall_total_invoice_value. That fabrication was removed from
+        # process_pdf's code path this session (replaced with an honest gap-fill-or-leave-for-review
+        # mechanism) because it was observed injecting amounts that don't correspond to anything on
+        # the real invoice. Removed here too for the same reason — do not re-add it. This function
+        # only ever receives an already-aggregated, multi-invoice extraction_response (see its only
+        # caller, main.py's /api/export/{batch_id}) with overall_total_invoice_value never populated,
+        # so there's nothing meaningful to gap-fill against at this level anyway; genuine per-invoice
+        # gaps are already surfaced upstream via recon_status during extraction.
 
-        # Skip phantom injection when diff ≈ tax on existing items (items extracted without per-line taxes)
-        _sum_taxable_bd = sum(item.taxable_value or 0.0 for item in extraction_response.sales_items)
-        _diff_is_just_tax_bd = any(abs(diff - _sum_taxable_bd * r) < 5.0 for r in (0.18, 0.12, 0.05, 0.28))
-
-        if overall_total > 0 and diff > 1.0 and not _diff_is_just_tax_bd:
-            taxable_diff = round(diff / 1.18, 2) # Assume standard 18% for missing lines
-            is_interstate = False
-            if len(extraction_response.sales_items) > 0:
-                is_interstate = (extraction_response.sales_items[0].igst_amount or 0) > 0
-                
-            dummy_item = SuvitSalesItem(
-                voucher_date=extraction_response.sales_items[0].voucher_date if extraction_response.sales_items else "",
-                invoice_no=extraction_response.sales_items[0].invoice_no if extraction_response.sales_items else "",
-                party_gstin=extraction_response.sales_items[0].party_gstin if extraction_response.sales_items else "",
-                party_ledger_name=extraction_response.sales_items[0].party_ledger_name if extraction_response.sales_items else "",
-                place_of_supply=extraction_response.sales_items[0].place_of_supply if extraction_response.sales_items else "",
-                particulars="Unallocated / Missing Lines",
-                hsn="9971",
-                taxable_value=taxable_diff,
-                cgst_amount=0.0 if is_interstate else round(taxable_diff * 0.09, 2),
-                sgst_amount=0.0 if is_interstate else round(taxable_diff * 0.09, 2),
-                igst_amount=round(taxable_diff * 0.18, 2) if is_interstate else 0.0,
-                total_invoice_value=diff
-            )
-            extraction_response.sales_items.append(dummy_item)
-            
         # 3. Apply strict Math Verification Agent across all items.
         # Trust the invoice's printed tax amounts (already set from _extract_gst_summary_table
         # earlier in process_pdf) as the primary signal for interstate/intrastate.

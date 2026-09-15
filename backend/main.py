@@ -16,7 +16,6 @@ import pandas as pd
 from typing import List, Optional, Any
 from pydantic import BaseModel
 import sys
-import os
 import io
 import zipfile
 import uuid
@@ -131,7 +130,7 @@ async def log_requests(request: Request, call_next):
     response = await call_next(request)
     latency_ms = round((_time.perf_counter() - t0) * 1000)
     # Skip noisy health-check paths to keep logs clean
-    if request.url.path not in ("/", "/docs", "/openapi.json"):
+    if request.url.path not in ("/", "/health", "/docs", "/openapi.json"):
         logger.info(
             '"method":"%s","path":"%s","status":%d,"latency_ms":%d',
             request.method,
@@ -145,7 +144,7 @@ async def log_requests(request: Request, call_next):
 class UserRegisterRequest(BaseModel):
     email: str
     password: str
-    role: Optional[str] = "auditor"
+    role: Optional[str] = "accountant"
 
 class UserLoginRequest(BaseModel):
     email: str
@@ -168,8 +167,16 @@ async def register(req: UserRegisterRequest, db: Session = Depends(get_db)):
     # Validate role. "developer" is a platform-wide RBAC bypass (see RoleChecker
     # in services/auth.py) and must never be self-assignable at signup — it can
     # only be granted via direct database provisioning.
-    allowed_roles = ["owner", "hr", "auditor", "other"]
-    user_role = req.role.lower() if req.role else "auditor"
+    #
+    # A role chosen here is provisional: it only matters for the "bootstrap my
+    # own firm" path (create_tenant auto-assigns tenant_id when role=="owner"
+    # and the caller has no tenant yet). The moment this account is assigned
+    # into an EXISTING tenant via POST /api/admin/tenants/{id}/assign-user,
+    # that endpoint resets the role to whatever the inviting Owner specifies
+    # (default: "accountant") — self-declaring "owner" at signup does not
+    # carry over into someone else's firm.
+    allowed_roles = ["owner", "senior", "accountant"]
+    user_role = req.role.lower() if req.role else "accountant"
     if user_role not in allowed_roles:
         raise HTTPException(status_code=400, detail=f"Invalid role. Supported: {allowed_roles}")
 
@@ -271,11 +278,13 @@ async def list_tenants(
 async def assign_user_to_tenant(
     tenant_id: str,
     user_email: str,
+    role: Optional[str] = None,
     current_user: User = Depends(RoleChecker(["owner", "developer"])),
     db: Session = Depends(get_db),
 ):
     """
-    Assigns an existing user to a tenant.
+    Assigns an existing user to a tenant, and (for anyone other than the
+    caller themself) SETS their role to `role`.
 
     Frontend call pattern (see firm-settings/page.tsx): an owner who already
     belongs to a tenant invites a colleague (a different user) into that same
@@ -284,7 +293,25 @@ async def assign_user_to_tenant(
     a "claim a tenant I have no relationship to yet" bootstrap path. Without
     this check, any self-registered "owner" could assign themselves (or
     anyone) into any existing, populated tenant.
+
+    When assigning someone ELSE, the role always defaults to "accountant"
+    (safest default) and is overwritten with whatever the inviting Owner
+    specifies — never left as whatever the invitee picked at their own
+    self-registration. Otherwise anyone could register as "owner" and, once
+    added to a firm, hold the same admin rights as its real principal.
+
+    When the caller assigns THEMSELF (the bootstrap "create my own firm" flow
+    fires this immediately after create_tenant, as a now-harmless no-op) the
+    role is left untouched — there's no "inviting Owner" to defer to here,
+    and forcing a default would silently demote the firm's own creator.
     """
+    is_self = current_user.email == user_email
+    if role is not None:
+        role = role.lower()
+        if role not in ("owner", "senior", "accountant"):
+            raise HTTPException(status_code=400, detail="role must be one of: owner, senior, accountant")
+    elif not is_self:
+        role = "accountant"
     if current_user.role == "owner" and current_user.tenant_id != tenant_id:
         raise HTTPException(status_code=403, detail="You can only assign members to your own firm.")
     tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
@@ -294,8 +321,34 @@ async def assign_user_to_tenant(
     if not user:
         raise HTTPException(status_code=404, detail="User not found.")
     user.tenant_id = tenant_id
+    if role is not None:
+        user.role = role
     db.commit()
-    return {"ok": True, "user": user_email, "tenant": tenant.name}
+    return {"ok": True, "user": user_email, "role": user.role, "tenant": tenant.name}
+
+
+@app.patch("/api/admin/tenants/{tenant_id}/users/{user_id}/role")
+async def update_member_role(
+    tenant_id: str,
+    user_id: str,
+    role: str,
+    current_user: User = Depends(RoleChecker(["owner", "developer"])),
+    db: Session = Depends(get_db),
+):
+    """Change an existing firm member's role. Owner can only manage their own firm."""
+    role = role.lower()
+    if role not in ("owner", "senior", "accountant"):
+        raise HTTPException(status_code=400, detail="role must be one of: owner, senior, accountant")
+    if current_user.role == "owner" and current_user.tenant_id != tenant_id:
+        raise HTTPException(status_code=403, detail="You can only manage your own firm's members.")
+    user = db.query(User).filter(User.id == user_id, User.tenant_id == tenant_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found in this firm.")
+    if user.id == current_user.id and role != "owner":
+        raise HTTPException(status_code=400, detail="You cannot demote yourself.")
+    user.role = role
+    db.commit()
+    return {"ok": True, "user": user.email, "role": role}
 
 
 @app.get("/api/admin/tenants/{tenant_id}/users")
@@ -370,6 +423,17 @@ async def get_my_tenant(
     return {"tenant": {"id": tenant.id, "name": tenant.name, "slug": tenant.slug}}
 
 
+@app.get("/health")
+async def health():
+    """
+    Bare liveness probe: process is up and serving requests. No DB, Celery,
+    or Redis dependency, so it stays green during local dev even before those
+    are running. Used by the container HEALTHCHECK; use /api/health/workers
+    for task-queue readiness.
+    """
+    return {"status": "ok"}
+
+
 @app.get("/api/health/workers")
 async def health_workers():
     """
@@ -404,7 +468,7 @@ async def get_models():
     })
 
 @app.post("/api/invoices/upload-batch")
-async def upload_batch(background_tasks: BackgroundTasks, files: List[UploadFile] = File(...), model: Optional[str] = None, type: Optional[str] = "both", db: Session = Depends(get_db), current_user: User = Depends(RoleChecker(["owner", "auditor"]))):
+async def upload_batch(background_tasks: BackgroundTasks, files: List[UploadFile] = File(...), model: Optional[str] = None, type: Optional[str] = "both", db: Session = Depends(get_db), current_user: User = Depends(RoleChecker(["owner", "senior", "accountant"]))):
     batch_id = str(uuid.uuid4())
     total_files = len(files)
     
@@ -525,11 +589,13 @@ async def upload_batch(background_tasks: BackgroundTasks, files: List[UploadFile
     })
 @app.get("/api/jobs")
 async def get_all_jobs(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    # Tenant-scoped: owners/developers see all batches within their tenant
+    # Tenant-scoped: owner/senior/developer see every batch in the tenant
+    # (a Senior reviewer needs visibility into Accountants' work); a plain
+    # Accountant only sees batches they personally uploaded.
     base_q = db.query(BatchJob)
     if current_user.tenant_id:
         base_q = base_q.filter(BatchJob.tenant_id == current_user.tenant_id)
-    if current_user.role in ["developer", "owner"]:
+    if current_user.role in ["developer", "owner", "senior"]:
         batches = base_q.order_by(BatchJob.created_at.desc()).all()
     else:
         batches = base_q.filter(BatchJob.user_id == current_user.id).order_by(BatchJob.created_at.desc()).all()
@@ -826,9 +892,11 @@ async def get_task_review(
     })
 
 @app.patch("/api/tasks/{task_id}/accept-correction")
-async def accept_correction(task_id: str, db: Session = Depends(get_db), current_user: User = Depends(RoleChecker(["owner", "auditor"]))):
+async def accept_correction(task_id: str, db: Session = Depends(get_db), current_user: User = Depends(RoleChecker(["owner", "senior"]))):
     """
     Phase 4A: CA reviewer accepts auto-correction proposal.
+    Reviewer-only (Owner/Senior) — accepting a correction is a sign-off action,
+    not part of the Accountant's data-entry/extraction workflow.
     Marks the task recon_status as HUMAN_CORRECTED.
     """
     from models import InvoiceTask
@@ -1818,7 +1886,7 @@ class MSMEVerifyRequest(BaseModel):
     udyam_number: str
 
 @app.post("/api/verify-msme")
-async def verify_msme_status(req: MSMEVerifyRequest, current_user: User = Depends(RoleChecker(["owner", "hr"]))):
+async def verify_msme_status(req: MSMEVerifyRequest, current_user: User = Depends(RoleChecker(["owner", "senior"]))):
     """
     Authorized integration point for MSME status verification.
     This simulates a query to the Ministry of MSME database or an authorized API provider.
@@ -1860,7 +1928,7 @@ async def verify_msme_status(req: MSMEVerifyRequest, current_user: User = Depend
     })
 
 @app.post("/api/tax/parse-udyam")
-async def upload_udyam_certificate(file: UploadFile = File(...), current_user: User = Depends(RoleChecker(["owner", "hr"]))):
+async def upload_udyam_certificate(file: UploadFile = File(...), current_user: User = Depends(RoleChecker(["owner", "senior"]))):
     """
     Ingests a vendor's Udyam Registration Certificate PDF, extracts metadata
     and normalizes the enterprise classification status.
@@ -1887,7 +1955,7 @@ class MSMEComplianceRequest(BaseModel):
     amount: float
 
 @app.post("/api/tax/compliance")
-async def calculate_compliance_metrics(req: MSMEComplianceRequest, current_user: User = Depends(RoleChecker(["owner", "hr"]))):
+async def calculate_compliance_metrics(req: MSMEComplianceRequest, current_user: User = Depends(RoleChecker(["owner", "senior"]))):
     """
     Computes statutory MSME 43B(h) compliance metrics.
     """
@@ -1912,7 +1980,8 @@ async def calculate_compliance_metrics(req: MSMEComplianceRequest, current_user:
 async def bank_parse_endpoint(
     file: UploadFile = File(...),
     password: str = Form(""),
-    confidence_min: str = None
+    confidence_min: str = None,
+    current_user: User = Depends(get_current_user),
 ):
     """
     Multi-stage bank statement parser with confidence scoring.
@@ -1971,7 +2040,7 @@ async def bank_parse_endpoint(
         raise HTTPException(status_code=500, detail=f"Parsing failed: {type(e).__name__}: {str(e)}")
 
 @app.post("/api/docs/split-portal")
-async def split_portal_endpoint(file: UploadFile = File(...), target_mb: float = Form(4.5)):
+async def split_portal_endpoint(file: UploadFile = File(...), target_mb: float = Form(4.5), current_user: User = Depends(get_current_user)):
     """
     Splits heavy PDF files into sub-5MB chunks, returning them bundled inside a single ZIP file.
     """
@@ -1998,7 +2067,7 @@ async def split_portal_endpoint(file: UploadFile = File(...), target_mb: float =
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/docs/enhance-scan")
-async def enhance_scan_endpoint(file: UploadFile = File(...)):
+async def enhance_scan_endpoint(file: UploadFile = File(...), current_user: User = Depends(get_current_user)):
     """
     Applies adaptive contrast thresholding to a scanned image, generating a clean PDF.
     Uses OpenCV (cv2) with PIL fallback for maximum compatibility.
@@ -2025,7 +2094,7 @@ async def enhance_scan_endpoint(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=f"Image enhancement failed: {str(e)}")
 
 @app.post("/api/docs/compress")
-async def compress_pdf_endpoint(file: UploadFile = File(...), quality: int = Form(50)):
+async def compress_pdf_endpoint(file: UploadFile = File(...), quality: int = Form(50), current_user: User = Depends(get_current_user)):
     """
     Optimizes a PDF, outputting compaction metrics in custom response headers.
     """
@@ -2065,7 +2134,7 @@ async def update_item(
     type: str,
     req: ItemUpdateRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(RoleChecker(["owner", "auditor"])),
+    current_user: User = Depends(RoleChecker(["owner", "senior", "accountant"])),
 ):
     if type == "sales":
         item = db.query(SalesLineItem).filter(SalesLineItem.id == item_id).first()
@@ -2172,7 +2241,7 @@ async def update_item(
     return {"status": "success"}
 
 @app.post("/api/invoice-metadata")
-async def ocr_extract_endpoint(file: UploadFile = File(...), provider: str = Form("auto")):
+async def ocr_extract_endpoint(file: UploadFile = File(...), provider: str = Form("auto"), current_user: User = Depends(get_current_user)):
     """
     Tiered OCR extraction with intelligent fallback.
 
@@ -2265,10 +2334,16 @@ class GoogleDriveSyncTriggerRequest(BaseModel):
     subfolder_id: Optional[str] = None
 
 
+class IngestionTriggerRequest(BaseModel):
+    # Optional period override, format "YYYY-MM" (e.g. "2026-06").
+    # When omitted the task resolves the current month via date.today().
+    period: Optional[str] = None
+
+
 @app.get("/api/google-drive-sync/config")
 async def get_drive_sync_config(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(RoleChecker(["owner", "senior"])),
 ):
     """Return the saved Google Drive sync config for the current tenant."""
     if not current_user.tenant_id:
@@ -2434,7 +2509,7 @@ async def save_drive_sync_config(
 @app.get("/api/google-drive-sync/subfolders")
 async def list_drive_subfolders(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(RoleChecker(["owner", "senior"])),
 ):
     """
     List the immediate subfolders of the tenant's configured Drive folder —
@@ -2462,7 +2537,7 @@ async def list_drive_subfolders(
 async def trigger_google_drive_sync(
     req: GoogleDriveSyncTriggerRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(RoleChecker(["owner", "senior"])),
 ):
     """
     Trigger an immediate Google Drive sync for the current tenant.
@@ -2516,6 +2591,7 @@ def _tenant_slug_for(db: Session, current_user: User) -> str:
 
 @app.post("/api/google-drive-sync/trigger-sales")
 async def trigger_sales_ingestion(
+    req: IngestionTriggerRequest = IngestionTriggerRequest(),
     db: Session = Depends(get_db),
     current_user: User = Depends(RoleChecker(["owner", "auditor", "developer"])),
 ):
@@ -2523,6 +2599,9 @@ async def trigger_sales_ingestion(
     Runs tasks.sales_ingestion_task immediately for the current tenant -
     the self-resolving Sales pipeline (Phase 6), triggered on demand from
     the Drive Sync UI instead of only via a Celery Beat schedule.
+
+    Optional body param ``period`` (format "YYYY-MM") overrides which
+    month's folder is resolved - without it, the task uses date.today().
     """
     from celery_app import sales_ingestion_task
 
@@ -2539,16 +2618,22 @@ async def trigger_sales_ingestion(
         excel_output_path=f"/data/sync_{current_user.tenant_id}_sales.xlsx",
         invoice_type="sales",
         model_config=None,
+        period=req.period,
     )
     return JSONResponse(content={"status": "sync_started", "task_id": task.id})
 
 
 @app.post("/api/google-drive-sync/trigger-purchase")
 async def trigger_purchase_ingestion(
+    req: IngestionTriggerRequest = IngestionTriggerRequest(),
     db: Session = Depends(get_db),
     current_user: User = Depends(RoleChecker(["owner", "auditor", "developer"])),
 ):
-    """Runs tasks.purchase_ingestion_task immediately for the current tenant."""
+    """Runs tasks.purchase_ingestion_task immediately for the current tenant.
+
+    Optional body param ``period`` (format "YYYY-MM") overrides which
+    month's folder is resolved - without it, the task uses date.today().
+    """
     from celery_app import purchase_ingestion_task
 
     if not current_user.tenant_id:
@@ -2563,6 +2648,7 @@ async def trigger_purchase_ingestion(
         tenant_slug=tenant_slug,
         excel_output_path=f"/data/sync_{current_user.tenant_id}_purchase.xlsx",
         model_config=None,
+        period=req.period,
     )
     return JSONResponse(content={"status": "sync_started", "task_id": task.id})
 
@@ -2590,7 +2676,7 @@ async def trigger_gstr2b_ingestion(
 
 
 @app.get("/api/google-drive-sync/status/{task_id}")
-async def get_sync_status(task_id: str):
+async def get_sync_status(task_id: str, current_user: User = Depends(get_current_user)):
     """Poll status of a running sync task. Returns result including batch_id on SUCCESS."""
     from celery_app import celery_app as _celery
 
@@ -2607,10 +2693,32 @@ async def get_sync_status(task_id: str):
     })
 
 
+@app.post("/api/google-drive-sync/cancel/{task_id}")
+async def cancel_google_drive_sync(
+    task_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RoleChecker(["owner", "auditor", "developer"])),
+):
+    """Cancel a running Google Drive sync task by its Celery task ID."""
+    from celery_app import celery_app as _celery
+
+    _celery.control.revoke(task_id, terminate=True, signal="SIGTERM")
+
+    sync_job = db.query(GoogleDriveSyncJob).filter(
+        GoogleDriveSyncJob.celery_task_id == task_id
+    ).first()
+    if sync_job:
+        sync_job.status = "cancelled"
+        sync_job.completed_at = datetime.utcnow()
+        db.commit()
+
+    return JSONResponse(content={"status": "cancelled", "task_id": task_id})
+
+
 @app.get("/api/google-drive-sync/history")
 async def get_sync_history(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(RoleChecker(["owner", "senior"])),
     limit: int = 20,
 ):
     """
@@ -2658,7 +2766,7 @@ class ReconcileRequest(BaseModel):
 
 
 @app.post("/api/reconcile")
-async def reconcile_gstr2b(req: ReconcileRequest):
+async def reconcile_gstr2b(req: ReconcileRequest, current_user: User = Depends(get_current_user)):
     """
     Match extracted invoice items against GSTR-2B data.
     Returns annotated rows (with recon_status) + a summary.
@@ -2847,7 +2955,7 @@ async def export_reconciliation_from_batch(
 
 
 @app.post("/api/reconcile/export")
-async def export_reconciliation(req: ReconcileRequest):
+async def export_reconciliation(req: ReconcileRequest, current_user: User = Depends(get_current_user)):
     """
     Run reconciliation and return a color-coded Excel file with two sheets:
       Sheet 1 — Reconciliation (all rows, color-coded by status)

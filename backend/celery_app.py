@@ -1,17 +1,23 @@
 import os
 import sys
+
+# Ensure the backend directory is on sys.path BEFORE anything else imports —
+# the celery CLI entry point (Scripts/celery) resolves "-A celery_app" via its
+# own module-loading path, which does not reliably leave the backend
+# directory importable afterward (observed: "services" and other backend-local
+# packages fail to import inside a task even though this same file loaded
+# fine — insert(0, ...) takes priority over whatever the celery launcher
+# already put on sys.path, where append() did not).
+backend_dir = os.path.dirname(os.path.abspath(__file__))
+if backend_dir in sys.path:
+    sys.path.remove(backend_dir)
+sys.path.insert(0, backend_dir)
+
 import json
 import asyncio
 from celery import Celery
+from kombu import Queue
 from dotenv import load_dotenv
-
-# Insert unconditionally: celery's import_from_cwd() runs this module inside
-# cwd_in_path(), which temporarily puts cwd on sys.path and REMOVES it after --
-# a `not in sys.path` guard silently no-ops (already present at that point)
-# and leaves workers unable to resolve deferred in-task imports (async_tasks,
-# services.*, database, models) once celery_app.py finishes loading.
-backend_dir = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, backend_dir)
 
 # Load environment variables
 env_path = os.path.join(backend_dir, ".env")
@@ -44,11 +50,27 @@ if broker_url:
         task_routes={
             "tasks.ocr_extract_task": {"queue": "ocr"},
             "tasks.process_batch_task": {"queue": "default"},
-            "tasks.google_drive_sync_task": {"queue": "default"},
+            # Own queue: a long Drive sync (hours, many files) must not sit in
+            # front of other tenants' interactive batch uploads on "default".
+            "tasks.google_drive_sync_task": {"queue": "drive_sync"},
             "tasks.sales_ingestion_task": {"queue": "drive_sync"},
             "tasks.purchase_ingestion_task": {"queue": "drive_sync"},
             "tasks.gstr2b_ingestion_task": {"queue": "drive_sync"},
         },
+        # Explicit queue declaration so a worker started with no -Q flag (the
+        # actual deploy command in render.yaml / START_ALL_WINDOWS.bat) still
+        # consumes all of them. Without this, Celery only listens on the
+        # single implicit "celery" queue — task_routes above would silently
+        # route "ocr"/"default"/"drive_sync" tasks to queues nobody drains,
+        # leaving them stuck PENDING forever. Verified empirically: worker
+        # startup with only task_routes set (no task_queues) reported
+        # amqp.queues == {"celery"} only.
+        task_queues=(
+            Queue("celery"),
+            Queue("default"),
+            Queue("ocr"),
+            Queue("drive_sync"),
+        ),
     )
     # Explicitly declare every queue task_routes references. Without this,
     # a worker started with no -Q flag (both render.yaml and
@@ -180,6 +202,7 @@ def google_drive_sync_task(self, tenant_id: str, google_drive_folder_id: str,
             invoice_type=invoice_type,
             max_files=max_files,
             subfolder_id=subfolder_id,
+            celery_task_id=self.request.id,
         )
 
         result = pipeline.run(model_config=model_config)
@@ -221,7 +244,7 @@ def _load_drive_path_config(tenant_id: str, tenant_slug: str):
 @celery_app.task(name="tasks.sales_ingestion_task", bind=True, max_retries=1, time_limit=3600)
 def sales_ingestion_task(self, tenant_id: str, tenant_slug: str,
                           excel_output_path: str, invoice_type: str = "sales",
-                          model_config: dict = None) -> dict:
+                          model_config: dict = None, period: str = None) -> dict:
     """
     Self-resolving Sales ingestion sync — unlike google_drive_sync_task
     above (which takes a single google_drive_folder_id baked into the
@@ -260,7 +283,12 @@ def sales_ingestion_task(self, tenant_id: str, tenant_slug: str,
     from services.google_drive_sync import GoogleDriveSyncPipeline
 
     try:
-        print(f"[Celery:sales_ingestion] Resolving current month's Drive folder for tenant '{tenant_slug}'...")
+        target_date = date.today()
+        if period:
+            target_date = date(int(period[:4]), int(period[5:7]), 1)
+        resolved_period = period or target_date.strftime("%Y-%m")
+
+        print(f"[Celery:sales_ingestion] Resolving Drive folder for tenant '{tenant_slug}', period {resolved_period}...")
         cfg = _load_drive_path_config(tenant_id, tenant_slug)
         if not cfg or not cfg.sales_root_folder_id:
             msg = f"No sales_root_folder_id configured for '{tenant_slug}' - nothing to ingest."
@@ -271,20 +299,20 @@ def sales_ingestion_task(self, tenant_id: str, tenant_slug: str,
         def lister(folder_id):
             return connector.list_files(file_types=None, folder_id=folder_id)
 
-        folder_id = resolve_month_folder_id(lister, cfg, date.today())
+        folder_id = resolve_month_folder_id(lister, cfg, target_date)
         if not folder_id:
-            msg = f"No Drive folder found yet for '{tenant_slug}'s current month - nothing to ingest."
+            msg = f"No Drive folder found yet for '{tenant_slug}' period {resolved_period} - nothing to ingest."
             print(f"[Celery:sales_ingestion] {msg}")
             return {"status": "SKIPPED", "reason": msg}
 
-        period = date.today().strftime("%Y-%m")
-        print(f"[Celery:sales_ingestion] Resolved folder {folder_id} - starting sync for tenant {tenant_id}, period {period}")
+        print(f"[Celery:sales_ingestion] Resolved folder {folder_id} - starting sync for tenant {tenant_id}, period {resolved_period}")
         pipeline = GoogleDriveSyncPipeline(
             tenant_id=tenant_id,
             google_drive_folder_id=folder_id,
             excel_output_path=excel_output_path,
             invoice_type=invoice_type,
-            period=period,
+            period=resolved_period,
+            celery_task_id=self.request.id,
         )
         result = pipeline.run(model_config=model_config)
         print(f"[Celery:sales_ingestion] Sync completed for '{tenant_slug}': {json.dumps(result, default=str)}")
@@ -299,7 +327,8 @@ def sales_ingestion_task(self, tenant_id: str, tenant_slug: str,
 
 @celery_app.task(name="tasks.purchase_ingestion_task", bind=True, max_retries=1, time_limit=3600)
 def purchase_ingestion_task(self, tenant_id: str, tenant_slug: str,
-                             excel_output_path: str, model_config: dict = None) -> dict:
+                             excel_output_path: str, model_config: dict = None,
+                             period: str = None) -> dict:
     """
     Self-resolving Purchase ingestion sync - same self-resolving-month-
     folder design as sales_ingestion_task above, but against
@@ -316,11 +345,8 @@ def purchase_ingestion_task(self, tenant_id: str, tenant_slug: str,
     walk_and_classify_purchase (see drive_classifier.py) instead of the
     Sales-tree walker once invoice_type="purchase" is set.
 
-    No period/review-gate chaining here (period stays None) - Purchase
-    has no reconciliation/filing/review-gate equivalent yet (Phase 0b is
-    ingestion only); wiring one is a natural follow-on once that exists,
-    matching how Sales' own auto-chain was only added once its review
-    gate (Phase 7) did.
+    Optional ``period`` ("YYYY-MM") overrides date.today() for month-
+    folder resolution so an accountant can pull a prior month's invoices.
     """
     from datetime import date
     from services.drive_path_resolver import resolve_month_folder_id
@@ -328,7 +354,11 @@ def purchase_ingestion_task(self, tenant_id: str, tenant_slug: str,
     from services.google_drive_sync import GoogleDriveSyncPipeline
 
     try:
-        print(f"[Celery:purchase_ingestion] Resolving current month's Drive folder for tenant '{tenant_slug}'...")
+        target_date = date.today()
+        if period:
+            target_date = date(int(period[:4]), int(period[5:7]), 1)
+
+        print(f"[Celery:purchase_ingestion] Resolving Drive folder for tenant '{tenant_slug}', period {period or target_date.strftime('%Y-%m')}...")
         cfg = _load_drive_path_config(tenant_id, tenant_slug)
         if not cfg or not cfg.purchase_root_folder_id:
             msg = f"No purchase_root_folder_id configured for '{tenant_slug}' - nothing to ingest."
@@ -340,9 +370,9 @@ def purchase_ingestion_task(self, tenant_id: str, tenant_slug: str,
         def lister(folder_id):
             return connector.list_files(file_types=None, folder_id=folder_id)
 
-        folder_id = resolve_month_folder_id(lister, cfg, date.today(), root_folder_id=cfg.purchase_root_folder_id)
+        folder_id = resolve_month_folder_id(lister, cfg, target_date, root_folder_id=cfg.purchase_root_folder_id)
         if not folder_id:
-            msg = f"No Drive folder found yet for '{tenant_slug}'s current Purchase month - nothing to ingest."
+            msg = f"No Drive folder found yet for '{tenant_slug}'s Purchase month {period or target_date.strftime('%Y-%m')} - nothing to ingest."
             print(f"[Celery:purchase_ingestion] {msg}")
             return {"status": "SKIPPED", "reason": msg}
 
@@ -352,6 +382,7 @@ def purchase_ingestion_task(self, tenant_id: str, tenant_slug: str,
             google_drive_folder_id=folder_id,
             excel_output_path=excel_output_path,
             invoice_type="purchase",
+            celery_task_id=self.request.id,
         )
         result = pipeline.run(model_config=model_config)
         print(f"[Celery:purchase_ingestion] Sync completed for '{tenant_slug}': {json.dumps(result, default=str)}")

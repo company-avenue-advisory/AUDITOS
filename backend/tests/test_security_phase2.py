@@ -51,11 +51,46 @@ os.environ.setdefault("SENTRY_DSN", "")
 
 import main  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
-from database import SessionLocal  # noqa: E402
+from sqlalchemy import create_engine  # noqa: E402
+from sqlalchemy.orm import sessionmaker  # noqa: E402
+import database  # noqa: E402
+from database import get_db  # noqa: E402
 from models import User, Tenant, BatchJob, InvoiceTask, TaskStatus, ObservabilityLog  # noqa: E402
 from services.auth import hash_password  # noqa: E402
 
 client = TestClient(main.app)
+
+# This module's own engine/session, isolated from every other test module.
+#
+# `database`/`main` are cached in sys.modules process-wide, and pytest
+# imports (collects) every test module before running any of them. A prior
+# version of this isolation rebound the *shared* `database.SessionLocal`
+# object in place at import time -- but since collection imports all test
+# files first, whichever file was collected *last* won that rebind, and
+# BOTH suites then ran against that one engine during execution regardless
+# of which file's tests were actually running. Overriding the `get_db`
+# FastAPI dependency in setUpModule/tearDownModule (which run at execution
+# time, immediately before/after this module's own tests) avoids that
+# collection-order hazard entirely.
+_test_engine = create_engine(f"sqlite:///{_TEST_DB_PATH}", connect_args={"check_same_thread": False})
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=_test_engine)
+
+
+def _override_get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+def setUpModule():
+    database.Base.metadata.create_all(bind=_test_engine)
+    main.app.dependency_overrides[get_db] = _override_get_db
+
+
+def tearDownModule():
+    main.app.dependency_overrides.pop(get_db, None)
 
 
 def _unique_email(prefix="user"):
@@ -70,7 +105,7 @@ def _make_tenant(db, name="Tenant"):
     return t
 
 
-def _make_user(db, role="auditor", tenant_id=None, password="Password123!"):
+def _make_user(db, role="accountant", tenant_id=None, password="Password123!"):
     u = User(
         id=str(uuid.uuid4()),
         email=_unique_email(role),
@@ -119,11 +154,11 @@ class SecurityPhase2TestCase(unittest.TestCase):
     def setUp(self):
         self.db = SessionLocal()
         self.tenant = _make_tenant(self.db, "P2Tenant")
-        self.user, self.password = _make_user(self.db, role="auditor", tenant_id=self.tenant.id)
+        self.user, self.password = _make_user(self.db, role="senior", tenant_id=self.tenant.id)
         self.token = _login(self.user.email, self.password)
 
         self.other_tenant = _make_tenant(self.db, "P2OtherTenant")
-        self.other_user, self.other_password = _make_user(self.db, role="auditor", tenant_id=self.other_tenant.id)
+        self.other_user, self.other_password = _make_user(self.db, role="senior", tenant_id=self.other_tenant.id)
         self.other_token = _login(self.other_user.email, self.other_password)
 
         self.batch, self.task = _make_batch_with_task(
@@ -209,7 +244,7 @@ class TestTaskObservabilityAuth(SecurityPhase2TestCase):
 class TestAcceptCorrectionTenant(SecurityPhase2TestCase):
     def test_cross_tenant_correction_rejected(self):
         """
-        Before the fix, any authenticated owner/auditor -- regardless of
+        Before the fix, any authenticated owner/senior -- regardless of
         tenant -- could mark ANOTHER tenant's task as HUMAN_CORRECTED,
         corrupting that tenant's audit trail state.
         """
@@ -226,7 +261,7 @@ class TestAcceptCorrectionTenant(SecurityPhase2TestCase):
         self.assertEqual(resp.status_code, 404, resp.text)
 
     def test_same_tenant_correction_still_works(self):
-        """Regression: an in-tenant owner/auditor can still accept a correction."""
+        """Regression: an in-tenant owner/senior can still accept a correction."""
         resp = client.patch(
             f"/api/tasks/{self.task.id}/accept-correction",
             headers=_auth_headers(self.token),
@@ -242,11 +277,12 @@ class TestAcceptCorrectionTenant(SecurityPhase2TestCase):
         self.assertEqual(resp.status_code, 401)
 
     def test_wrong_role_still_rejected(self):
-        hr_user, hr_password = _make_user(self.db, role="hr", tenant_id=self.tenant.id)
-        hr_token = _login(hr_user.email, hr_password)
+        """Accountant is an operator role, not a reviewer -- accept-correction is Owner/Senior-only."""
+        accountant_user, accountant_password = _make_user(self.db, role="accountant", tenant_id=self.tenant.id)
+        accountant_token = _login(accountant_user.email, accountant_password)
         resp = client.patch(
             f"/api/tasks/{self.task.id}/accept-correction",
-            headers=_auth_headers(hr_token),
+            headers=_auth_headers(accountant_token),
         )
         self.assertEqual(resp.status_code, 403, resp.text)
 

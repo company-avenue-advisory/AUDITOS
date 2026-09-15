@@ -3,7 +3,9 @@
 import React, { useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import Sidebar from "./Sidebar";
+import TopBar from "./TopBar";
 import { fetchActiveSession, clearActiveSession, type ResumableSession } from "../utils/sessionSync";
+import { PeriodProvider } from "../utils/PeriodContext";
 
 // Setup global fetch interceptor
 if (typeof window !== "undefined") {
@@ -83,7 +85,7 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
           justifyContent: "center",
           background: "var(--bg-base)",
           color: "var(--accent)",
-          fontFamily: "var(--font-inter), sans-serif",
+          fontFamily: "var(--font-sans), sans-serif",
         }}
       >
         <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 16 }}>
@@ -126,7 +128,7 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
   };
 
   return (
-    <>
+    <PeriodProvider>
       <Sidebar />
       <div
         id="main-content-area"
@@ -138,6 +140,7 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
           flexDirection: "column",
         }}
       >
+        <TopBar />
         {children}
       </div>
 
@@ -158,7 +161,7 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
             gap: 10,
             maxWidth: 320,
             boxShadow: "0 8px 24px rgba(0,0,0,0.2)",
-            fontFamily: "var(--font-inter), sans-serif",
+            fontFamily: "var(--font-sans), sans-serif",
           }}
         >
           <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
@@ -207,6 +210,6 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
           </div>
         </div>
       )}
-    </>
+    </PeriodProvider>
   );
 }

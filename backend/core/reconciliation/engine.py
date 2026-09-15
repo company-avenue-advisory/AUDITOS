@@ -1,6 +1,22 @@
+import os
+import sys
 import time
 import logging
 from typing import Dict, List, Any, Optional
+
+# This module's internal imports below use the "backend.core...." absolute form
+# (matching how the regression test suite imports it, with the repo root on
+# sys.path). But the live server (main.py) and Celery workers only add
+# backend/ itself to sys.path, not its parent — so without this, every
+# "from backend.core...." import below raises ModuleNotFoundError and the
+# reconciliation engine silently fails to import wherever it's called from
+# a bare except (see async_tasks.py / google_drive_sync.py), meaning
+# recon_status was never actually being set. Ensure the repo root is always
+# importable regardless of which entry point pulled this module in.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
 from backend.core.schema import CanonicalInvoice
 from backend.core.reconciliation.reports.reconciliation_report import ReconciliationReport
 from backend.core.reconciliation.review_context import ReviewContext, ReviewContextItem
@@ -11,7 +27,9 @@ from backend.core.reconciliation.line_item_reconciler import reconcile_line_item
 from backend.core.reconciliation.taxable_reconciler import reconcile_taxable_value, DualStateTaxableReconciler
 from backend.core.reconciliation.gst_reconciler import reconcile_gst_logic
 from backend.core.reconciliation.totals_reconciler import reconcile_summary_totals
+from backend.core.reconciliation.master_equation_reconciler import reconcile_master_equation
 from backend.core.reconciliation.confidence import calculate_field_confidences
+from backend.core.reconciliation.canonical import compute_canonical_values
 
 # Import new Stage 1-8 modules
 from backend.core.reconciliation.semantic_columns import SemanticColumnClassifier
@@ -53,6 +71,15 @@ class FinancialReconciliationEngine:
         lvl2_taxable_passed, lvl2_taxable_errors, lvl2_taxable_trace = reconcile_taxable_value(invoice)
         lvl2_totals_passed, lvl2_totals_errors, lvl2_totals_trace = reconcile_summary_totals(invoice)
         lvl3_passed, lvl3_errors, lvl3_trace = reconcile_gst_logic(invoice)
+
+        # Master equation: Sigma(Taxable)+Sigma(Taxes)-Sigma(Discount)-Sigma(Advances)
+        # == grand total, computed purely from line items. The extracted SUMMARY
+        # taxable/cgst/sgst/igst fields (used by lvl2 checks above) have been
+        # confirmed unreliable on real invoices even when line items + grand
+        # total are both correct — this check anchors to the one field that has
+        # held up on every invoice checked (grand total), so it can vouch for an
+        # invoice even when the printed summary block itself cannot be trusted.
+        master_passed, master_trace = reconcile_master_equation(invoice)
         
         # 3. Stage 3 & 4: HSN guardrails & Math evaluation
         taxable_val = invoice.tax_summary.taxable_value.value or 0.0
@@ -98,11 +125,19 @@ class FinancialReconciliationEngine:
             "igst_amount" if not lvl3_passed else ""
         ])
         
-        # Determine overall status
-        is_reconciled = lvl1_passed and lvl2_taxable_passed and lvl2_totals_passed and lvl3_passed
-        
-        # If Level 1 or 2 total check fails, we block or flag
-        if not lvl2_totals_passed or not lvl2_taxable_passed:
+        # Determine overall status. The master equation (line items + grand
+        # total) can vouch for the invoice even when the summary-level taxable/
+        # totals checks fail, since those trust the printed summary block's
+        # taxable/tax fields specifically — the one part of the invoice that
+        # has proven unreliable. Line-item math (lvl1) and GST logic (lvl3)
+        # still gate independently: a wrong per-line tax split or an
+        # interstate/intrastate GST mismatch is not something the master
+        # equation can vouch for.
+        summary_level_passed = lvl2_taxable_passed and lvl2_totals_passed
+        totals_ok = summary_level_passed or master_passed
+        is_reconciled = lvl1_passed and totals_ok and lvl3_passed
+
+        if not totals_ok:
             status = "BLOCKED"
         elif not is_reconciled:
             status = "NEEDS_REVIEW"
@@ -216,11 +251,31 @@ class FinancialReconciliationEngine:
             },
             "line_items_traces": lvl1_trace,
             "semantic_columns": semantic_columns,
-            "math_evaluation": math_evaluation
+            "math_evaluation": math_evaluation,
+            "master_equation": master_trace
         }
         
+        # Canonical financial values: promotes line-item evidence over the
+        # extracted summary only where FIELD_SOURCE_AUTHORITY already ranks
+        # line items as the stronger source (taxable_value, grand_total) and
+        # only when line items are internally self-consistent (lvl1_passed).
+        # Does not change is_reconciled/status — those remain based on the
+        # raw extracted values, as today.
+        canonical_values = compute_canonical_values(
+            invoice,
+            lvl1_passed=lvl1_passed,
+            master_trace=master_trace,
+            extracted={
+                "taxable_value": taxable_val,
+                "cgst_amount": cgst_val,
+                "sgst_amount": sgst_val,
+                "igst_amount": igst_val,
+                "grand_total": grand_val,
+            },
+        )
+
         execution_time_ms = int((time.time() - t_start) * 1000)
-        
+
         return ReconciliationReport(
             is_reconciled=is_reconciled,
             status=status,
@@ -234,6 +289,7 @@ class FinancialReconciliationEngine:
             hierarchical_failures={k: v for k, v in hierarchical_failures.items() if v},
             calculation_trace=calculation_trace,
             field_evidence=evidence_map,
+            canonical_values=canonical_values,
             review_context=review_context,
             execution_time_ms=float(execution_time_ms)
         )

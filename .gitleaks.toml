@@ -1,0 +1,13 @@
+title = "AuditOS gitleaks config"
+
+[extend]
+useDefault = true
+
+# Verified false positives (Phase 3B): documentation curl examples using the
+# literal placeholder "YOUR_TOKEN", not a real credential. Confirmed by
+# reading each flagged line before allowlisting -- see
+# PLATFORM_HARDENING_PHASE3B.md for the verification transcript.
+[allowlist]
+regexes = [
+  '''^YOUR_TOKEN$''',
+]

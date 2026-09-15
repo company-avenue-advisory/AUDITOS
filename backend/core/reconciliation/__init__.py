@@ -1,6 +1,7 @@
 from .engine import FinancialReconciliationEngine
 from .candidate_resolver import resolve_financial_candidates
 from .reports.reconciliation_report import ReconciliationReport
+from .canonical import compute_canonical_values
 from .review_context import ReviewContext, ReviewContextItem
 from .evidence import FinancialEvidence, AutoCorrectionSuggestion
 from .state_machine import FinancialState
@@ -19,6 +20,7 @@ __all__ = [
     "FinancialReconciliationEngine",
     "resolve_financial_candidates",
     "ReconciliationReport",
+    "compute_canonical_values",
     "ReviewContext",
     "ReviewContextItem",
     "FinancialEvidence",

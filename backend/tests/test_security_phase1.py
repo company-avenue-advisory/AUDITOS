@@ -57,11 +57,46 @@ os.environ.setdefault("SENTRY_DSN", "")
 
 import main  # noqa: E402  (import after env setup, by design)
 from fastapi.testclient import TestClient  # noqa: E402
-from database import SessionLocal  # noqa: E402
+from sqlalchemy import create_engine  # noqa: E402
+from sqlalchemy.orm import sessionmaker  # noqa: E402
+import database  # noqa: E402
+from database import get_db  # noqa: E402
 from models import User, Tenant, BatchJob, InvoiceTask, SalesLineItem, TaskStatus  # noqa: E402
 from services.auth import hash_password  # noqa: E402
 
 client = TestClient(main.app)
+
+# This module's own engine/session, isolated from every other test module.
+#
+# `database`/`main` are cached in sys.modules process-wide, and pytest
+# imports (collects) every test module before running any of them. A prior
+# version of this isolation rebound the *shared* `database.SessionLocal`
+# object in place at import time -- but since collection imports all test
+# files first, whichever file was collected *last* won that rebind, and
+# BOTH suites then ran against that one engine during execution regardless
+# of which file's tests were actually running. Overriding the `get_db`
+# FastAPI dependency in setUpModule/tearDownModule (which run at execution
+# time, immediately before/after this module's own tests) avoids that
+# collection-order hazard entirely.
+_test_engine = create_engine(f"sqlite:///{_TEST_DB_PATH}", connect_args={"check_same_thread": False})
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=_test_engine)
+
+
+def _override_get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+def setUpModule():
+    database.Base.metadata.create_all(bind=_test_engine)
+    main.app.dependency_overrides[get_db] = _override_get_db
+
+
+def tearDownModule():
+    main.app.dependency_overrides.pop(get_db, None)
 
 
 def _unique_email(prefix="user"):
@@ -76,7 +111,7 @@ def _make_tenant(db, name="Tenant"):
     return t
 
 
-def _make_user(db, role="auditor", tenant_id=None, password="Password123!"):
+def _make_user(db, role="accountant", tenant_id=None, password="Password123!"):
     u = User(
         id=str(uuid.uuid4()),
         email=_unique_email(role),
@@ -150,8 +185,8 @@ class TestRegisterRoleEscalation(SecurityPhase1TestCase):
         self.assertEqual(resp.status_code, 400, resp.text)
 
     def test_legitimate_roles_still_allowed(self):
-        """Regression: owner/hr/auditor/other must continue to work exactly as before."""
-        for role in ["owner", "hr", "auditor", "other"]:
+        """Regression: owner/senior/accountant must continue to work exactly as before."""
+        for role in ["owner", "senior", "accountant"]:
             email = _unique_email(role)
             resp = client.post("/api/auth/register", json={
                 "email": email, "password": "Password123!", "role": role,
@@ -159,11 +194,11 @@ class TestRegisterRoleEscalation(SecurityPhase1TestCase):
             self.assertEqual(resp.status_code, 201, f"role={role}: {resp.text}")
             self.assertEqual(resp.json()["role"], role)
 
-    def test_default_role_is_auditor_when_omitted(self):
+    def test_default_role_is_accountant_when_omitted(self):
         email = _unique_email("defaultrole")
         resp = client.post("/api/auth/register", json={"email": email, "password": "Password123!"})
         self.assertEqual(resp.status_code, 201, resp.text)
-        self.assertEqual(resp.json()["role"], "auditor")
+        self.assertEqual(resp.json()["role"], "accountant")
 
     def test_registered_user_cannot_obtain_developer_privileges(self):
         """End-to-end: register, log in, confirm the RoleChecker bypass role was never granted."""
@@ -183,11 +218,11 @@ class TestFileDownloadPathTraversal(SecurityPhase1TestCase):
     def setUp(self):
         super().setUp()
         self.tenant = _make_tenant(self.db, "FilesTenant")
-        self.user, self.password = _make_user(self.db, role="auditor", tenant_id=self.tenant.id)
+        self.user, self.password = _make_user(self.db, role="accountant", tenant_id=self.tenant.id)
         self.token = _login(self.user.email, self.password)
 
         self.other_tenant = _make_tenant(self.db, "FilesOtherTenant")
-        self.other_user, self.other_password = _make_user(self.db, role="auditor", tenant_id=self.other_tenant.id)
+        self.other_user, self.other_password = _make_user(self.db, role="accountant", tenant_id=self.other_tenant.id)
         self.other_token = _login(self.other_user.email, self.other_password)
 
         self.batch_id = str(uuid.uuid4())
@@ -291,14 +326,16 @@ class TestItemUpdateAuth(SecurityPhase1TestCase):
         self.tenant_a = _make_tenant(self.db, "TenantA")
         self.tenant_b = _make_tenant(self.db, "TenantB")
 
-        self.auditor_a, pw = _make_user(self.db, role="auditor", tenant_id=self.tenant_a.id)
-        self.token_a = _login(self.auditor_a.email, pw)
+        self.accountant_a, pw = _make_user(self.db, role="accountant", tenant_id=self.tenant_a.id)
+        self.token_a = _login(self.accountant_a.email, pw)
 
-        self.auditor_b, pw_b = _make_user(self.db, role="auditor", tenant_id=self.tenant_b.id)
-        self.token_b = _login(self.auditor_b.email, pw_b)
+        self.accountant_b, pw_b = _make_user(self.db, role="accountant", tenant_id=self.tenant_b.id)
+        self.token_b = _login(self.accountant_b.email, pw_b)
 
-        self.hr_a, pw_hr = _make_user(self.db, role="hr", tenant_id=self.tenant_a.id)
-        self.token_hr = _login(self.hr_a.email, pw_hr)
+        # "hr" is a pre-redesign role string; no longer issuable via /api/auth/register
+        # but a stale/legacy DB row could still carry it — RoleChecker must still reject it.
+        self.legacy_role_user, pw_hr = _make_user(self.db, role="hr", tenant_id=self.tenant_a.id)
+        self.token_hr = _login(self.legacy_role_user.email, pw_hr)
 
         self.batch, self.task, self.item = _make_batch_with_item(self.db, self.tenant_a.id)
 
@@ -326,8 +363,8 @@ class TestItemUpdateAuth(SecurityPhase1TestCase):
         )
         self.assertEqual(resp.status_code, 403, resp.text)
 
-    def test_same_tenant_auditor_can_still_update(self):
-        """Regression: the legitimate edit flow (auditor, same tenant) must still work."""
+    def test_same_tenant_accountant_can_still_update(self):
+        """Regression: the legitimate edit flow (accountant, same tenant) must still work."""
         resp = client.put(
             f"/api/items/{self.item.id}?type=sales",
             json={"field": "taxable_value", "value": 555.5},
@@ -339,7 +376,7 @@ class TestItemUpdateAuth(SecurityPhase1TestCase):
 
     def test_mass_assignment_reparent_via_task_id_rejected(self):
         """
-        Adversarial: a legitimate same-tenant auditor tries to rewrite the
+        Adversarial: a legitimate same-tenant accountant tries to rewrite the
         item's task_id foreign key to re-parent it onto a DIFFERENT tenant's
         task. Since the tenant check only validates the item's tenant at read
         time, an unrestricted setattr(item, req.field, req.value) would let
@@ -381,7 +418,7 @@ class TestUnassignedUserTenantBypass(SecurityPhase1TestCase):
         # the default post-registration state (see /api/auth/register).
         email = _unique_email("unassigned")
         password = "Password123!"
-        reg = client.post("/api/auth/register", json={"email": email, "password": password, "role": "auditor"})
+        reg = client.post("/api/auth/register", json={"email": email, "password": password, "role": "accountant"})
         assert reg.status_code == 201, reg.text
         self.token = _login(email, password)
 
@@ -473,18 +510,22 @@ class TestTenantAssignmentIsolation(SecurityPhase1TestCase):
         owner_token = _login(owner.email, owner_pw)
 
         colleague_email = _unique_email("colleague")
-        client.post("/api/auth/register", json={
-            "email": colleague_email, "password": "Password123!", "role": "auditor",
+        reg = client.post("/api/auth/register", json={
+            "email": colleague_email, "password": "Password123!", "role": "accountant",
         })
+        self.assertEqual(reg.status_code, 201, reg.text)
 
         resp = client.post(
-            f"/api/admin/tenants/{tenant.id}/assign-user?user_email={colleague_email}",
+            f"/api/admin/tenants/{tenant.id}/assign-user?user_email={colleague_email}&role=senior",
             headers=_auth_headers(owner_token),
         )
         self.assertEqual(resp.status_code, 200, resp.text)
         colleague = self.db.query(User).filter(User.email == colleague_email).first()
         self.db.refresh(colleague)
         self.assertEqual(colleague.tenant_id, tenant.id)
+        # The inviting Owner's chosen role wins over whatever the colleague
+        # self-declared at registration.
+        self.assertEqual(colleague.role, "senior")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -496,10 +537,10 @@ class TestExportAuth(SecurityPhase1TestCase):
         self.tenant_a = _make_tenant(self.db, "ExportTenantA")
         self.tenant_b = _make_tenant(self.db, "ExportTenantB")
 
-        self.user_a, pw_a = _make_user(self.db, role="auditor", tenant_id=self.tenant_a.id)
+        self.user_a, pw_a = _make_user(self.db, role="accountant", tenant_id=self.tenant_a.id)
         self.token_a = _login(self.user_a.email, pw_a)
 
-        self.user_b, pw_b = _make_user(self.db, role="auditor", tenant_id=self.tenant_b.id)
+        self.user_b, pw_b = _make_user(self.db, role="accountant", tenant_id=self.tenant_b.id)
         self.token_b = _login(self.user_b.email, pw_b)
 
         self.batch, self.task, self.item = _make_batch_with_item(self.db, self.tenant_a.id)

@@ -17,7 +17,7 @@ set BACKEND_DIR=%SCRIPT_DIR%backend
 set FRONTEND_DIR=%SCRIPT_DIR%frontend
 
 REM Check for environment variable
-if "%GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON%"=="" (
+if not defined GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON (
     echo.
     echo WARNING: GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON not set!
     echo.
@@ -29,20 +29,7 @@ if "%GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON%"=="" (
     timeout /t 5
 )
 
-REM Check if Redis is running
-echo Checking Redis...
-redis-cli ping >nul 2>&1
-if errorlevel 1 (
-    echo.
-    echo ERROR: Redis is not running!
-    echo.
-    echo Please start Redis first:
-    echo   redis-server
-    echo.
-    pause
-    exit /b 1
-)
-echo ✓ Redis is running
+REM Checked Redis elsewhere
 
 REM Check if Node is installed
 echo.
@@ -83,7 +70,7 @@ echo ========================================
 echo.
 
 REM Set environment variable for all child processes
-set GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON=%GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON%
+REM set GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON=%GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON%
 
 REM Start Celery Worker in new window
 echo [1/4] Starting Celery Worker...

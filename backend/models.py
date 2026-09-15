@@ -219,14 +219,17 @@ class TallyPushLog(Base):
 class User(Base):
     """
     User database model representing account credentials and access roles.
-    Supported roles: "owner", "hr", "auditor", "other"
+    Supported roles, in descending privilege order: "owner" (firm principal/
+    admin), "senior" (reviewer), "accountant" (operator). "developer" also
+    exists as a platform-wide RBAC bypass (see RoleChecker in services/auth.py)
+    but is never self-assignable — provisioned directly in the DB only.
     """
     __tablename__ = "users"
 
     id              = Column(String, primary_key=True, index=True)
     email           = Column(String, unique=True, index=True, nullable=False)
     hashed_password = Column(String, nullable=False)
-    role            = Column(String, default="auditor", nullable=False)  # owner | hr | auditor | other
+    role            = Column(String, default="accountant", nullable=False)  # owner | senior | accountant | developer
     is_active       = Column(Boolean, default=True, nullable=False)
     created_at      = Column(DateTime, default=datetime.utcnow, nullable=False)
     tenant_id       = Column(String, ForeignKey("tenants.id"), nullable=True, index=True)
@@ -338,10 +341,11 @@ class GoogleDriveSyncJob(Base):
     updated_files    = Column(Integer, default=0)
     processed_files  = Column(Integer, default=0)
     failed_files     = Column(Integer, default=0)
-    status           = Column(String, default="in_progress")  # in_progress | completed | failed
+    status           = Column(String, default="in_progress")  # in_progress | completed | failed | cancelled
     error_message    = Column(Text, nullable=True)
     excel_output_path = Column(String, nullable=True)
     completed_at     = Column(DateTime, nullable=True)
+    celery_task_id   = Column(String, nullable=True)
 
 
 class GoogleDriveSyncConfig(Base):
@@ -527,4 +531,25 @@ class GoogleDriveWebhookChannel(Base):
     created_at       = Column(DateTime, default=datetime.utcnow, nullable=False)
     renewed_at       = Column(DateTime, nullable=True)
     last_notification_at = Column(DateTime, nullable=True)
+
+
+class GstinRegistry(Base):
+    """
+    Cached GSTIN verification results (registration status, registered state,
+    legal name) from an external GST verification API. Keyed by GSTIN, not
+    tenant -- a bank's registration status is the same fact for every tenant
+    that invoices them, so one lookup is shared across the whole platform.
+    Re-verified only after STALE_AFTER_DAYS, since status rarely changes but
+    cancellations do happen (see RuleGST005).
+    """
+    __tablename__ = "gstin_registry"
+
+    gstin            = Column(String, primary_key=True)
+    legal_name       = Column(String, nullable=True)
+    trade_name       = Column(String, nullable=True)
+    status           = Column(String, nullable=True)   # Active | Cancelled | ...
+    state_code       = Column(String, nullable=True)   # 2-digit, from the API's own registered state
+    taxpayer_type    = Column(String, nullable=True)   # Regular | Composition | ...
+    verified_at      = Column(DateTime, default=datetime.utcnow, nullable=False)
+    lookup_failed    = Column(Boolean, default=False)  # true if the last API call errored (best-effort, not a real result)
 

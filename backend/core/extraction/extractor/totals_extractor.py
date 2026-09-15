@@ -56,7 +56,10 @@ RULES:
 Return JSON only."""
     try:
         res_text = llm_call(client, model_name, prompt)
-        return safe_json_loads(res_text)
+        result = safe_json_loads(res_text)
+        if isinstance(result, list):
+            result = result[0] if result and isinstance(result[0], dict) else {}
+        return result
     except Exception as e:
         print(f"Error in totals extraction: {e}")
         return {}

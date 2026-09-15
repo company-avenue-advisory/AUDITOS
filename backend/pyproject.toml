@@ -1,0 +1,41 @@
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+exclude = ["backend - Copy", ".venv", "__pycache__"]
+
+[tool.ruff.lint]
+# Full default set (E4, E7, E9, F) is enabled for visibility, but CI only
+# *blocks* on the "core" subset below -- see .github/workflows/ci-backend.yml.
+# The remaining default-set violations are pre-existing baseline debt (257
+# findings as of Phase 3B, mostly unused imports / bare excepts / one-line
+# statements) that predate this hardening pass. Fixing them file-by-file is
+# out of scope here (risk of behavior change, e.g. rewriting bare `except:`
+# changes what gets caught) -- CI surfaces them as an advisory report so they
+# are visible and can be paid down incrementally without blocking merges today.
+select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["F401"]  # fixtures/models imported for re-export convenience in test modules
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.coverage.run]
+source = ["."]
+omit = [
+    "backend - Copy/*",
+    "tests/*",
+    "*/site-packages/*",
+    "verify_setup.py",
+    "modal_deploy.py",
+    "debug_extraction.py",
+]
+
+[tool.coverage.report]
+# Baseline measured at Phase 3B, with tests/* and the omit list above excluded
+# from the denominator, is ~39%. Floor is set a few points below that so
+# normal fluctuation doesn't flap CI, while still catching real regressions
+# (e.g. a large new untested module, or accidentally-deleted tests).
+fail_under = 36
+show_missing = true

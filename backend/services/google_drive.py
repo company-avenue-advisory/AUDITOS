@@ -74,6 +74,64 @@ class GoogleDriveConnector:
             logger.error(f"Failed to authenticate with Google Drive: {e}")
             raise
 
+    FOLDER_MIME_TYPE = "application/vnd.google-apps.folder"
+
+    def _list_children(self, parent_id: str, mime_query: str = None) -> List[Dict]:
+        """List direct children of a single folder (one page loop, no recursion)."""
+        query = f"'{parent_id}' in parents and trashed=false"
+        if mime_query:
+            query += f" and ({mime_query})"
+
+        children = []
+        page_token = None
+        while True:
+            results = self.service.files().list(
+                q=query,
+                spaces="drive",
+                pageSize=100,
+                fields="nextPageToken, files(id, name, mimeType, md5Checksum, modifiedTime, webViewLink, size)",
+                pageToken=page_token
+            ).execute()
+
+            children.extend(results.get("files", []))
+            page_token = results.get("nextPageToken")
+            if not page_token:
+                break
+
+        return children
+
+    def _get_all_subfolder_ids(self, root_id: str) -> List[str]:
+        """Walk the folder tree under root_id and return every subfolder ID (BFS)."""
+        folder_ids = []
+        queue = [root_id]
+        mime_query = f"mimeType='{self.FOLDER_MIME_TYPE}'"
+
+        while queue:
+            current = queue.pop(0)
+            subfolders = self._list_children(current, mime_query=mime_query)
+            for sub in subfolders:
+                folder_ids.append(sub["id"])
+                queue.append(sub["id"])
+
+        return folder_ids
+
+    def list_subfolders(self, parent_id: str = None) -> List[Dict]:
+        """
+        List the immediate child folders of parent_id (defaults to the monitored
+        root folder). Used to populate a "which month?" picker in the UI — the
+        client's Drive folder is commonly organized into month/year subfolders
+        (e.g. "1. April 2026", "2. May 2026"), and syncing one month at a time
+        is a natural, cost-bounded unit of work instead of a raw file count.
+
+        Returns list of {id, name}, sorted by name.
+        """
+        mime_query = f"mimeType='{self.FOLDER_MIME_TYPE}'"
+        folders = self._list_children(parent_id or self.folder_id, mime_query=mime_query)
+        return sorted(
+            [{"id": f["id"], "name": f["name"]} for f in folders],
+            key=lambda f: f["name"],
+        )
+
     def list_files(self, file_types: List[str] = None, folder_id: str = None) -> List[Dict]:
         """
         List files in the monitored folder.
@@ -206,6 +264,7 @@ class GoogleDriveFileTracker:
         Returns False if:
           - File ID doesn't exist (new file)
           - File ID exists but md5Checksum changed (file was updated)
+          - File ID exists but processing_status is not "completed" (crashed/failed)
         """
         try:
             existing = self.db.query(self.DBTracker).filter(
@@ -219,6 +278,11 @@ class GoogleDriveFileTracker:
             if existing.md5_checksum != md5_checksum:
                 logger.info(f"File {google_drive_id} was updated (md5 changed)")
                 return False  # File was updated, needs reprocessing
+
+            # Check if previous processing actually completed
+            if existing.processing_status != "completed":
+                logger.info(f"File {google_drive_id} has status '{existing.processing_status}', will retry")
+                return False  # Previous run didn't finish, needs reprocessing
 
             return True  # Already processed with same content
 

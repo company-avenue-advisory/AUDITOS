@@ -1,0 +1,42 @@
+# Version control
+.git
+.gitignore
+
+# Python bytecode & caches
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Secrets & local environment — never bake real credentials into an image layer
+.env
+.env.*
+!.env.example
+
+# Local databases — the app creates/opens its own via DATABASE_URL at startup
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+logs/
+
+# Generated output (regenerated at runtime; mount as a volume if persistence is needed)
+data/output/
+
+# Editor/IDE
+.vscode/
+.idea/
+
+# Dev-only docs, tests, and one-off scripts — not imported by the running app
+docs/
+tests/
+scripts/
