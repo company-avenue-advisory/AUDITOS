@@ -24,6 +24,24 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# Canonical output schema — single source of truth for columns + value order.
+# The register views below emit the exact same labels/order as before (format-
+# preserving); see services/output_schema.py.
+from services.output_schema import (
+    SALES_REGISTER_VIEW,
+    PURCHASE_REGISTER_VIEW,
+    labels,
+    row_for,
+)
+
+
+def _row_ctx(source_filename: str) -> dict:
+    """Per-row context (source file + processed timestamp) for row_for()."""
+    return {
+        "processed_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "source_file": source_filename,
+    }
+
 
 class ExcelSyncService:
     """
@@ -31,20 +49,9 @@ class ExcelSyncService:
     One workbook per tenant, continuously appended with new invoices.
     """
 
-    # Standard columns for output Excel
-    SALES_COLUMNS = [
-        "Voucher Date", "Voucher Type", "Invoice No", "Party Name", "Party GSTIN",
-        "Place of Supply", "Particulars", "HSN", "Qty", "Rate", "Taxable Value",
-        "Discount", "Advances", "CGST", "SGST", "IGST", "Total Invoice Value",
-        "GSTR1 Category", "Narration", "Processed Date", "Source File"
-    ]
-
-    PURCHASE_COLUMNS = [
-        "Voucher Date", "Voucher Type", "Invoice No", "Party Name", "Party GSTIN",
-        "Place of Supply", "Particulars", "HSN", "Qty", "Rate", "Taxable Value",
-        "CGST", "SGST", "IGST", "Total Invoice Value", "ITC Eligibility",
-        "Narration", "Processed Date", "Source File"
-    ]
+    # Column labels are derived from the canonical views (unchanged output).
+    SALES_COLUMNS = labels(SALES_REGISTER_VIEW)
+    PURCHASE_COLUMNS = labels(PURCHASE_REGISTER_VIEW)
 
     def __init__(self, excel_path: str, invoice_type: str = "sales"):
         """
@@ -114,29 +121,7 @@ class ExcelSyncService:
         # Find next empty row
         next_row = ws.max_row + 1
 
-        row_data = [
-            item.voucher_date or "",
-            item.voucher_type or "",
-            item.invoice_no or "",
-            item.party_ledger_name or "",
-            item.party_gstin or "",
-            item.place_of_supply or "",
-            item.particulars or "",
-            item.hsn or "",
-            item.qty or "",
-            item.rate or "",
-            item.taxable_value or "",
-            item.discount or "",
-            item.advances or "",
-            item.cgst_amount or "",
-            item.sgst_amount or "",
-            item.igst_amount or "",
-            item.total_invoice_value or "",
-            item.gstr1_category or "",
-            item.narration or "",
-            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            source_filename
-        ]
+        row_data = row_for(SALES_REGISTER_VIEW, item, _row_ctx(source_filename))
 
         for col_idx, value in enumerate(row_data, 1):
             ws.cell(row=next_row, column=col_idx, value=value)
@@ -164,27 +149,7 @@ class ExcelSyncService:
 
         next_row = ws.max_row + 1
 
-        row_data = [
-            item.voucher_date or "",
-            item.voucher_type or "",
-            item.invoice_no or "",
-            item.party_ledger_name or "",
-            item.party_gstin or "",
-            item.place_of_supply or "",
-            item.particulars or "",
-            item.hsn or "",
-            item.qty or "",
-            item.rate or "",
-            item.taxable_value or "",
-            item.cgst_amount or "",
-            item.sgst_amount or "",
-            item.igst_amount or "",
-            item.total_invoice_value or "",
-            item.itc_eligibility or "",
-            item.narration or "",
-            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            source_filename
-        ]
+        row_data = row_for(PURCHASE_REGISTER_VIEW, item, _row_ctx(source_filename))
 
         for col_idx, value in enumerate(row_data, 1):
             ws.cell(row=next_row, column=col_idx, value=value)
@@ -216,51 +181,9 @@ class ExcelSyncService:
 
         for item in items:
             if is_sales and self.invoice_type == "sales":
-                row_data = [
-                    item.voucher_date or "",
-                    item.voucher_type or "",
-                    item.invoice_no or "",
-                    item.party_ledger_name or "",
-                    item.party_gstin or "",
-                    item.place_of_supply or "",
-                    item.particulars or "",
-                    item.hsn or "",
-                    item.qty or "",
-                    item.rate or "",
-                    item.taxable_value or "",
-                    item.discount or "",
-                    item.advances or "",
-                    item.cgst_amount or "",
-                    item.sgst_amount or "",
-                    item.igst_amount or "",
-                    item.total_invoice_value or "",
-                    item.gstr1_category or "",
-                    item.narration or "",
-                    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    source_filename
-                ]
+                row_data = row_for(SALES_REGISTER_VIEW, item, _row_ctx(source_filename))
             elif not is_sales and self.invoice_type == "purchase":
-                row_data = [
-                    item.voucher_date or "",
-                    item.voucher_type or "",
-                    item.invoice_no or "",
-                    item.party_ledger_name or "",
-                    item.party_gstin or "",
-                    item.place_of_supply or "",
-                    item.particulars or "",
-                    item.hsn or "",
-                    item.qty or "",
-                    item.rate or "",
-                    item.taxable_value or "",
-                    item.cgst_amount or "",
-                    item.sgst_amount or "",
-                    item.igst_amount or "",
-                    item.total_invoice_value or "",
-                    item.itc_eligibility or "",
-                    item.narration or "",
-                    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    source_filename
-                ]
+                row_data = row_for(PURCHASE_REGISTER_VIEW, item, _row_ctx(source_filename))
             else:
                 continue
 

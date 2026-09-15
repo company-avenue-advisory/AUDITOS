@@ -129,9 +129,78 @@ class RuleGST004(BaseRule):
             execution_time_ms=int((time.time() - t0) * 1000)
         )
 
+class RuleGST005(BaseRule):
+    rule_id = "GST_005"
+    rule_name = "Buyer GSTIN Registry Verification"
+    category = "GST"
+    severity = Severity.WARNING
+    description = "Verifies the buyer's GSTIN against the real GST registry (cached) -- catches a cancelled registration or a wrong state that a format-only check can't."
+
+    def evaluate(self, invoice: CanonicalInvoice) -> RuleResult:
+        t0 = time.time()
+        gstin = (invoice.buyer.gstin.value or "").strip().upper()
+        declared_state = (invoice.buyer.state_code.value or "").strip()
+
+        info = None
+        if GSTIN_REGEX.match(gstin):
+            try:
+                # models.py/database.py/services/ use flat imports (no
+                # "backend." prefix), unlike this core/ subtree -- make sure
+                # the backend/ dir itself is importable before crossing over.
+                import sys as _sys, os as _os
+                _backend_dir = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+                if _backend_dir not in _sys.path:
+                    _sys.path.insert(0, _backend_dir)
+                from database import SessionLocal
+                from services.gstin_verification import get_gstin_info
+                db = SessionLocal()
+                try:
+                    info = get_gstin_info(gstin, db)
+                finally:
+                    db.close()
+            except Exception:
+                info = None
+
+        if info is None:
+            # Not verifiable right now (no API key, lookup failed, format
+            # invalid) -- not this rule's job to fail on that, GST_002 covers format.
+            return RuleResult(
+                rule_id=self.rule_id, rule_name=self.rule_name, passed=True, status="SKIPPED",
+                severity=self.severity, reason="GSTIN could not be verified against the registry (unavailable or not yet looked up).",
+                evidence={"gstin": gstin}, recommendation="",
+                execution_time_ms=int((time.time() - t0) * 1000),
+            )
+
+        status = (info.get("status") or "").strip().lower()
+        real_state = (info.get("state_code") or "").strip()
+        is_active = status == "active"
+        state_mismatch = bool(real_state) and bool(declared_state) and real_state != declared_state
+        passed = is_active and not state_mismatch
+
+        if passed:
+            reason = "Buyer GSTIN is Active and registered state matches the invoice."
+            recommendation = ""
+        elif not is_active:
+            reason = f"Buyer GSTIN registration is '{info.get('status')}', not Active -- this buyer should be treated as unregistered (B2C), not B2B."
+            recommendation = "Reclassify as B2C; do not claim this as a B2B supply."
+        else:
+            reason = f"Buyer's real registered state ({real_state}) does not match the invoice's declared state ({declared_state})."
+            recommendation = f"Use state code {real_state} (from GST registry) for Interstate/Intrastate determination."
+
+        return RuleResult(
+            rule_id=self.rule_id, rule_name=self.rule_name, passed=passed,
+            status="PASS" if passed else "FAIL", severity=self.severity, reason=reason,
+            evidence={"gstin": gstin, "registry_status": info.get("status"),
+                      "registry_state": real_state, "declared_state": declared_state,
+                      "legal_name": info.get("legal_name")},
+            recommendation=recommendation, auto_fix=True,
+            execution_time_ms=int((time.time() - t0) * 1000),
+        )
+
+
 class GSTValidationPack(BaseValidationPack):
     pack_name = "GST Compliance Validation Pack"
     description = "Pack verifying GST registrations and State prefix alignments."
 
     def get_rules(self):
-        return [RuleGST001(), RuleGST002(), RuleGST003(), RuleGST004()]
+        return [RuleGST001(), RuleGST002(), RuleGST003(), RuleGST004(), RuleGST005()]

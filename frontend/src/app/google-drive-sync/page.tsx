@@ -3,26 +3,36 @@
 import React, { useState, useEffect, useCallback } from "react";
 import {
   Cloud, FolderOpen, RefreshCw, CheckCircle, AlertCircle,
-  Clock, Download, Loader, Link, Settings, ChevronRight,
-  FileText, AlertTriangle, Wifi, WifiOff,
+  Download, Loader, Link as LinkIcon, Settings,
+  FileText, AlertTriangle, StopCircle, ChevronDown,
+  ArrowDownToLine, ShieldCheck, FileSpreadsheet,
 } from "lucide-react";
 import { apiRequest } from "@/utils/api";
+import StatusBadge from "../../components/ui/StatusBadge";
+import MetricCard from "../../components/ui/MetricCard";
+import { usePeriod } from "../../utils/PeriodContext";
+import { labelForPeriod } from "../../utils/periods";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface DriveConfig {
-  folder_id: string;
+  folder_id: string | null;
   invoice_type: string;
   schedule: string;
+  fiscal_year_start_month?: number | null;
+  month_folder_pattern?: string | null;
+  sales_root_folder_id?: string | null;
+  purchase_root_folder_id?: string | null;
+  gstr2b_root_folder_id?: string | null;
+  sales_schedule?: string | null;
+  purchase_schedule?: string | null;
+  gstr2b_schedule?: string | null;
   updated_at: string | null;
 }
 
-interface DriveSubfolder {
-  id: string;
-  name: string;
-}
+type Pipeline = "sales" | "purchase" | "gstr2b";
 
 interface SyncJob {
   id: string;
@@ -48,129 +58,109 @@ interface TaskStatus {
     processed_files: number;
     failed_files: number;
     duration_seconds: number | null;
-    remaining_files?: number;
   };
   error?: string;
 }
 
-// Batch-size presets for "Pull from Drive". Extraction is LLM-bound at
-// ~80-90s/invoice, and the backend Celery task has a hard 1-hour time limit —
-// an unbounded pull against a large folder never finishes in one run (it gets
-// killed mid-way). Default to a small, cheap batch so a first sync is a quick,
-// low-cost sanity check rather than an unbounded multi-hour job.
-const BATCH_SIZE_OPTIONS: { value: number | null; label: string }[] = [
-  { value: 1, label: "1 file (quick test)" },
-  { value: 2, label: "2 files (quick test)" },
-  { value: 5, label: "5 files" },
-  { value: 10, label: "10 files" },
-  { value: 20, label: "20 files" },
-  { value: 50, label: "50 files (~1hr, near the time-limit)" },
-  { value: null, label: "All new files (not recommended for large folders)" },
-];
-
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function extractFolderIdFromUrl(input: string): string {
-  // Accept bare ID or full Drive URL
   const match = input.match(/\/folders\/([a-zA-Z0-9_-]{10,})/);
   if (match) return match[1];
-  // Bare ID: 28+ alphanumeric chars with no slashes
   if (/^[a-zA-Z0-9_-]{10,}$/.test(input.trim())) return input.trim();
   return "";
 }
 
-function StatusBadge({ status }: { status: string }) {
-  const map: Record<string, { label: string; cls: string; icon: React.ReactNode }> = {
-    completed:  { label: "Completed",  cls: "bg-green-900/40 text-green-300 border-green-700",  icon: <CheckCircle className="w-3.5 h-3.5" /> },
-    failed:     { label: "Failed",     cls: "bg-red-900/40 text-red-300 border-red-700",         icon: <AlertCircle className="w-3.5 h-3.5" /> },
-    in_progress:{ label: "In Progress",cls: "bg-blue-900/40 text-blue-300 border-blue-700",      icon: <Loader className="w-3.5 h-3.5 animate-spin" /> },
-    SUCCESS:    { label: "Done",       cls: "bg-green-900/40 text-green-300 border-green-700",   icon: <CheckCircle className="w-3.5 h-3.5" /> },
-    FAILURE:    { label: "Error",      cls: "bg-red-900/40 text-red-300 border-red-700",         icon: <AlertCircle className="w-3.5 h-3.5" /> },
-    PENDING:    { label: "Queued",     cls: "bg-yellow-900/40 text-yellow-300 border-yellow-700",icon: <Clock className="w-3.5 h-3.5" /> },
-    STARTED:    { label: "Running",    cls: "bg-blue-900/40 text-blue-300 border-blue-700",      icon: <Loader className="w-3.5 h-3.5 animate-spin" /> },
-  };
-  const s = map[status] ?? { label: status, cls: "bg-slate-700 text-gray-300 border-slate-600", icon: null };
-  return (
-    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-xs font-medium ${s.cls}`}>
-      {s.icon}{s.label}
-    </span>
-  );
-}
+const PIPELINE_LABELS: Record<Pipeline, string> = {
+  sales: "Sales Invoices",
+  purchase: "Purchase Invoices",
+  gstr2b: "GSTR-2B Returns",
+};
 
-function StatCard({ label, value, sub }: { label: string; value: number | string; sub?: string }) {
-  return (
-    <div className="bg-slate-700/50 rounded-lg p-3 text-center">
-      <div className="text-2xl font-bold text-white">{value}</div>
-      <div className="text-xs text-gray-400 mt-0.5">{label}</div>
-      {sub && <div className="text-xs text-gray-500 mt-0.5">{sub}</div>}
-    </div>
-  );
-}
+const PIPELINE_ENDPOINTS: Record<Pipeline, string> = {
+  sales: "/api/google-drive-sync/trigger-sales",
+  purchase: "/api/google-drive-sync/trigger-purchase",
+  gstr2b: "/api/google-drive-sync/trigger-gstr2b",
+};
+
+const inputStyle: React.CSSProperties = {
+  width: "100%",
+  padding: "10px 12px",
+  borderRadius: "var(--radius-sm)",
+  border: "1px solid var(--border)",
+  background: "var(--bg-card)",
+  color: "var(--text-primary)",
+  fontSize: 13,
+  outline: "none",
+};
+
+const labelStyle: React.CSSProperties = {
+  display: "block",
+  fontSize: 13,
+  color: "var(--text-secondary)",
+  marginBottom: 6,
+  fontWeight: 500,
+};
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
 export default function GoogleDriveSyncPage() {
-  // Config panel
+  // Config state
   const [folderInput, setFolderInput]   = useState("");
   const [invoiceType, setInvoiceType]   = useState("both");
   const [schedule, setSchedule]         = useState("0 0 1 * *");
   const [savedConfig, setSavedConfig]   = useState<DriveConfig | null>(null);
-  const [configLoading, setConfigLoading] = useState(false);
-  const [configSaving, setConfigSaving]   = useState(false);
-  const [configMsg, setConfigMsg]         = useState<{ ok: boolean; text: string } | null>(null);
+  const [configSaving, setConfigSaving] = useState(false);
+  const [configMsg, setConfigMsg]       = useState<{ ok: boolean; text: string } | null>(null);
 
-  // Sync panel
-  const [syncing, setSyncing]           = useState(false);
-  const [taskId, setTaskId]             = useState<string | null>(null);
-  const [taskStatus, setTaskStatus]     = useState<TaskStatus | null>(null);
-  const [syncError, setSyncError]       = useState<string | null>(null);
-  const [maxFiles, setMaxFiles]         = useState<number | null>(2); // default: cheap 2-file test batch
-  const [subfolders, setSubfolders]     = useState<DriveSubfolder[]>([]);
-  const [subfoldersLoading, setSubfoldersLoading] = useState(false);
-  const [selectedSubfolder, setSelectedSubfolder] = useState<string>(""); // "" = whole configured folder tree
+  // Self-resolving folder config
+  const [salesRootFolder, setSalesRootFolder]       = useState("");
+  const [purchaseRootFolder, setPurchaseRootFolder] = useState("");
+  const [gstr2bRootFolder, setGstr2bRootFolder]     = useState("");
+  const [fiscalYearStartMonth, setFiscalYearStartMonth] = useState(4);
+  const [monthFolderPattern, setMonthFolderPattern] = useState("{n}. {month_name} {year}");
 
-  // History panel
+  // Month selector
+  const { period: selectedPeriod } = usePeriod();
+
+  // Pipeline task tracking
+  const [pipelineTaskIds, setPipelineTaskIds] = useState<Record<Pipeline, string | null>>({
+    sales: null, purchase: null, gstr2b: null,
+  });
+  const [pipelineStatuses, setPipelineStatuses] = useState<Record<Pipeline, TaskStatus | null>>({
+    sales: null, purchase: null, gstr2b: null,
+  });
+  const [pipelineTriggering, setPipelineTriggering] = useState<Record<Pipeline, boolean>>({
+    sales: false, purchase: false, gstr2b: false,
+  });
+  const [pipelineErrors, setPipelineErrors] = useState<Record<Pipeline, string | null>>({
+    sales: null, purchase: null, gstr2b: null,
+  });
+
+  // History
   const [history, setHistory]           = useState<SyncJob[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
 
   // ── Load saved config on mount ────────────────────────────────────────────
 
   const loadConfig = useCallback(async () => {
-    setConfigLoading(true);
     try {
       const res = await apiRequest("/api/google-drive-sync/config");
       if (res.ok) {
         const data = await res.json();
         if (data.configured && data.config) {
           setSavedConfig(data.config);
-          setFolderInput(data.config.folder_id);
+          setFolderInput(data.config.folder_id ?? "");
           setInvoiceType(data.config.invoice_type);
           setSchedule(data.config.schedule ?? "0 0 1 * *");
+          setSalesRootFolder(data.config.sales_root_folder_id ?? "");
+          setPurchaseRootFolder(data.config.purchase_root_folder_id ?? "");
+          setGstr2bRootFolder(data.config.gstr2b_root_folder_id ?? "");
+          setFiscalYearStartMonth(data.config.fiscal_year_start_month ?? 4);
+          setMonthFolderPattern(data.config.month_folder_pattern ?? "{n}. {month_name} {year}");
         }
-        // no_tenant: user has no firm yet — saving config will auto-create one
       }
-    } finally {
-      setConfigLoading(false);
-    }
-  }, []);
-
-  // Subfolders (e.g. month folders) under the configured Drive folder — lets
-  // the user scope a run to one month instead of the whole tree.
-  const loadSubfolders = useCallback(async () => {
-    setSubfoldersLoading(true);
-    try {
-      const res = await apiRequest("/api/google-drive-sync/subfolders");
-      if (res.ok) {
-        const data = await res.json();
-        setSubfolders(data.subfolders ?? []);
-      } else {
-        setSubfolders([]);
-      }
-    } catch {
-      setSubfolders([]);
-    } finally {
-      setSubfoldersLoading(false);
-    }
+    } finally { /* no-op */ }
   }, []);
 
   const loadHistory = useCallback(async () => {
@@ -189,80 +179,103 @@ export default function GoogleDriveSyncPage() {
   useEffect(() => {
     loadConfig();
     loadHistory();
-    loadSubfolders();
-  }, [loadConfig, loadHistory, loadSubfolders]);
+  }, [loadConfig, loadHistory]);
 
-  // ── Poll task status ──────────────────────────────────────────────────────
+  // ── Poll each pipeline task ───────────────────────────────────────────────
 
   useEffect(() => {
-    if (!taskId) return;
-    const iv = setInterval(async () => {
-      try {
-        const res = await apiRequest(`/api/google-drive-sync/status/${taskId}`);
-        if (!res.ok) return;
-        const data: TaskStatus = await res.json();
-        setTaskStatus(data);
-        if (data.status === "SUCCESS" || data.status === "FAILURE") {
-          clearInterval(iv);
-          setSyncing(false);
-          if (data.status === "FAILURE") setSyncError(data.error ?? "Unknown error");
-          loadHistory();
-        }
-      } catch {/* network blip — keep polling */}
-    }, 2500);
-    return () => clearInterval(iv);
-  }, [taskId, loadHistory]);
+    const pipelines: Pipeline[] = ["sales", "purchase", "gstr2b"];
+    const intervals = pipelines.map((p) => {
+      const id = pipelineTaskIds[p];
+      if (!id) return null;
+      return setInterval(async () => {
+        try {
+          const res = await apiRequest(`/api/google-drive-sync/status/${id}`);
+          if (!res.ok) return;
+          const data: TaskStatus = await res.json();
+          setPipelineStatuses(prev => ({ ...prev, [p]: data }));
+          if (data.status === "SUCCESS" || data.status === "FAILURE") {
+            setPipelineTriggering(prev => ({ ...prev, [p]: false }));
+            if (data.status === "FAILURE") {
+              setPipelineErrors(prev => ({ ...prev, [p]: data.error ?? "Unknown error" }));
+            }
+            loadHistory();
+          }
+        } catch {/* network blip - keep polling */}
+      }, 3000);
+    });
+    return () => intervals.forEach((iv) => { if (iv) clearInterval(iv); });
+  }, [pipelineTaskIds, loadHistory]);
 
   // ── Handlers ──────────────────────────────────────────────────────────────
 
-  const handleSaveConfig = async () => {
-    const folderId = extractFolderIdFromUrl(folderInput);
-    if (!folderId) {
-      setConfigMsg({ ok: false, text: "Paste a valid Google Drive folder URL or ID." });
-      return;
-    }
-    setConfigSaving(true);
-    setConfigMsg(null);
+  const triggerPipeline = async (pipeline: Pipeline) => {
+    setPipelineTriggering(prev => ({ ...prev, [pipeline]: true }));
+    setPipelineErrors(prev => ({ ...prev, [pipeline]: null }));
+    setPipelineStatuses(prev => ({ ...prev, [pipeline]: null }));
     try {
-      const res = await apiRequest("/api/google-drive-sync/config", {
-        method: "POST",
-        body: JSON.stringify({ folder_id: folderId, invoice_type: invoiceType, schedule }),
-      });
+      const body = pipeline === "gstr2b"
+        ? JSON.stringify({})
+        : JSON.stringify({ period: selectedPeriod });
+      const res = await apiRequest(PIPELINE_ENDPOINTS[pipeline], { method: "POST", body });
       if (res.ok) {
-        setConfigMsg({ ok: true, text: "Config saved. Drive folder connected." });
-        setSelectedSubfolder(""); // folder changed — reset any stale month selection
-        loadConfig();
-        loadSubfolders();
+        const data = await res.json();
+        setPipelineTaskIds(prev => ({ ...prev, [pipeline]: data.task_id }));
       } else {
         const err = await res.json();
-        setConfigMsg({ ok: false, text: err.detail ?? "Failed to save config." });
+        setPipelineErrors(prev => ({ ...prev, [pipeline]: err.detail ?? "Failed to start." }));
+        setPipelineTriggering(prev => ({ ...prev, [pipeline]: false }));
       }
-    } finally {
-      setConfigSaving(false);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Network error";
+      setPipelineErrors(prev => ({ ...prev, [pipeline]: msg }));
+      setPipelineTriggering(prev => ({ ...prev, [pipeline]: false }));
     }
   };
 
-  const handleTriggerSync = async () => {
-    setSyncing(true);
-    setSyncError(null);
-    setTaskStatus(null);
-    setTaskId(null);
+  const cancelPipeline = async (pipeline: Pipeline) => {
+    const taskId = pipelineTaskIds[pipeline];
+    if (!taskId) return;
     try {
-      const res = await apiRequest("/api/google-drive-sync/trigger", {
+      await apiRequest(`/api/google-drive-sync/cancel/${taskId}`, { method: "POST" });
+      setPipelineTriggering(prev => ({ ...prev, [pipeline]: false }));
+      setPipelineTaskIds(prev => ({ ...prev, [pipeline]: null }));
+      setPipelineStatuses(prev => ({
+        ...prev,
+        [pipeline]: { task_id: taskId, status: "FAILURE" as const, error: "Cancelled by user" },
+      }));
+    } catch {
+      // cancel failed — keep polling, the task may finish on its own
+    }
+  };
+
+  const handleSaveConfig = async () => {
+    setConfigSaving(true);
+    setConfigMsg(null);
+    try {
+      const folderId = folderInput ? (extractFolderIdFromUrl(folderInput) || folderInput) : null;
+      const res = await apiRequest("/api/google-drive-sync/config", {
         method: "POST",
-        body: JSON.stringify({ max_files: maxFiles, subfolder_id: selectedSubfolder || null }),
+        body: JSON.stringify({
+          folder_id: folderId,
+          invoice_type: invoiceType,
+          schedule,
+          sales_root_folder_id: salesRootFolder ? (extractFolderIdFromUrl(salesRootFolder) || salesRootFolder) : null,
+          purchase_root_folder_id: purchaseRootFolder ? (extractFolderIdFromUrl(purchaseRootFolder) || purchaseRootFolder) : null,
+          gstr2b_root_folder_id: gstr2bRootFolder ? (extractFolderIdFromUrl(gstr2bRootFolder) || gstr2bRootFolder) : null,
+          fiscal_year_start_month: fiscalYearStartMonth,
+          month_folder_pattern: monthFolderPattern,
+        }),
       });
       if (res.ok) {
-        const data = await res.json();
-        setTaskId(data.task_id);
+        setConfigMsg({ ok: true, text: "Settings saved successfully." });
+        loadConfig();
       } else {
         const err = await res.json();
-        setSyncError(err.detail ?? "Failed to start sync.");
-        setSyncing(false);
+        setConfigMsg({ ok: false, text: err.detail ?? "Failed to save settings." });
       }
-    } catch (e: any) {
-      setSyncError(e.message);
-      setSyncing(false);
+    } finally {
+      setConfigSaving(false);
     }
   };
 
@@ -277,7 +290,7 @@ export default function GoogleDriveSyncPage() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `sync_${batchId}.xlsx`;
+      a.download = `${type}_invoices_${batchId}.xlsx`;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -287,81 +300,621 @@ export default function GoogleDriveSyncPage() {
     }
   };
 
-  const derivedFolderId = extractFolderIdFromUrl(folderInput);
-  const isConfigured = !!savedConfig;
-  const activeInvoiceType = savedConfig?.invoice_type ?? invoiceType;
+  // ── Derived state ─────────────────────────────────────────────────────────
+
+  const isSalesConfigured = !!savedConfig?.sales_root_folder_id;
+  const isPurchaseConfigured = !!savedConfig?.purchase_root_folder_id;
+  const isGstr2bConfigured = !!savedConfig?.gstr2b_root_folder_id;
+  const anyConfigured = isSalesConfigured || isPurchaseConfigured || isGstr2bConfigured;
+
+  const configuredMap: Record<Pipeline, boolean> = {
+    sales: isSalesConfigured,
+    purchase: isPurchaseConfigured,
+    gstr2b: isGstr2bConfigured,
+  };
+
+  const activePipelines: Pipeline[] = (["sales", "purchase", "gstr2b"] as Pipeline[]).filter(
+    p => pipelineTriggering[p] || (pipelineStatuses[p] && (pipelineStatuses[p]!.status === "PENDING" || pipelineStatuses[p]!.status === "STARTED"))
+  );
+
   const latestJob = history.find(j => j.status === "completed");
+  const selectedMonthLabel = labelForPeriod(selectedPeriod);
 
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 p-6">
-      <div className="max-w-5xl mx-auto space-y-6">
+    <div style={{ flex: 1, padding: "32px 40px", maxWidth: 900 }}>
 
-        {/* Header */}
-        <div className="flex items-center gap-3">
-          <div className="p-2 bg-blue-600/20 rounded-lg border border-blue-500/30">
-            <Cloud className="w-7 h-7 text-blue-400" />
-          </div>
-          <div>
-            <h1 className="text-3xl font-bold text-white">Google Drive Sync</h1>
-            <p className="text-gray-400 text-sm mt-0.5">
-              Pull invoice PDFs from a client's Drive folder → extract → download Excel
-            </p>
-          </div>
-          <div className="ml-auto flex items-center gap-2 text-xs">
-            {isConfigured
-              ? <><Wifi className="w-4 h-4 text-green-400" /><span className="text-green-400">Folder connected</span></>
-              : <><WifiOff className="w-4 h-4 text-gray-500" /><span className="text-gray-500">Not configured</span></>
-            }
+      {/* ── Page Header ─────────────────────────────────────────────────── */}
+      <div style={{ marginBottom: 28 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
+          <Cloud size={22} style={{ color: "var(--accent)" }} />
+          <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>Invoice Import</h1>
+        </div>
+        <p style={{ color: "var(--text-secondary)", fontSize: 14, margin: 0 }}>
+          Import invoices from Google Drive and download the extracted Excel sheets.
+        </p>
+      </div>
+
+      {/* ── Zone 1: Primary Action Bar ──────────────────────────────────── */}
+      <div
+        className="glass"
+        style={{
+          borderRadius: "var(--radius-lg)",
+          padding: "24px 28px",
+          marginBottom: 20,
+        }}
+      >
+        <div style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "flex-end",
+          gap: 16,
+          flexWrap: "wrap",
+        }}>
+          {/* Action buttons */}
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
+            <button
+              className="btn-primary"
+              onClick={() => triggerPipeline("sales")}
+              disabled={pipelineTriggering.sales || !isSalesConfigured}
+              title={!isSalesConfigured ? "Set up the Sales folder in Advanced Setup below" : undefined}
+              style={{
+                padding: "10px 20px",
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                fontSize: 14,
+                border: "none",
+                cursor: !isSalesConfigured ? "not-allowed" : "pointer",
+              }}
+            >
+              {pipelineTriggering.sales
+                ? <Loader size={15} className="animate-spin" />
+                : <ArrowDownToLine size={15} />}
+              Import Sales
+            </button>
+
+            <button
+              className="btn-primary"
+              onClick={() => triggerPipeline("purchase")}
+              disabled={pipelineTriggering.purchase || !isPurchaseConfigured}
+              title={!isPurchaseConfigured ? "Set up the Purchase folder in Advanced Setup below" : undefined}
+              style={{
+                padding: "10px 20px",
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                fontSize: 14,
+                border: "none",
+                cursor: !isPurchaseConfigured ? "not-allowed" : "pointer",
+              }}
+            >
+              {pipelineTriggering.purchase
+                ? <Loader size={15} className="animate-spin" />
+                : <ArrowDownToLine size={15} />}
+              Import Purchase
+            </button>
+
+            <button
+              className="btn-primary"
+              onClick={() => triggerPipeline("gstr2b")}
+              disabled={pipelineTriggering.gstr2b || !isGstr2bConfigured}
+              title={!isGstr2bConfigured ? "Set up the GSTR-2B folder in Advanced Setup below" : undefined}
+              style={{
+                padding: "10px 20px",
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                fontSize: 14,
+                border: "none",
+                background: "var(--green)",
+                cursor: !isGstr2bConfigured ? "not-allowed" : "pointer",
+              }}
+            >
+              {pipelineTriggering.gstr2b
+                ? <Loader size={15} className="animate-spin" />
+                : <ShieldCheck size={15} />}
+              Import GSTR-2B
+            </button>
           </div>
         </div>
 
-        {/* ── Step 1: Configure ───────────────────────────────────────────── */}
-        <div className="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
-          <div className="flex items-center gap-3 px-5 py-4 border-b border-slate-700">
-            <span className="w-6 h-6 rounded-full bg-blue-600 text-white text-xs font-bold flex items-center justify-center flex-shrink-0">1</span>
-            <Settings className="w-4 h-4 text-blue-400" />
-            <h2 className="text-base font-semibold text-white">Connect Drive Folder</h2>
-            {isConfigured && (
-              <span className="ml-auto text-xs text-gray-500">
-                Last updated {savedConfig?.updated_at ? new Date(savedConfig.updated_at).toLocaleDateString() : "—"}
-              </span>
-            )}
+        {/* Setup prompt when nothing is configured */}
+        {!anyConfigured && (
+          <div style={{
+            marginTop: 16,
+            padding: "12px 16px",
+            background: "var(--amber-soft)",
+            borderRadius: "var(--radius-sm)",
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            fontSize: 13,
+            color: "var(--amber)",
+          }}>
+            <AlertTriangle size={15} />
+            No Drive folders configured yet. Open Advanced Setup below to connect your folders.
           </div>
+        )}
+      </div>
 
-          <div className="p-5 grid grid-cols-1 md:grid-cols-2 gap-4">
-            {/* Folder URL */}
-            <div className="md:col-span-2">
-              <label className="block text-sm text-gray-400 mb-1.5">
-                Google Drive Folder URL or ID
-              </label>
-              <div className="relative">
-                <Link className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
-                <input
-                  type="text"
-                  value={folderInput}
-                  onChange={e => setFolderInput(e.target.value)}
-                  placeholder="https://drive.google.com/drive/folders/1G29eZJyd2d... or bare ID"
-                  className="w-full pl-9 pr-4 py-2.5 bg-slate-700 border border-slate-600 rounded-lg text-sm text-gray-200 placeholder-gray-500 focus:outline-none focus:border-blue-500"
-                />
+      {/* ── Zone 2: Live Status (shown when tasks are running) ──────────── */}
+      {activePipelines.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 20 }}>
+          {activePipelines.map(pipeline => {
+            const status = pipelineStatuses[pipeline];
+            const taskId = pipelineTaskIds[pipeline];
+            const label = PIPELINE_LABELS[pipeline];
+            const progressText = status?.status === "STARTED" && status.result
+              ? `${status.result.processed_files} of ${status.result.total_files_found} processed`
+              : status?.status === "PENDING"
+                ? "Queued, waiting to start..."
+                : "Connecting to Google Drive...";
+
+            return (
+              <div
+                key={pipeline}
+                className="glass"
+                style={{
+                  borderRadius: "var(--radius-lg)",
+                  padding: "20px 24px",
+                  borderLeft: "4px solid var(--accent)",
+                }}
+              >
+                <div style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 16,
+                }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 12, flex: 1 }}>
+                    <Loader size={18} className="animate-spin" style={{ color: "var(--accent)", flexShrink: 0 }} />
+                    <div>
+                      <p style={{ fontSize: 14, fontWeight: 600, margin: 0, color: "var(--text-primary)" }}>
+                        Importing {selectedMonthLabel} {label.toLowerCase()}...
+                      </p>
+                      <p style={{ fontSize: 13, color: "var(--text-secondary)", margin: "4px 0 0" }}>
+                        {progressText}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* STOP button */}
+                  {taskId && (
+                    <button
+                      onClick={() => cancelPipeline(pipeline)}
+                      style={{
+                        padding: "8px 18px",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                        fontSize: 13,
+                        fontWeight: 600,
+                        background: "var(--red)",
+                        color: "#fff",
+                        border: "none",
+                        borderRadius: "var(--radius-sm)",
+                        cursor: "pointer",
+                        flexShrink: 0,
+                      }}
+                    >
+                      <StopCircle size={15} />
+                      Stop
+                    </button>
+                  )}
+                </div>
               </div>
-              {folderInput && (
-                <p className="mt-1 text-xs text-gray-500">
-                  Folder ID: <span className={`font-mono ${derivedFolderId ? "text-green-400" : "text-red-400"}`}>
-                    {derivedFolderId || "— invalid URL"}
-                  </span>
-                </p>
+            );
+          })}
+        </div>
+      )}
+
+      {/* ── Completed pipeline results (shown after a pipeline finishes) ── */}
+      {(["sales", "purchase", "gstr2b"] as Pipeline[]).map(pipeline => {
+        const status = pipelineStatuses[pipeline];
+        if (!status) return null;
+        if (status.status === "PENDING" || status.status === "STARTED") return null;
+
+        const label = PIPELINE_LABELS[pipeline];
+        const error = pipelineErrors[pipeline];
+
+        if (status.status === "FAILURE") {
+          return (
+            <div
+              key={`result-${pipeline}`}
+              className="glass"
+              style={{
+                borderRadius: "var(--radius-lg)",
+                padding: "16px 24px",
+                marginBottom: 12,
+                borderLeft: "4px solid var(--red)",
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <AlertCircle size={16} style={{ color: "var(--red)", flexShrink: 0 }} />
+                <div>
+                  <p style={{ fontSize: 14, fontWeight: 600, margin: 0, color: "var(--red)" }}>
+                    {label} import failed
+                  </p>
+                  <p style={{ fontSize: 13, color: "var(--text-secondary)", margin: "2px 0 0" }}>
+                    {error || status.error || "An unexpected error occurred."}
+                  </p>
+                </div>
+                <button
+                  onClick={() => {
+                    setPipelineStatuses(prev => ({ ...prev, [pipeline]: null }));
+                    setPipelineErrors(prev => ({ ...prev, [pipeline]: null }));
+                  }}
+                  className="btn-ghost"
+                  style={{ marginLeft: "auto", padding: "6px 12px", fontSize: 12, border: "none", cursor: "pointer" }}
+                >
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          );
+        }
+
+        if (status.status === "SUCCESS" && status.result) {
+          const r = status.result;
+          const skipped = r.total_files_found - r.processed_files - r.failed_files;
+          return (
+            <div
+              key={`result-${pipeline}`}
+              className="glass"
+              style={{
+                borderRadius: "var(--radius-lg)",
+                padding: "20px 24px",
+                marginBottom: 12,
+                borderLeft: "4px solid var(--green)",
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <CheckCircle size={16} style={{ color: "var(--green)" }} />
+                  <p style={{ fontSize: 14, fontWeight: 600, margin: 0 }}>
+                    {label} import complete
+                  </p>
+                </div>
+                <button
+                  onClick={() => setPipelineStatuses(prev => ({ ...prev, [pipeline]: null }))}
+                  className="btn-ghost"
+                  style={{ padding: "4px 10px", fontSize: 12, border: "none", cursor: "pointer" }}
+                >
+                  Dismiss
+                </button>
+              </div>
+
+              <p style={{ fontSize: 14, color: "var(--text-secondary)", margin: "0 0 16px" }}>
+                {r.processed_files} new invoice{r.processed_files !== 1 ? "s" : ""} imported
+                {skipped > 0 ? `, ${skipped} already existed (skipped)` : ""}
+                {r.failed_files > 0 ? `, ${r.failed_files} could not be read` : ""}
+                {r.duration_seconds ? ` in ${r.duration_seconds.toFixed(0)}s` : ""}.
+              </p>
+
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12 }}>
+                <MetricCard label="Found" value={r.total_files_found} />
+                <MetricCard label="Imported" value={r.processed_files} color="var(--green)" />
+                <MetricCard label="Errors" value={r.failed_files} color={r.failed_files > 0 ? "var(--red)" : undefined} />
+              </div>
+
+              {r.batch_id && (
+                <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
+                  {(pipeline === "sales" || pipeline === "gstr2b") && (
+                    <button
+                      className="btn-ghost"
+                      onClick={() => downloadExcel(r.batch_id, "sales")}
+                      style={{ padding: "8px 16px", fontSize: 13, display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}
+                    >
+                      <FileSpreadsheet size={14} /> Download Sales Excel
+                    </button>
+                  )}
+                  {pipeline === "purchase" && (
+                    <button
+                      className="btn-ghost"
+                      onClick={() => downloadExcel(r.batch_id, "purchase")}
+                      style={{ padding: "8px 16px", fontSize: 13, display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}
+                    >
+                      <FileSpreadsheet size={14} /> Download Purchase Excel
+                    </button>
+                  )}
+                </div>
               )}
+            </div>
+          );
+        }
+
+        return null;
+      })}
+
+      {/* ── Zone 3: Results & History ───────────────────────────────────── */}
+      <div
+        className="glass"
+        style={{
+          borderRadius: "var(--radius-lg)",
+          overflow: "hidden",
+          marginBottom: 20,
+        }}
+      >
+        {/* Latest completed sync */}
+        {latestJob && (
+          <div style={{
+            padding: "20px 24px",
+            borderBottom: "1px solid var(--border)",
+          }}>
+            <div style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              flexWrap: "wrap",
+              gap: 12,
+            }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <CheckCircle size={16} style={{ color: "var(--green)" }} />
+                <div>
+                  <p style={{ fontSize: 14, fontWeight: 600, margin: 0 }}>
+                    Last import: {latestJob.processed_files} invoices extracted
+                  </p>
+                  <p style={{ fontSize: 12, color: "var(--text-muted)", margin: "2px 0 0" }}>
+                    {new Date(latestJob.sync_timestamp).toLocaleString("en-IN", {
+                      day: "numeric", month: "short", year: "numeric",
+                      hour: "2-digit", minute: "2-digit",
+                    })}
+                  </p>
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button
+                  className="btn-ghost"
+                  onClick={() => downloadExcel(latestJob.batch_id, "sales")}
+                  style={{ padding: "8px 14px", fontSize: 13, display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}
+                >
+                  <Download size={14} /> Sales Excel
+                </button>
+                <button
+                  className="btn-ghost"
+                  onClick={() => downloadExcel(latestJob.batch_id, "purchase")}
+                  style={{ padding: "8px 14px", fontSize: 13, display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}
+                >
+                  <Download size={14} /> Purchase Excel
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* History header */}
+        <div style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          padding: "14px 24px",
+          borderBottom: history.length > 0 ? "1px solid var(--border)" : "none",
+        }}>
+          <h2 style={{ fontSize: 16, fontWeight: 600, margin: 0 }}>Import History</h2>
+          <button
+            onClick={loadHistory}
+            className="btn-ghost"
+            style={{ padding: "4px 8px", border: "none", background: "none", cursor: "pointer" }}
+          >
+            <RefreshCw size={14} className={historyLoading ? "animate-spin" : ""} />
+          </button>
+        </div>
+
+        {/* History rows */}
+        {historyLoading ? (
+          <div style={{ color: "var(--text-muted)", fontSize: 14, padding: "32px 24px", textAlign: "center" }}>
+            Loading...
+          </div>
+        ) : history.length === 0 ? (
+          <div style={{ color: "var(--text-muted)", fontSize: 14, padding: "32px 24px", textAlign: "center" }}>
+            No imports yet. Use the buttons above to get started.
+          </div>
+        ) : (
+          <div>
+            {history.map((job, i) => (
+              <div
+                key={job.id}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  padding: "12px 24px",
+                  borderBottom: i < history.length - 1 ? "1px solid var(--border)" : "none",
+                  flexWrap: "wrap",
+                  gap: 8,
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 16, fontSize: 13 }}>
+                  <span style={{ color: "var(--text-secondary)", minWidth: 140 }}>
+                    {new Date(job.sync_timestamp).toLocaleString("en-IN", {
+                      day: "numeric", month: "short", year: "numeric",
+                      hour: "2-digit", minute: "2-digit",
+                    })}
+                  </span>
+                  <StatusBadge status={job.status} />
+                  <span style={{ color: "var(--text-primary)" }}>
+                    {job.processed_files} imported
+                  </span>
+                  {job.failed_files > 0 && (
+                    <span style={{ color: "var(--red)" }}>
+                      {job.failed_files} failed
+                    </span>
+                  )}
+                </div>
+                {job.status === "completed" && job.processed_files > 0 && (
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <button
+                      className="btn-ghost"
+                      onClick={() => downloadExcel(job.batch_id, "sales")}
+                      style={{ padding: "4px 10px", fontSize: 12, display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}
+                    >
+                      <Download size={12} /> Sales
+                    </button>
+                    <button
+                      className="btn-ghost"
+                      onClick={() => downloadExcel(job.batch_id, "purchase")}
+                      style={{ padding: "4px 10px", fontSize: 12, display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}
+                    >
+                      <Download size={12} /> Purchase
+                    </button>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* ── Advanced Setup (collapsed) ──────────────────────────────────── */}
+      <details
+        style={{ marginBottom: 32 }}
+      >
+        <summary
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            cursor: "pointer",
+            fontSize: 14,
+            fontWeight: 600,
+            color: "var(--text-secondary)",
+            padding: "12px 0",
+            userSelect: "none",
+            listStyle: "none",
+          }}
+        >
+          <Settings size={16} />
+          Advanced Setup
+          <ChevronDown size={14} style={{ marginLeft: 4 }} />
+        </summary>
+
+        <div
+          className="glass"
+          style={{
+            borderRadius: "var(--radius-lg)",
+            padding: "24px 28px",
+            marginTop: 8,
+          }}
+        >
+          <p style={{ fontSize: 12, color: "var(--text-muted)", margin: "0 0 20px" }}>
+            Connect your Google Drive folders so AuditOS knows where to find each month&apos;s invoices.
+            Paste the full folder URL or just the folder ID.
+          </p>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+            {/* Sales folder */}
+            <div>
+              <label style={labelStyle}>
+                Sales invoices folder
+                {isSalesConfigured && (
+                  <span style={{ marginLeft: 8, fontSize: 11, color: "var(--green)", fontWeight: 600 }}>
+                    Connected
+                  </span>
+                )}
+              </label>
+              <input
+                type="text"
+                value={salesRootFolder}
+                onChange={e => setSalesRootFolder(e.target.value)}
+                placeholder="Google Drive folder URL or ID"
+                style={inputStyle}
+              />
+            </div>
+
+            {/* Purchase folder */}
+            <div>
+              <label style={labelStyle}>
+                Purchase invoices folder
+                {isPurchaseConfigured && (
+                  <span style={{ marginLeft: 8, fontSize: 11, color: "var(--green)", fontWeight: 600 }}>
+                    Connected
+                  </span>
+                )}
+              </label>
+              <input
+                type="text"
+                value={purchaseRootFolder}
+                onChange={e => setPurchaseRootFolder(e.target.value)}
+                placeholder="Google Drive folder URL or ID"
+                style={inputStyle}
+              />
+            </div>
+
+            {/* GSTR-2B folder */}
+            <div>
+              <label style={labelStyle}>
+                GSTR-2B files folder
+                {isGstr2bConfigured && (
+                  <span style={{ marginLeft: 8, fontSize: 11, color: "var(--green)", fontWeight: 600 }}>
+                    Connected
+                  </span>
+                )}
+              </label>
+              <input
+                type="text"
+                value={gstr2bRootFolder}
+                onChange={e => setGstr2bRootFolder(e.target.value)}
+                placeholder="Google Drive folder URL or ID"
+                style={inputStyle}
+              />
+            </div>
+
+            {/* Legacy base folder (hidden label) */}
+            <div>
+              <label style={labelStyle}>
+                Base folder (optional)
+                {savedConfig?.folder_id && (
+                  <span style={{ marginLeft: 8, fontSize: 11, color: "var(--green)", fontWeight: 600 }}>
+                    Connected
+                  </span>
+                )}
+              </label>
+              <input
+                type="text"
+                value={folderInput}
+                onChange={e => setFolderInput(e.target.value)}
+                placeholder="Google Drive folder URL or ID"
+                style={inputStyle}
+              />
+            </div>
+
+            {/* Fiscal year start */}
+            <div>
+              <label style={labelStyle}>Fiscal year starts in</label>
+              <select
+                value={fiscalYearStartMonth}
+                onChange={e => setFiscalYearStartMonth(Number(e.target.value))}
+                style={{ ...inputStyle, cursor: "pointer" }}
+              >
+                {["January","February","March","April","May","June","July","August","September","October","November","December"].map((m, i) => (
+                  <option key={m} value={i + 1}>{m}</option>
+                ))}
+              </select>
+            </div>
+
+            {/* Month folder pattern */}
+            <div>
+              <label style={labelStyle}>Month folder naming pattern</label>
+              <input
+                type="text"
+                value={monthFolderPattern}
+                onChange={e => setMonthFolderPattern(e.target.value)}
+                style={{ ...inputStyle, fontFamily: "var(--font-mono)" }}
+              />
+              <p style={{ marginTop: 4, fontSize: 12, color: "var(--text-muted)" }}>
+                e.g. &quot;1. April 2026&quot;, &quot;2. May 2026&quot;
+              </p>
             </div>
 
             {/* Invoice type */}
             <div>
-              <label className="block text-sm text-gray-400 mb-1.5">Invoice Type</label>
+              <label style={labelStyle}>Default invoice type</label>
               <select
                 value={invoiceType}
                 onChange={e => setInvoiceType(e.target.value)}
-                className="w-full px-3 py-2.5 bg-slate-700 border border-slate-600 rounded-lg text-sm text-gray-200 focus:outline-none focus:border-blue-500"
+                style={{ ...inputStyle, cursor: "pointer" }}
               >
                 <option value="both">Both (Sales + Purchase)</option>
                 <option value="sales">Sales only</option>
@@ -369,300 +922,55 @@ export default function GoogleDriveSyncPage() {
               </select>
             </div>
 
-            {/* Schedule */}
+            {/* Schedule (hidden behind a plain label) */}
             <div>
-              <label className="block text-sm text-gray-400 mb-1.5">Auto-sync Schedule (cron)</label>
+              <label style={labelStyle}>Auto-sync schedule</label>
               <input
                 type="text"
                 value={schedule}
                 onChange={e => setSchedule(e.target.value)}
-                className="w-full px-3 py-2.5 bg-slate-700 border border-slate-600 rounded-lg text-sm font-mono text-gray-200 focus:outline-none focus:border-blue-500"
+                style={{ ...inputStyle, fontFamily: "var(--font-mono)" }}
               />
-              <p className="mt-1 text-xs text-gray-500">
-                Default: 1st of every month at midnight UTC
+              <p style={{ marginTop: 4, fontSize: 12, color: "var(--text-muted)" }}>
+                Cron expression for automatic imports
               </p>
             </div>
-
-            {/* Save button + feedback */}
-            <div className="md:col-span-2 flex items-center gap-3">
-              <button
-                onClick={handleSaveConfig}
-                disabled={configSaving || !folderInput}
-                className="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg transition-colors flex items-center gap-2"
-              >
-                {configSaving ? <Loader className="w-4 h-4 animate-spin" /> : <FolderOpen className="w-4 h-4" />}
-                {configSaving ? "Saving…" : "Save Configuration"}
-              </button>
-              {configMsg && (
-                <span className={`text-sm flex items-center gap-1.5 ${configMsg.ok ? "text-green-400" : "text-red-400"}`}>
-                  {configMsg.ok ? <CheckCircle className="w-4 h-4" /> : <AlertCircle className="w-4 h-4" />}
-                  {configMsg.text}
-                </span>
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* ── Step 2: Sync Now ─────────────────────────────────────────────── */}
-        <div className={`bg-slate-800 rounded-xl border overflow-hidden transition-opacity ${isConfigured ? "border-slate-700 opacity-100" : "border-slate-700/50 opacity-60 pointer-events-none"}`}>
-          <div className="flex items-center gap-3 px-5 py-4 border-b border-slate-700">
-            <span className="w-6 h-6 rounded-full bg-blue-600 text-white text-xs font-bold flex items-center justify-center flex-shrink-0">2</span>
-            <RefreshCw className="w-4 h-4 text-blue-400" />
-            <h2 className="text-base font-semibold text-white">Pull from Drive</h2>
-            {!isConfigured && <span className="ml-2 text-xs text-gray-500">— complete step 1 first</span>}
           </div>
 
-          <div className="p-5">
-            {/* Config summary */}
-            {isConfigured && (
-              <div className="mb-4 flex flex-wrap gap-3 text-xs text-gray-400">
-                <span className="flex items-center gap-1.5 bg-slate-700/50 px-3 py-1.5 rounded-lg">
-                  <FolderOpen className="w-3.5 h-3.5 text-blue-400" />
-                  <span className="font-mono text-blue-300">{savedConfig?.folder_id.slice(0, 16)}…</span>
-                </span>
-                <span className="flex items-center gap-1.5 bg-slate-700/50 px-3 py-1.5 rounded-lg">
-                  <FileText className="w-3.5 h-3.5 text-purple-400" />
-                  {savedConfig?.invoice_type}
-                </span>
-                <span className="flex items-center gap-1.5 bg-slate-700/50 px-3 py-1.5 rounded-lg">
-                  <Clock className="w-3.5 h-3.5 text-gray-500" />
-                  Auto: {savedConfig?.schedule}
-                </span>
-              </div>
-            )}
-
-            {/* Scope + batch size controls */}
-            <div className="mb-4 grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm text-gray-400 mb-1.5">
-                  Month / Subfolder
-                </label>
-                <select
-                  value={selectedSubfolder}
-                  onChange={e => setSelectedSubfolder(e.target.value)}
-                  disabled={syncing || subfoldersLoading}
-                  className="w-full px-3 py-2.5 bg-slate-700 border border-slate-600 rounded-lg text-sm text-gray-200 focus:outline-none focus:border-blue-500 disabled:opacity-50"
-                >
-                  <option value="">
-                    {subfoldersLoading ? "Loading months…" : "All folders (entire Drive tree)"}
-                  </option>
-                  {subfolders.map(sf => (
-                    <option key={sf.id} value={sf.id}>{sf.name}</option>
-                  ))}
-                </select>
-                <p className="mt-1 text-xs text-gray-500">
-                  {subfolders.length > 0
-                    ? "Pick one month to sync just that folder — clients typically organize invoices this way."
-                    : "No subfolders detected — invoices are read directly from the connected folder."}
-                </p>
-              </div>
-
-              <div>
-                <label className="block text-sm text-gray-400 mb-1.5">
-                  Files per run
-                </label>
-                <select
-                  value={maxFiles === null ? "all" : String(maxFiles)}
-                  onChange={e => setMaxFiles(e.target.value === "all" ? null : Number(e.target.value))}
-                  disabled={syncing}
-                  className="w-full px-3 py-2.5 bg-slate-700 border border-slate-600 rounded-lg text-sm text-gray-200 focus:outline-none focus:border-blue-500 disabled:opacity-50"
-                >
-                  {BATCH_SIZE_OPTIONS.map(opt => (
-                    <option key={opt.label} value={opt.value === null ? "all" : opt.value}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </select>
-                <p className="mt-1 text-xs text-gray-500">
-                  Extraction costs ~80–90s of LLM time per invoice. Already-synced files are always
-                  skipped, so running this again continues where the last batch left off.
-                </p>
-              </div>
-            </div>
-
-            {/* Error banner */}
-            {syncError && (
-              <div className="mb-4 flex items-start gap-2 p-3 bg-red-900/30 border border-red-700/50 rounded-lg text-sm text-red-300">
-                <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0" />
-                {syncError}
-              </div>
-            )}
-
-            {/* Live task status */}
-            {taskStatus && (
-              <div className="mb-4 p-4 bg-slate-700/50 rounded-lg border border-slate-600">
-                <div className="flex items-center justify-between mb-3">
-                  <span className="text-sm text-gray-300 font-medium">Sync in progress</span>
-                  <StatusBadge status={taskStatus.status} />
-                </div>
-
-                {taskStatus.status === "PENDING" || taskStatus.status === "STARTED" ? (
-                  <div className="flex items-center gap-2 text-sm text-blue-300">
-                    <Loader className="w-4 h-4 animate-spin" />
-                    Connecting to Google Drive and processing invoices…
-                  </div>
-                ) : taskStatus.status === "SUCCESS" && taskStatus.result ? (
-                  <div className="grid grid-cols-3 gap-3">
-                    <StatCard label="Found" value={taskStatus.result.total_files_found} sub="PDFs in folder" />
-                    <StatCard label="Processed" value={taskStatus.result.processed_files} sub="new invoices" />
-                    <StatCard label="Failed" value={taskStatus.result.failed_files} sub="errors" />
-                  </div>
-                ) : taskStatus.status === "FAILURE" ? (
-                  <p className="text-sm text-red-300">{taskStatus.error}</p>
-                ) : null}
-
-                {taskStatus.status === "SUCCESS" && taskStatus.result?.duration_seconds && (
-                  <p className="mt-2 text-xs text-gray-500">
-                    Completed in {taskStatus.result.duration_seconds.toFixed(1)}s
-                  </p>
-                )}
-
-                {taskStatus.status === "SUCCESS" && !!taskStatus.result?.remaining_files && (
-                  <div className="mt-3 flex items-center gap-2 p-2.5 bg-yellow-900/20 border border-yellow-700/40 rounded-lg text-xs text-yellow-300">
-                    <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
-                    {taskStatus.result.remaining_files} more new file(s) still in Drive, not processed
-                    this run — click &quot;Pull Invoices from Drive&quot; again to continue the batch
-                    (already-processed files are skipped automatically).
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Trigger button */}
+          {/* Save button */}
+          <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 20, paddingTop: 16, borderTop: "1px solid var(--border)" }}>
             <button
-              onClick={handleTriggerSync}
-              disabled={syncing || !isConfigured}
-              className={`flex items-center gap-2 px-6 py-3 rounded-lg font-medium text-sm transition-all ${
-                syncing
-                  ? "bg-slate-600 text-gray-400 cursor-not-allowed"
-                  : "bg-blue-600 hover:bg-blue-700 active:scale-95 text-white"
-              }`}
+              className="btn-primary"
+              onClick={handleSaveConfig}
+              disabled={configSaving}
+              style={{
+                padding: "10px 24px",
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                fontSize: 14,
+                border: "none",
+                cursor: configSaving ? "not-allowed" : "pointer",
+              }}
             >
-              {syncing ? <Loader className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
-              {syncing ? "Syncing…" : "Pull Invoices from Drive"}
+              {configSaving ? <Loader size={14} className="animate-spin" /> : <FolderOpen size={14} />}
+              {configSaving ? "Saving..." : "Save Settings"}
             </button>
-            <p className="mt-2 text-xs text-gray-500">
-              Only new or changed PDFs are processed — already-synced files are skipped automatically.
-            </p>
+            {configMsg && (
+              <span style={{
+                fontSize: 13,
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                color: configMsg.ok ? "var(--green)" : "var(--red)",
+              }}>
+                {configMsg.ok ? <CheckCircle size={14} /> : <AlertCircle size={14} />}
+                {configMsg.text}
+              </span>
+            )}
           </div>
         </div>
-
-        {/* ── Step 3: Results & Download ───────────────────────────────────── */}
-        <div className="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
-          <div className="flex items-center gap-3 px-5 py-4 border-b border-slate-700">
-            <span className="w-6 h-6 rounded-full bg-blue-600 text-white text-xs font-bold flex items-center justify-center flex-shrink-0">3</span>
-            <Download className="w-4 h-4 text-blue-400" />
-            <h2 className="text-base font-semibold text-white">Download Results</h2>
-            <button
-              onClick={loadHistory}
-              className="ml-auto p-1.5 text-gray-500 hover:text-gray-300 hover:bg-slate-700 rounded-lg transition-colors"
-              title="Refresh history"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${historyLoading ? "animate-spin" : ""}`} />
-            </button>
-          </div>
-
-          {/* Latest sync download CTA */}
-          {latestJob && (
-            <div className="mx-5 mt-4 p-4 bg-green-900/20 border border-green-700/40 rounded-lg flex items-center justify-between">
-              <div>
-                <p className="text-sm font-medium text-green-300">Latest sync complete</p>
-                <p className="text-xs text-gray-400 mt-0.5">
-                  {latestJob.processed_files} invoices extracted on {new Date(latestJob.sync_timestamp).toLocaleString()}
-                </p>
-              </div>
-              <div className="flex gap-2">
-                {(activeInvoiceType === "both" || activeInvoiceType === "sales") && (
-                  <button
-                    onClick={() => downloadExcel(latestJob.batch_id, "sales")}
-                    className="flex items-center gap-1.5 px-3 py-2 bg-green-700 hover:bg-green-600 text-white text-xs font-medium rounded-lg transition-colors"
-                  >
-                    <Download className="w-3.5 h-3.5" /> Sales Excel
-                  </button>
-                )}
-                {(activeInvoiceType === "both" || activeInvoiceType === "purchase") && (
-                  <button
-                    onClick={() => downloadExcel(latestJob.batch_id, "purchase")}
-                    className="flex items-center gap-1.5 px-3 py-2 bg-purple-700 hover:bg-purple-600 text-white text-xs font-medium rounded-lg transition-colors"
-                  >
-                    <Download className="w-3.5 h-3.5" /> Purchase Excel
-                  </button>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* History table */}
-          {historyLoading ? (
-            <div className="flex items-center justify-center py-10 text-gray-500">
-              <Loader className="w-5 h-5 animate-spin mr-2" /> Loading history…
-            </div>
-          ) : history.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-10 text-gray-500">
-              <Cloud className="w-8 h-8 mb-2 opacity-30" />
-              <p className="text-sm">No syncs yet — run your first pull above</p>
-            </div>
-          ) : (
-            <div className="overflow-x-auto mt-4">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-slate-700 text-gray-400 text-xs uppercase tracking-wide">
-                    <th className="px-5 py-2.5 text-left">Timestamp</th>
-                    <th className="px-3 py-2.5 text-center">Status</th>
-                    <th className="px-3 py-2.5 text-right">Found</th>
-                    <th className="px-3 py-2.5 text-right">New</th>
-                    <th className="px-3 py-2.5 text-right">Processed</th>
-                    <th className="px-3 py-2.5 text-right">Failed</th>
-                    <th className="px-3 py-2.5 text-center">Download</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-700/50">
-                  {history.map(job => (
-                    <tr key={job.id} className="hover:bg-slate-700/30 transition-colors">
-                      <td className="px-5 py-3 text-gray-300 whitespace-nowrap">
-                        {new Date(job.sync_timestamp).toLocaleString()}
-                      </td>
-                      <td className="px-3 py-3 text-center">
-                        <StatusBadge status={job.status} />
-                      </td>
-                      <td className="px-3 py-3 text-right text-gray-300">{job.total_files_found}</td>
-                      <td className="px-3 py-3 text-right text-green-400">{job.new_files}</td>
-                      <td className="px-3 py-3 text-right text-blue-400">{job.processed_files}</td>
-                      <td className="px-3 py-3 text-right text-red-400">{job.failed_files}</td>
-                      <td className="px-3 py-3 text-center">
-                        {job.status === "completed" && job.processed_files > 0 ? (
-                          <div className="flex items-center justify-center gap-1.5">
-                            {(activeInvoiceType === "both" || activeInvoiceType === "sales") && (
-                              <button
-                                onClick={() => downloadExcel(job.batch_id, "sales")}
-                                className="px-2 py-1 bg-green-800/60 hover:bg-green-700 text-green-300 text-xs rounded transition-colors flex items-center gap-1"
-                              >
-                                <Download className="w-3 h-3" /> Sales
-                              </button>
-                            )}
-                            {(activeInvoiceType === "both" || activeInvoiceType === "purchase") && (
-                              <button
-                                onClick={() => downloadExcel(job.batch_id, "purchase")}
-                                className="px-2 py-1 bg-purple-800/60 hover:bg-purple-700 text-purple-300 text-xs rounded transition-colors flex items-center gap-1"
-                              >
-                                <Download className="w-3 h-3" /> Purchase
-                              </button>
-                            )}
-                          </div>
-                        ) : (
-                          <span className="text-gray-600 text-xs">—</span>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-          <div className="h-4" />
-        </div>
-
-      </div>
+      </details>
     </div>
   );
 }

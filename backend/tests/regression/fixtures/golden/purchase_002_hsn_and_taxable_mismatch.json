@@ -1,0 +1,13 @@
+{
+  "case_id": "purchase_002_hsn_and_taxable_mismatch",
+  "document_type": "purchase_invoice",
+  "source": "synthetic",
+  "fields": {
+    "supplier_gstin":  {"extracted": "29BBBBB2222B2Z2", "expected": "29BBBBB2222B2Z2", "confidence": 0.94},
+    "invoice_no":      {"extracted": "INV-2026-0088",   "expected": "INV-2026-0088",   "confidence": 0.93},
+    "taxable_value":   {"extracted": 5000.0,             "expected": 4500.0,            "confidence": 0.55},
+    "cgst_amount":     {"extracted": 0.0,                "expected": 0.0,               "confidence": 0.90},
+    "igst_amount":     {"extracted": 900.0,              "expected": 810.0,             "confidence": 0.55},
+    "hsn":             {"extracted": "8517",             "expected": "8471",            "confidence": 0.40}
+  }
+}

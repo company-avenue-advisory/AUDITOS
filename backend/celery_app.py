@@ -53,6 +53,9 @@ if broker_url:
             # Own queue: a long Drive sync (hours, many files) must not sit in
             # front of other tenants' interactive batch uploads on "default".
             "tasks.google_drive_sync_task": {"queue": "drive_sync"},
+            "tasks.sales_ingestion_task": {"queue": "drive_sync"},
+            "tasks.purchase_ingestion_task": {"queue": "drive_sync"},
+            "tasks.gstr2b_ingestion_task": {"queue": "drive_sync"},
         },
         # Explicit queue declaration so a worker started with no -Q flag (the
         # actual deploy command in render.yaml / START_ALL_WINDOWS.bat) still
@@ -68,6 +71,18 @@ if broker_url:
             Queue("ocr"),
             Queue("drive_sync"),
         ),
+    )
+    # Explicitly declare every queue task_routes references. Without this,
+    # a worker started with no -Q flag (both render.yaml and
+    # START_ALL_WINDOWS.bat run plain "celery -A celery_app worker") only
+    # ever consumes the implicit default "celery" queue - task_routes alone
+    # does NOT make a worker consume "default"/"ocr"/"drive_sync". Any task
+    # routed to one of those queues would sit in Redis forever, never
+    # picked up. Confirmed by inspecting both worker start commands: neither
+    # passes -Q, and this file previously declared no task_queues at all.
+    from kombu import Queue
+    celery_app.conf.task_queues = (
+        Queue("celery"), Queue("default"), Queue("ocr"), Queue("drive_sync"),
     )
 
 
@@ -161,27 +176,36 @@ def google_drive_sync_task(self, tenant_id: str, google_drive_folder_id: str,
     Scheduled sync task — monitors Google Drive for new/updated invoices,
     processes them, and appends results to Excel.
 
-    Runs on the schedule registered via setup_google_drive_sync.py.
+    Runs on the schedule registered via setup_google_drive_sync.py, and
+    on demand from POST /api/google-drive-sync/trigger.
     Respects dedup via Google Drive file ID + md5Checksum.
 
-    subfolder_id: if given, scan only this Drive subfolder (e.g. one month)
-    instead of the tenant's whole configured folder tree — a natural,
-    cost-bounded unit of work when invoices are organized by month.
+    max_files caps how many new/changed files a single run processes -
+    extraction is LLM-bound (~80-90s/file) against this task's own 1-hour
+    hard time_limit, so a large folder is drained over several bounded
+    triggers. subfolder_id scopes the run to one branch of the tree (e.g.
+    a single month) instead of the whole configured folder. Both default
+    to None (unbounded, whole tree), preserving the scheduled behaviour.
     """
     from services.google_drive_sync import GoogleDriveSyncPipeline
 
     try:
-        scan_root = subfolder_id or google_drive_folder_id
-        print(f"[Celery:google_drive_sync] Starting sync for tenant {tenant_id} (root={scan_root})")
+        print(
+            f"[Celery:google_drive_sync] Starting sync for tenant {tenant_id} "
+            f"(max_files={max_files}, subfolder_id={subfolder_id})"
+        )
 
         pipeline = GoogleDriveSyncPipeline(
             tenant_id=tenant_id,
-            google_drive_folder_id=scan_root,
+            google_drive_folder_id=google_drive_folder_id,
             excel_output_path=excel_output_path,
-            invoice_type=invoice_type
+            invoice_type=invoice_type,
+            max_files=max_files,
+            subfolder_id=subfolder_id,
+            celery_task_id=self.request.id,
         )
 
-        result = pipeline.run(model_config=model_config, max_files=max_files)
+        result = pipeline.run(model_config=model_config)
         print(f"[Celery:google_drive_sync] Sync completed: {json.dumps(result, default=str)}")
         return result
 
@@ -190,3 +214,282 @@ def google_drive_sync_task(self, tenant_id: str, google_drive_folder_id: str,
         traceback.print_exc()
         print(f"[Celery:google_drive_sync] Sync failed: {e}")
         raise self.retry(exc=e, countdown=300)  # Retry in 5 minutes
+
+
+def _load_drive_path_config(tenant_id: str, tenant_slug: str):
+    """
+    Loads this tenant's self-resolving Drive-path config from the DB
+    (models.GoogleDriveSyncConfig row, set via POST /api/google-drive-sync/config)
+    - added 2026-07-09 so any tenant can configure Sales/Purchase/GSTR-2B
+    ingestion from the Drive Sync UI instead of needing a hand-edited
+    data/drive_paths/<slug>.json file on the server (which only ever
+    existed for OneStack - the one tenant that got one by hand this
+    session). Returns None if no config row exists yet, so callers can
+    return a clean SKIPPED result instead of raising.
+    """
+    from database import SessionLocal
+    from models import GoogleDriveSyncConfig
+    from services.drive_path_resolver import load_tenant_path_config_from_db
+
+    db = SessionLocal()
+    try:
+        cfg_row = db.query(GoogleDriveSyncConfig).filter(GoogleDriveSyncConfig.tenant_id == tenant_id).first()
+        if not cfg_row:
+            return None
+        return load_tenant_path_config_from_db(cfg_row, tenant_slug)
+    finally:
+        db.close()
+
+
+@celery_app.task(name="tasks.sales_ingestion_task", bind=True, max_retries=1, time_limit=3600)
+def sales_ingestion_task(self, tenant_id: str, tenant_slug: str,
+                          excel_output_path: str, invoice_type: str = "sales",
+                          model_config: dict = None, period: str = None) -> dict:
+    """
+    Self-resolving Sales ingestion sync — unlike google_drive_sync_task
+    above (which takes a single google_drive_folder_id baked into the
+    schedule forever), this resolves the CURRENT month's Drive folder at
+    run time via drive_path_resolver.py + the tenant's DB-backed
+    GoogleDriveSyncConfig row (see _load_drive_path_config above). A
+    tenant onboarded this way never needs their schedule re-registered
+    when a new month's folder is created - only initial setup (via the
+    Drive Sync page, or scripts/setup_sales_ingestion_schedule.py) is a
+    one-time step.
+
+    Scheduled DAILY, not monthly: invoices trickle into Drive throughout
+    the month (confirmed against real timestamps this session - June
+    invoices arrived from the 2nd through the 30th, not all on day one),
+    so ingestion needs to run frequently to stay current. "Monthly" only
+    describes when a FILING happens after a period closes - that's a
+    separate concern (reconciliation + GSTR-1 generation).
+
+    Chained automatically once a client sheet is found in the month's
+    folder: GoogleDriveSyncPipeline.run() calls
+    generate_period_review_for_tenant() (skip_if_pending=True) at the end
+    of every run, producing a PENDING_REVIEW SalesPeriodReview a human
+    still has to approve/reject before anything reaches a GST portal -
+    the review gate (Phase 7) is what makes this safe to auto-run instead
+    of just logging the client sheet's shape and stopping there.
+
+    If this month's folder doesn't exist in Drive yet (e.g. the client
+    hasn't created it), this is logged clearly and treated as "nothing to
+    ingest yet", not an error - the same convention
+    drive_path_resolver.resolve_month_folder_id already establishes by
+    returning None rather than raising.
+    """
+    from datetime import date
+    from services.drive_path_resolver import resolve_month_folder_id
+    from services.google_drive import GoogleDriveConnector
+    from services.google_drive_sync import GoogleDriveSyncPipeline
+
+    try:
+        target_date = date.today()
+        if period:
+            target_date = date(int(period[:4]), int(period[5:7]), 1)
+        resolved_period = period or target_date.strftime("%Y-%m")
+
+        print(f"[Celery:sales_ingestion] Resolving Drive folder for tenant '{tenant_slug}', period {resolved_period}...")
+        cfg = _load_drive_path_config(tenant_id, tenant_slug)
+        if not cfg or not cfg.sales_root_folder_id:
+            msg = f"No sales_root_folder_id configured for '{tenant_slug}' - nothing to ingest."
+            print(f"[Celery:sales_ingestion] {msg}")
+            return {"status": "SKIPPED", "reason": msg}
+        connector = GoogleDriveConnector(cfg.sales_root_folder_id)
+
+        def lister(folder_id):
+            return connector.list_files(file_types=None, folder_id=folder_id)
+
+        folder_id = resolve_month_folder_id(lister, cfg, target_date)
+        if not folder_id:
+            msg = f"No Drive folder found yet for '{tenant_slug}' period {resolved_period} - nothing to ingest."
+            print(f"[Celery:sales_ingestion] {msg}")
+            return {"status": "SKIPPED", "reason": msg}
+
+        print(f"[Celery:sales_ingestion] Resolved folder {folder_id} - starting sync for tenant {tenant_id}, period {resolved_period}")
+        pipeline = GoogleDriveSyncPipeline(
+            tenant_id=tenant_id,
+            google_drive_folder_id=folder_id,
+            excel_output_path=excel_output_path,
+            invoice_type=invoice_type,
+            period=resolved_period,
+            celery_task_id=self.request.id,
+        )
+        result = pipeline.run(model_config=model_config)
+        print(f"[Celery:sales_ingestion] Sync completed for '{tenant_slug}': {json.dumps(result, default=str)}")
+        return result
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"[Celery:sales_ingestion] Failed for '{tenant_slug}': {e}")
+        raise self.retry(exc=e, countdown=300)
+
+
+@celery_app.task(name="tasks.purchase_ingestion_task", bind=True, max_retries=1, time_limit=3600)
+def purchase_ingestion_task(self, tenant_id: str, tenant_slug: str,
+                             excel_output_path: str, model_config: dict = None,
+                             period: str = None) -> dict:
+    """
+    Self-resolving Purchase ingestion sync - same self-resolving-month-
+    folder design as sales_ingestion_task above, but against
+    cfg.purchase_root_folder_id instead of cfg.sales_root_folder_id, and
+    always invoice_type="purchase" (a Purchase sync only ever walks the
+    Purchase Drive tree; "both" doesn't apply here since Sales and
+    Purchase are two separate root folders - a combined sync is two
+    separate scheduled tasks, not one).
+
+    Unlike Sales, Purchase invoices come from arbitrary vendors with no
+    fixed template, organized into the vendor's own expense-category
+    subfolders (HR, Telecom, Rental, ...) rather than document-type
+    folders - GoogleDriveSyncPipeline routes this through
+    walk_and_classify_purchase (see drive_classifier.py) instead of the
+    Sales-tree walker once invoice_type="purchase" is set.
+
+    Optional ``period`` ("YYYY-MM") overrides date.today() for month-
+    folder resolution so an accountant can pull a prior month's invoices.
+    """
+    from datetime import date
+    from services.drive_path_resolver import resolve_month_folder_id
+    from services.google_drive import GoogleDriveConnector
+    from services.google_drive_sync import GoogleDriveSyncPipeline
+
+    try:
+        target_date = date.today()
+        if period:
+            target_date = date(int(period[:4]), int(period[5:7]), 1)
+
+        print(f"[Celery:purchase_ingestion] Resolving Drive folder for tenant '{tenant_slug}', period {period or target_date.strftime('%Y-%m')}...")
+        cfg = _load_drive_path_config(tenant_id, tenant_slug)
+        if not cfg or not cfg.purchase_root_folder_id:
+            msg = f"No purchase_root_folder_id configured for '{tenant_slug}' - nothing to ingest."
+            print(f"[Celery:purchase_ingestion] {msg}")
+            return {"status": "SKIPPED", "reason": msg}
+
+        connector = GoogleDriveConnector(cfg.purchase_root_folder_id)
+
+        def lister(folder_id):
+            return connector.list_files(file_types=None, folder_id=folder_id)
+
+        folder_id = resolve_month_folder_id(lister, cfg, target_date, root_folder_id=cfg.purchase_root_folder_id)
+        if not folder_id:
+            msg = f"No Drive folder found yet for '{tenant_slug}'s Purchase month {period or target_date.strftime('%Y-%m')} - nothing to ingest."
+            print(f"[Celery:purchase_ingestion] {msg}")
+            return {"status": "SKIPPED", "reason": msg}
+
+        print(f"[Celery:purchase_ingestion] Resolved folder {folder_id} - starting sync for tenant {tenant_id}")
+        pipeline = GoogleDriveSyncPipeline(
+            tenant_id=tenant_id,
+            google_drive_folder_id=folder_id,
+            excel_output_path=excel_output_path,
+            invoice_type="purchase",
+            celery_task_id=self.request.id,
+        )
+        result = pipeline.run(model_config=model_config)
+        print(f"[Celery:purchase_ingestion] Sync completed for '{tenant_slug}': {json.dumps(result, default=str)}")
+        return result
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"[Celery:purchase_ingestion] Failed for '{tenant_slug}': {e}")
+        raise self.retry(exc=e, countdown=300)
+
+
+@celery_app.task(name="tasks.gstr2b_ingestion_task", bind=True, max_retries=1, time_limit=1800)
+def gstr2b_ingestion_task(self, tenant_id: str, tenant_slug: str) -> dict:
+    """
+    Self-resolving GSTR-2B Drive-drop ingestion - Phase A automation
+    (2026-07-08: full GSP/portal-API automation is a separate vendor/
+    business decision, deferred as Phase B - see this session's
+    conversation on GSP pricing). Finds this month's GSTR-2B JSON
+    file(s) in cfg.gstr2b_root_folder_id/<month folder>, parses and
+    reconciles each against this tenant's PurchaseLineItem records for
+    the period, and creates a PENDING_REVIEW PurchaseGstr2bReview per
+    GSTIN found - a human still approves/rejects before anything feeds a
+    GSTR-3B ITC claim, same review-gate pattern Sales uses (Phase 7).
+
+    Someone still has to download the GSTR-2B JSON from the GST portal
+    by hand each month and drop it in this folder - this task only
+    automates what happens after that (parsing + reconciling + creating
+    a reviewable record), not the portal download itself.
+
+    A month folder can hold more than one .json (OneStack has two
+    registrations - MH and HR - each gets its own GSTR-2B statement);
+    every file found is processed independently, keyed by the GSTIN read
+    out of its own content (see gstr2b_ingest.extract_recipient_gstin).
+    """
+    import tempfile
+    from datetime import date
+    from database import SessionLocal
+    from services.drive_path_resolver import resolve_month_folder_id
+    from services.google_drive import GoogleDriveConnector
+    from services.gstr2b_ingest import extract_recipient_gstin, list_gstr2b_json_files
+    from services.purchase_review import generate_review_for_tenant
+
+    try:
+        print(f"[Celery:gstr2b_ingestion] Resolving current month's GSTR-2B Drive folder for tenant '{tenant_slug}'...")
+        cfg = _load_drive_path_config(tenant_id, tenant_slug)
+        if not cfg or not cfg.gstr2b_root_folder_id:
+            msg = f"No gstr2b_root_folder_id configured for '{tenant_slug}' - nothing to ingest."
+            print(f"[Celery:gstr2b_ingestion] {msg}")
+            return {"status": "SKIPPED", "reason": msg}
+
+        connector = GoogleDriveConnector(cfg.gstr2b_root_folder_id)
+
+        def lister(folder_id):
+            return connector.list_files(file_types=None, folder_id=folder_id)
+
+        folder_id = resolve_month_folder_id(lister, cfg, date.today(), root_folder_id=cfg.gstr2b_root_folder_id)
+        if not folder_id:
+            msg = f"No Drive folder found yet for '{tenant_slug}'s current GSTR-2B month - nothing to ingest."
+            print(f"[Celery:gstr2b_ingestion] {msg}")
+            return {"status": "SKIPPED", "reason": msg}
+
+        json_files = list_gstr2b_json_files(lister, folder_id)
+        if not json_files:
+            msg = f"No .json files found in '{tenant_slug}'s current GSTR-2B month folder yet."
+            print(f"[Celery:gstr2b_ingestion] {msg}")
+            return {"status": "SKIPPED", "reason": msg}
+
+        period = date.today().strftime("%Y-%m")
+        temp_dir = tempfile.mkdtemp(prefix="gstr2b_ingest_")
+        db = SessionLocal()
+        results = []
+        try:
+            for jf in json_files:
+                local_path = f"{temp_dir}/{jf['name']}"
+                if not connector.download_file(jf["id"], jf["name"], local_path):
+                    print(f"[Celery:gstr2b_ingestion] Failed to download {jf['name']}, skipping.")
+                    results.append({"file": jf["name"], "status": "DOWNLOAD_FAILED"})
+                    continue
+
+                import json as _json
+                with open(local_path, "r", encoding="utf-8") as f:
+                    raw = _json.load(f)
+                gstin = extract_recipient_gstin(raw)
+                if not gstin:
+                    print(f"[Celery:gstr2b_ingestion] Could not determine recipient GSTIN from {jf['name']}, skipping.")
+                    results.append({"file": jf["name"], "status": "GSTIN_NOT_FOUND"})
+                    continue
+
+                review, created = generate_review_for_tenant(
+                    db, tenant_id, period, gstin, local_path, skip_if_pending=True,
+                )
+                print(
+                    f"[Celery:gstr2b_ingestion] {jf['name']} (GSTIN {gstin}): "
+                    f"{'created new' if created else 'skipped, already pending'} review {review.id}"
+                )
+                results.append({
+                    "file": jf["name"], "gstin": gstin, "status": "OK",
+                    "created": created, "review_id": review.id,
+                })
+        finally:
+            db.close()
+
+        return {"status": "COMPLETED", "period": period, "results": results}
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"[Celery:gstr2b_ingestion] Failed for '{tenant_slug}': {e}")
+        raise self.retry(exc=e, countdown=300)

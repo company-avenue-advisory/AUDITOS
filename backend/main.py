@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from database import get_db, engine, Base, SessionLocal
-from models import BatchJob, InvoiceTask, TaskStatus, SalesLineItem, PurchaseLineItem, ObservabilityLog, UserSession, UserPreferences, UserAnnotation, Tenant, GoogleDriveSyncJob, GoogleDriveSyncConfig
+from models import BatchJob, InvoiceTask, TaskStatus, SalesLineItem, PurchaseLineItem, ObservabilityLog, UserSession, UserPreferences, UserAnnotation, Tenant, GoogleDriveSyncJob, GoogleDriveSyncConfig, SalesPeriodReview, PurchaseGstr2bReview, TallyPushLog, TallyConnectionConfig, Gstr2bGapTrigger
 from async_tasks import process_batch
 from ws_manager import manager
 
@@ -144,7 +144,7 @@ async def log_requests(request: Request, call_next):
 class UserRegisterRequest(BaseModel):
     email: str
     password: str
-    role: Optional[str] = "auditor"
+    role: Optional[str] = "accountant"
 
 class UserLoginRequest(BaseModel):
     email: str
@@ -167,8 +167,16 @@ async def register(req: UserRegisterRequest, db: Session = Depends(get_db)):
     # Validate role. "developer" is a platform-wide RBAC bypass (see RoleChecker
     # in services/auth.py) and must never be self-assignable at signup — it can
     # only be granted via direct database provisioning.
-    allowed_roles = ["owner", "hr", "auditor", "other"]
-    user_role = req.role.lower() if req.role else "auditor"
+    #
+    # A role chosen here is provisional: it only matters for the "bootstrap my
+    # own firm" path (create_tenant auto-assigns tenant_id when role=="owner"
+    # and the caller has no tenant yet). The moment this account is assigned
+    # into an EXISTING tenant via POST /api/admin/tenants/{id}/assign-user,
+    # that endpoint resets the role to whatever the inviting Owner specifies
+    # (default: "accountant") — self-declaring "owner" at signup does not
+    # carry over into someone else's firm.
+    allowed_roles = ["owner", "senior", "accountant"]
+    user_role = req.role.lower() if req.role else "accountant"
     if user_role not in allowed_roles:
         raise HTTPException(status_code=400, detail=f"Invalid role. Supported: {allowed_roles}")
 
@@ -270,11 +278,13 @@ async def list_tenants(
 async def assign_user_to_tenant(
     tenant_id: str,
     user_email: str,
+    role: Optional[str] = None,
     current_user: User = Depends(RoleChecker(["owner", "developer"])),
     db: Session = Depends(get_db),
 ):
     """
-    Assigns an existing user to a tenant.
+    Assigns an existing user to a tenant, and (for anyone other than the
+    caller themself) SETS their role to `role`.
 
     Frontend call pattern (see firm-settings/page.tsx): an owner who already
     belongs to a tenant invites a colleague (a different user) into that same
@@ -283,7 +293,25 @@ async def assign_user_to_tenant(
     a "claim a tenant I have no relationship to yet" bootstrap path. Without
     this check, any self-registered "owner" could assign themselves (or
     anyone) into any existing, populated tenant.
+
+    When assigning someone ELSE, the role always defaults to "accountant"
+    (safest default) and is overwritten with whatever the inviting Owner
+    specifies — never left as whatever the invitee picked at their own
+    self-registration. Otherwise anyone could register as "owner" and, once
+    added to a firm, hold the same admin rights as its real principal.
+
+    When the caller assigns THEMSELF (the bootstrap "create my own firm" flow
+    fires this immediately after create_tenant, as a now-harmless no-op) the
+    role is left untouched — there's no "inviting Owner" to defer to here,
+    and forcing a default would silently demote the firm's own creator.
     """
+    is_self = current_user.email == user_email
+    if role is not None:
+        role = role.lower()
+        if role not in ("owner", "senior", "accountant"):
+            raise HTTPException(status_code=400, detail="role must be one of: owner, senior, accountant")
+    elif not is_self:
+        role = "accountant"
     if current_user.role == "owner" and current_user.tenant_id != tenant_id:
         raise HTTPException(status_code=403, detail="You can only assign members to your own firm.")
     tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
@@ -293,8 +321,34 @@ async def assign_user_to_tenant(
     if not user:
         raise HTTPException(status_code=404, detail="User not found.")
     user.tenant_id = tenant_id
+    if role is not None:
+        user.role = role
     db.commit()
-    return {"ok": True, "user": user_email, "tenant": tenant.name}
+    return {"ok": True, "user": user_email, "role": user.role, "tenant": tenant.name}
+
+
+@app.patch("/api/admin/tenants/{tenant_id}/users/{user_id}/role")
+async def update_member_role(
+    tenant_id: str,
+    user_id: str,
+    role: str,
+    current_user: User = Depends(RoleChecker(["owner", "developer"])),
+    db: Session = Depends(get_db),
+):
+    """Change an existing firm member's role. Owner can only manage their own firm."""
+    role = role.lower()
+    if role not in ("owner", "senior", "accountant"):
+        raise HTTPException(status_code=400, detail="role must be one of: owner, senior, accountant")
+    if current_user.role == "owner" and current_user.tenant_id != tenant_id:
+        raise HTTPException(status_code=403, detail="You can only manage your own firm's members.")
+    user = db.query(User).filter(User.id == user_id, User.tenant_id == tenant_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found in this firm.")
+    if user.id == current_user.id and role != "owner":
+        raise HTTPException(status_code=400, detail="You cannot demote yourself.")
+    user.role = role
+    db.commit()
+    return {"ok": True, "user": user.email, "role": role}
 
 
 @app.get("/api/admin/tenants/{tenant_id}/users")
@@ -414,7 +468,7 @@ async def get_models():
     })
 
 @app.post("/api/invoices/upload-batch")
-async def upload_batch(background_tasks: BackgroundTasks, files: List[UploadFile] = File(...), model: Optional[str] = None, type: Optional[str] = "both", db: Session = Depends(get_db), current_user: User = Depends(RoleChecker(["owner", "auditor"]))):
+async def upload_batch(background_tasks: BackgroundTasks, files: List[UploadFile] = File(...), model: Optional[str] = None, type: Optional[str] = "both", db: Session = Depends(get_db), current_user: User = Depends(RoleChecker(["owner", "senior", "accountant"]))):
     batch_id = str(uuid.uuid4())
     total_files = len(files)
     
@@ -442,30 +496,55 @@ async def upload_batch(background_tasks: BackgroundTasks, files: List[UploadFile
                     extract_dir = os.path.join(batch_dir, f"extracted_{uuid.uuid4().hex[:8]}")
                     os.makedirs(extract_dir, exist_ok=True)
                     zip_ref.extractall(extract_dir)
-                    
-                    # Iterate through extracted files
-                    for root, _, extracted_files in os.walk(extract_dir):
-                        for extracted_file in extracted_files:
-                            if extracted_file.lower().endswith(".pdf"):
-                                extracted_path = os.path.join(root, extracted_file)
-                                
-                                if gcs_storage.is_active():
-                                    gcs_storage.upload_file(extracted_path, f"batches/{batch_id}/{extracted_file}")
-                                
-                                task_id = str(uuid.uuid4())
-                                invoice_task = InvoiceTask(
-                                    id=task_id,
-                                    batch_id=batch_id,
-                                    file_name=extracted_file,
-                                    status=TaskStatus.PENDING,
-                                    invoice_type=type
+
+                    # Classify by folder structure (Sales Invoice / Other
+                    # Invoices / Credit Note / Sale Analysis, same rules as
+                    # the Drive sync path) instead of blindly treating every
+                    # PDF in the zip as a regular invoice - a zip that
+                    # mirrors the real folder tree (e.g. someone zipping up
+                    # "Sales Invoice" + "Credit Note" together) would
+                    # otherwise misparse credit notes as invoices.
+                    from services.drive_classifier import classify_local_directory, DocumentType
+                    classified = classify_local_directory(extract_dir)
+
+                    for cf in classified:
+                        if cf.document_type == DocumentType.CREDIT_NOTE:
+                            from services.credit_note_ingest import ingest_credit_note_pdf
+                            try:
+                                cn_task_id = ingest_credit_note_pdf(
+                                    db, current_user.tenant_id, batch_id, cf.id, cf.name
                                 )
-                                db.add(invoice_task)
-                                
-                                tasks_to_process.append({
-                                    "id": task_id,
-                                    "file_path": extracted_path
-                                })
+                                if not cn_task_id:
+                                    print(f"[upload_batch] {cf.name} classified as credit_note but 'Credit Note Number' not found in text")
+                            except Exception as e:
+                                print(f"[upload_batch] Error processing credit note {cf.name}: {e}")
+                            continue
+
+                        if cf.document_type != DocumentType.INVOICE:
+                            location = "/".join(cf.path) if cf.path else "(zip root)"
+                            print(f"[upload_batch] Found but not yet processed ({cf.document_type.value}, no extractor for this type yet): {location}/{cf.name}")
+                            continue
+
+                        extracted_path = cf.id  # local_directory_lister sets id to the real file path
+                        extracted_file = cf.name
+
+                        if gcs_storage.is_active():
+                            gcs_storage.upload_file(extracted_path, f"batches/{batch_id}/{extracted_file}")
+
+                        task_id = str(uuid.uuid4())
+                        invoice_task = InvoiceTask(
+                            id=task_id,
+                            batch_id=batch_id,
+                            file_name=extracted_file,
+                            status=TaskStatus.PENDING,
+                            invoice_type=type
+                        )
+                        db.add(invoice_task)
+
+                        tasks_to_process.append({
+                            "id": task_id,
+                            "file_path": extracted_path
+                        })
                 # Remove the original zip file after extraction
                 try:
                     os.remove(file_path)
@@ -510,11 +589,13 @@ async def upload_batch(background_tasks: BackgroundTasks, files: List[UploadFile
     })
 @app.get("/api/jobs")
 async def get_all_jobs(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    # Tenant-scoped: owners/developers see all batches within their tenant
+    # Tenant-scoped: owner/senior/developer see every batch in the tenant
+    # (a Senior reviewer needs visibility into Accountants' work); a plain
+    # Accountant only sees batches they personally uploaded.
     base_q = db.query(BatchJob)
     if current_user.tenant_id:
         base_q = base_q.filter(BatchJob.tenant_id == current_user.tenant_id)
-    if current_user.role in ["developer", "owner"]:
+    if current_user.role in ["developer", "owner", "senior"]:
         batches = base_q.order_by(BatchJob.created_at.desc()).all()
     else:
         batches = base_q.filter(BatchJob.user_id == current_user.id).order_by(BatchJob.created_at.desc()).all()
@@ -653,10 +734,42 @@ async def get_job_status(batch_id: str, db: Session = Depends(get_db), current_u
                 pass
     # ───────────────────────────────────────────────────────────
     
+    # ── Bootstrap Task 4: review-queue prioritization signals ──────────
+    # Reuses the existing duplicate_detector module (already used by the
+    # separate /api/jobs/{batch_id}/duplicates endpoint) rather than
+    # reimplementing duplicate matching here. Only the cheap, pure-python
+    # within_batch check is used on this hot path -- cross_batch involves
+    # its own DB queries and stays behind the dedicated /duplicates
+    # endpoint for a deeper look, not recomputed on every status poll.
+    from services.duplicate_detector import detect_within_batch
+    from services.review_priority import sort_tasks_by_priority
+    duplicate_task_ids = set()
+    try:
+        for group in detect_within_batch(tasks):
+            for occurrence in group.get("occurrences", []):
+                if occurrence.get("task_id"):
+                    duplicate_task_ids.add(str(occurrence["task_id"]))
+    except Exception:
+        pass  # prioritization signal is best-effort; never blocks the status response
+
+    manual_flag_counts = {}
+    if tasks:
+        from models import UserAnnotation
+        from sqlalchemy import func as _func
+        task_ids = [t.id for t in tasks]
+        for task_id, count in (
+            db.query(UserAnnotation.task_id, _func.count(UserAnnotation.id))
+            .filter(UserAnnotation.task_id.in_(task_ids))
+            .group_by(UserAnnotation.task_id)
+            .all()
+        ):
+            manual_flag_counts[task_id] = count
+    # ─────────────────────────────────────────────────────────────────
+
     tasks_details = []
     all_sales = []
     all_purchase = []
-    
+
     for t in tasks:
         task_info = {
             "task_id": t.id,
@@ -666,15 +779,22 @@ async def get_job_status(batch_id: str, db: Session = Depends(get_db), current_u
             "composite_score": scores_by_file.get(t.id, None),
             "flags": flags_by_file.get(t.id, []),
             "recon_status": getattr(t, 'recon_status', None),
+            "validation_status": getattr(t, 'validation_status', None),
+            "is_duplicate": t.id in duplicate_task_ids,
+            "manual_flag_count": manual_flag_counts.get(t.id, 0),
         }
-        
+
         sales = []
         purchase = []
         if getattr(t, 'sales_items', None):
             sales = [{c.name: getattr(item, c.name) for c in item.__table__.columns if c.name not in ["task_id"]} for item in t.sales_items]
         if getattr(t, 'purchase_items', None):
             purchase = [{c.name: getattr(item, c.name) for c in item.__table__.columns if c.name not in ["task_id"]} for item in t.purchase_items]
-            
+
+        task_info["total_invoice_value"] = sum(
+            float(item.get("total_invoice_value") or 0.0) for item in (sales + purchase)
+        )
+
         if sales or purchase or t.status == TaskStatus.COMPLETED:
             for s in sales:
                 s["errors"] = validate_suvit_item(s)
@@ -682,14 +802,16 @@ async def get_job_status(batch_id: str, db: Session = Depends(get_db), current_u
             for p in purchase:
                 p["errors"] = validate_suvit_item(p)
                 p["filename"] = t.file_name
-                
+
             task_info["sales_count"] = len(sales)
             task_info["purchase_count"] = len(purchase)
             all_sales.extend(sales)
             all_purchase.extend(purchase)
-            
+
         tasks_details.append(task_info)
-        
+
+    tasks_details = sort_tasks_by_priority(tasks_details)
+
     return JSONResponse(content={
         "batch_id": batch.id,
         "status": batch.status.value,
@@ -770,9 +892,11 @@ async def get_task_review(
     })
 
 @app.patch("/api/tasks/{task_id}/accept-correction")
-async def accept_correction(task_id: str, db: Session = Depends(get_db), current_user: User = Depends(RoleChecker(["owner", "auditor"]))):
+async def accept_correction(task_id: str, db: Session = Depends(get_db), current_user: User = Depends(RoleChecker(["owner", "senior"]))):
     """
     Phase 4A: CA reviewer accepts auto-correction proposal.
+    Reviewer-only (Owner/Senior) — accepting a correction is a sign-off action,
+    not part of the Accountant's data-entry/extraction workflow.
     Marks the task recon_status as HUMAN_CORRECTED.
     """
     from models import InvoiceTask
@@ -1156,11 +1280,613 @@ async def export_gstr1_json(
     )
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# Tally Push (Phase: Tally connector, direct-connect write path) —
+# pushes approved line items to TallyPrime as vouchers over its XML-over-HTTP
+# interface. Gated on recon_status == "ERP_READY" (the existing approval
+# checkpoint set by the reconciliation engine / review gates above) — an
+# irreversible write to an external system, never auto-triggered.
+# See services/tally_connector.py.
+# ─────────────────────────────────────────────────────────────────────────
+
+@app.get("/api/tally/config")
+async def get_tally_config(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return the saved TallyPrime connection config for the current tenant,
+    so the Push to Tally modal can pre-fill host/port/company instead of
+    requiring them retyped every time. See models.TallyConnectionConfig."""
+    if not current_user.tenant_id:
+        return {"configured": False, "config": None}
+    cfg = db.query(TallyConnectionConfig).filter(
+        TallyConnectionConfig.tenant_id == current_user.tenant_id
+    ).first()
+    if not cfg:
+        return {"configured": False, "config": None}
+    return {
+        "configured": True,
+        "config": {"host": cfg.host, "port": cfg.port, "company": cfg.company},
+    }
+
+
+@app.get("/api/tally/companies")
+async def list_tally_companies(
+    host: str,
+    port: int = 9000,
+    current_user: User = Depends(RoleChecker(["owner", "auditor"])),
+):
+    """List companies currently open in TallyPrime at host:port — lets the
+    Push to Tally modal offer a dropdown instead of a free-text company
+    field the accountant has to spell exactly right."""
+    from services.tally_connector import TallyConnector, TallyConfig, TallyConnectionError
+
+    if not host:
+        raise HTTPException(status_code=400, detail="host is required")
+    connector = TallyConnector(TallyConfig(host=host, port=port))
+    try:
+        companies = connector.list_companies()
+    except TallyConnectionError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    return {"companies": companies}
+
+
+class TallyPushRequest(BaseModel):
+    host: str
+    port: int = 9000
+    company: str
+    type: str = "both"  # "sales" | "purchase" | "both"
+
+
+class TallyPushItemResult(BaseModel):
+    task_id: str
+    file_name: str
+    voucher_type: str
+    invoice_no: Optional[str] = None
+    success: bool
+    skipped: bool = False
+    error: Optional[str] = None
+
+
+def _already_pushed(db: Session, item_type: str, item_id: int, company: str) -> bool:
+    """Idempotency check — has this exact line item already been pushed
+    successfully to this Tally company? See models.TallyPushLog."""
+    existing = db.query(TallyPushLog).filter(
+        TallyPushLog.item_type == item_type,
+        TallyPushLog.item_id == item_id,
+        TallyPushLog.tally_company == company,
+        TallyPushLog.status == "success",
+    ).first()
+    return existing is not None
+
+
+def _push_one_item(
+    db: Session,
+    connector,
+    item,
+    item_type: str,
+    voucher_type: str,
+    task,
+    batch_id: str,
+    company: str,
+    user_id: str,
+) -> TallyPushItemResult:
+    from services.tally_connector import TallyConnectionError
+
+    if _already_pushed(db, item_type, item.id, company):
+        return TallyPushItemResult(
+            task_id=task.id, file_name=task.file_name, voucher_type=voucher_type,
+            invoice_no=item.invoice_no, success=True, skipped=True,
+            error="Already pushed to this Tally company — skipped to avoid duplicate voucher.",
+        )
+
+    row = {c.name: getattr(item, c.name) for c in item.__table__.columns if c.name not in ("id", "task_id")}
+    try:
+        push_result = connector.push_voucher(row, voucher_type=voucher_type)
+        success, error = push_result.success, push_result.error
+    except TallyConnectionError as e:
+        success, error = False, str(e)
+
+    db.add(TallyPushLog(
+        tenant_id=task.batch.tenant_id if task.batch else None,
+        batch_id=batch_id, task_id=task.id, item_type=item_type, item_id=item.id,
+        voucher_type=voucher_type, invoice_no=item.invoice_no,
+        status="success" if success else "failed",
+        tally_company=company, error=error, pushed_by_user_id=user_id,
+    ))
+    db.commit()
+
+    return TallyPushItemResult(
+        task_id=task.id, file_name=task.file_name, voucher_type=voucher_type,
+        invoice_no=row.get("invoice_no"), success=success, error=error,
+    )
+
+
+@app.post("/api/tally/push/{batch_id}")
+async def push_batch_to_tally(
+    batch_id: str,
+    req: TallyPushRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RoleChecker(["owner", "auditor"])),
+):
+    from services.tally_connector import TallyConnector, TallyConfig, TallyConnectionError
+
+    batch = db.query(BatchJob).filter(BatchJob.id == batch_id).first()
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch not found")
+    require_same_tenant(batch.tenant_id, current_user)
+
+    tasks = db.query(InvoiceTask).filter(
+        InvoiceTask.batch_id == batch_id,
+        InvoiceTask.recon_status == "ERP_READY",
+    ).all()
+    if not tasks:
+        raise HTTPException(
+            status_code=400,
+            detail="No ERP_READY items in this batch. Items must pass reconciliation review before pushing to Tally.",
+        )
+
+    connector = TallyConnector(TallyConfig(host=req.host, port=req.port, company=req.company))
+    try:
+        connector.test_connection()
+    except TallyConnectionError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+    # Connectivity confirmed — remember this host/port/company for next time
+    # so the modal pre-fills instead of asking again (models.TallyConnectionConfig).
+    tally_cfg = db.query(TallyConnectionConfig).filter(
+        TallyConnectionConfig.tenant_id == current_user.tenant_id
+    ).first()
+    if not tally_cfg:
+        tally_cfg = TallyConnectionConfig(tenant_id=current_user.tenant_id)
+        db.add(tally_cfg)
+    tally_cfg.host, tally_cfg.port, tally_cfg.company = req.host, req.port, req.company
+    db.commit()
+
+    results: List[TallyPushItemResult] = []
+
+    for task in tasks:
+        # voucher_type on the line item overrides the default ("Sales"/"Purchase")
+        # for Credit Note / Debit Note rows — see services/credit_note_ingest.py,
+        # which stores credit notes as SalesLineItem rows with voucher_type
+        # set explicitly rather than a separate table.
+        if req.type in ("sales", "both"):
+            for item in (task.sales_items or []):
+                vtype = item.voucher_type or "Sales"
+                results.append(_push_one_item(
+                    db, connector, item, "sales", vtype, task, batch_id, req.company, current_user.id,
+                ))
+
+        if req.type in ("purchase", "both"):
+            for item in (task.purchase_items or []):
+                vtype = item.voucher_type or "Purchase"
+                results.append(_push_one_item(
+                    db, connector, item, "purchase", vtype, task, batch_id, req.company, current_user.id,
+                ))
+
+    succeeded = sum(1 for r in results if r.success)
+    skipped = sum(1 for r in results if r.skipped)
+    return {
+        "batch_id": batch_id,
+        "total": len(results),
+        "succeeded": succeeded,
+        "skipped_already_pushed": skipped,
+        "failed": len(results) - succeeded,
+        "results": results,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Sales Period Review Gate (Phase 7) — the checkpoint between
+# reconciliation/GSTR-1 filing generation (Phases 4-5) and anything
+# actually reaching a client or the GST portal. See services/period_review.py.
+# ─────────────────────────────────────────────────────────────────────────
+
+class PeriodReviewDecisionRequest(BaseModel):
+    notes: Optional[str] = None
+
+
+@app.post("/api/sales/period-reviews/generate")
+async def generate_period_review(
+    background_tasks: BackgroundTasks,
+    period: str = Form(...),  # "YYYY-MM"
+    client_sheet: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RoleChecker(["owner", "auditor"])),
+):
+    """
+    Runs reconciliation (sales_reconciliation.py) + GSTR-1 filing
+    generation (gstr1_filing.py) for this tenant's given period against
+    an uploaded client sheet, and persists the result as a PENDING_REVIEW
+    SalesPeriodReview row. Always creates a fresh review (skip_if_pending=
+    False) since a human hitting "generate" is an explicit request for the
+    current state - e.g. after correcting the client sheet. The scheduled
+    ingestion chain (celery_app.py's sales_ingestion_task) calls the same
+    underlying generate_period_review_for_tenant with skip_if_pending=True
+    instead, so it doesn't pile up a fresh row every day.
+    """
+    from services.period_review import generate_period_review_for_tenant, get_review_detail
+
+    if not current_user.tenant_id:
+        raise HTTPException(status_code=400, detail="Current user has no tenant assigned")
+
+    tmp_dir = tempfile.mkdtemp(prefix="period_review_")
+    sheet_path = os.path.join(tmp_dir, client_sheet.filename)
+    with open(sheet_path, "wb") as f:
+        shutil.copyfileobj(client_sheet.file, f)
+
+    try:
+        review, _created = generate_period_review_for_tenant(
+            db, current_user.tenant_id, period, sheet_path, skip_if_pending=False
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return get_review_detail(review)
+
+
+@app.get("/api/sales/period-reviews")
+async def list_period_reviews(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Lists this tenant's period reviews, most recent first."""
+    if not current_user.tenant_id:
+        return []
+    reviews = (
+        db.query(SalesPeriodReview)
+        .filter(SalesPeriodReview.tenant_id == current_user.tenant_id)
+        .order_by(SalesPeriodReview.created_at.desc())
+        .all()
+    )
+    return [{
+        "id": r.id, "period": r.period, "status": r.status,
+        "created_at": r.created_at.isoformat() if r.created_at else None,
+        "reviewed_at": r.reviewed_at.isoformat() if r.reviewed_at else None,
+    } for r in reviews]
+
+
+@app.get("/api/sales/period-reviews/{review_id}")
+async def get_period_review(
+    review_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    from services.period_review import get_review_detail
+
+    review = db.query(SalesPeriodReview).filter(SalesPeriodReview.id == review_id).first()
+    if not review:
+        raise HTTPException(status_code=404, detail="Period review not found")
+    require_same_tenant(review.tenant_id, current_user)
+    return get_review_detail(review)
+
+
+@app.post("/api/sales/period-reviews/{review_id}/approve")
+async def approve_period_review_endpoint(
+    review_id: str,
+    req: PeriodReviewDecisionRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RoleChecker(["owner", "auditor"])),
+):
+    from services.period_review import approve_period_review, get_review_detail, ReviewStateError
+
+    review = db.query(SalesPeriodReview).filter(SalesPeriodReview.id == review_id).first()
+    if not review:
+        raise HTTPException(status_code=404, detail="Period review not found")
+    require_same_tenant(review.tenant_id, current_user)
+
+    try:
+        approved = approve_period_review(db, review_id, current_user.id, notes=req.notes)
+    except ReviewStateError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return get_review_detail(approved)
+
+
+@app.post("/api/sales/period-reviews/{review_id}/reject")
+async def reject_period_review_endpoint(
+    review_id: str,
+    req: PeriodReviewDecisionRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RoleChecker(["owner", "auditor"])),
+):
+    from services.period_review import reject_period_review, get_review_detail, ReviewStateError
+
+    review = db.query(SalesPeriodReview).filter(SalesPeriodReview.id == review_id).first()
+    if not review:
+        raise HTTPException(status_code=404, detail="Period review not found")
+    require_same_tenant(review.tenant_id, current_user)
+
+    try:
+        rejected = reject_period_review(db, review_id, current_user.id, notes=req.notes or "")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except ReviewStateError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return get_review_detail(rejected)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Purchase / GSTR-2B Reconciliation Review Gate (Phase A automation) —
+# mirrors the Sales Period Review Gate above; see services/purchase_review.py
+# and models.PurchaseGstr2bReview.
+# ─────────────────────────────────────────────────────────────────────────
+
+class Gstr2bReviewDecisionRequest(BaseModel):
+    notes: Optional[str] = None
+
+
+@app.post("/api/purchase/gstr2b-reviews/generate")
+async def generate_gstr2b_review(
+    background_tasks: BackgroundTasks,
+    period: str = Form(...),        # "YYYY-MM"
+    gstin: str = Form(...),         # which OneStack registration this 2B was issued for
+    gstr2b_file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RoleChecker(["owner", "auditor"])),
+):
+    """
+    Runs GSTR-2B reconciliation (gstr2b_reconciler.py) for this tenant's
+    given period/GSTIN against an uploaded GSTR-2B JSON, and persists the
+    result as a PENDING_REVIEW PurchaseGstr2bReview row. Always creates a
+    fresh review (skip_if_pending=False), matching the Sales manual
+    endpoint's reasoning - a human hitting "generate" wants the current
+    state now. The scheduled Drive-drop chain (celery_app.py's
+    gstr2b_ingestion_task) calls the same generate_review_for_tenant with
+    skip_if_pending=True instead.
+    """
+    from services.purchase_review import generate_review_for_tenant, get_review_detail
+
+    if not current_user.tenant_id:
+        raise HTTPException(status_code=400, detail="Current user has no tenant assigned")
+
+    tmp_dir = tempfile.mkdtemp(prefix="gstr2b_review_")
+    file_path = os.path.join(tmp_dir, gstr2b_file.filename)
+    with open(file_path, "wb") as f:
+        shutil.copyfileobj(gstr2b_file.file, f)
+
+    try:
+        review, _created = generate_review_for_tenant(
+            db, current_user.tenant_id, period, gstin, file_path, skip_if_pending=False
+        )
+    except (ValueError, json.JSONDecodeError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return get_review_detail(review)
+
+
+@app.get("/api/purchase/gstr2b-reviews")
+async def list_gstr2b_reviews(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Lists this tenant's GSTR-2B reviews, most recent first."""
+    if not current_user.tenant_id:
+        return []
+    reviews = (
+        db.query(PurchaseGstr2bReview)
+        .filter(PurchaseGstr2bReview.tenant_id == current_user.tenant_id)
+        .order_by(PurchaseGstr2bReview.created_at.desc())
+        .all()
+    )
+    return [{
+        "id": r.id, "period": r.period, "gstin": r.gstin, "status": r.status,
+        "created_at": r.created_at.isoformat() if r.created_at else None,
+        "reviewed_at": r.reviewed_at.isoformat() if r.reviewed_at else None,
+    } for r in reviews]
+
+
+@app.get("/api/purchase/gstr2b-reviews/{review_id}")
+async def get_gstr2b_review(
+    review_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    from services.purchase_review import get_review_detail
+
+    review = db.query(PurchaseGstr2bReview).filter(PurchaseGstr2bReview.id == review_id).first()
+    if not review:
+        raise HTTPException(status_code=404, detail="GSTR-2B review not found")
+    require_same_tenant(review.tenant_id, current_user)
+    return get_review_detail(review)
+
+
+@app.post("/api/purchase/gstr2b-reviews/{review_id}/approve")
+async def approve_gstr2b_review_endpoint(
+    review_id: str,
+    req: Gstr2bReviewDecisionRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RoleChecker(["owner", "auditor"])),
+):
+    from services.purchase_review import approve_review, get_review_detail, ReviewStateError
+
+    review = db.query(PurchaseGstr2bReview).filter(PurchaseGstr2bReview.id == review_id).first()
+    if not review:
+        raise HTTPException(status_code=404, detail="GSTR-2B review not found")
+    require_same_tenant(review.tenant_id, current_user)
+
+    try:
+        approved = approve_review(db, review_id, current_user.id, notes=req.notes)
+    except ReviewStateError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return get_review_detail(approved)
+
+
+@app.post("/api/purchase/gstr2b-reviews/{review_id}/reject")
+async def reject_gstr2b_review_endpoint(
+    review_id: str,
+    req: Gstr2bReviewDecisionRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RoleChecker(["owner", "auditor"])),
+):
+    from services.purchase_review import reject_review, get_review_detail, ReviewStateError
+
+    review = db.query(PurchaseGstr2bReview).filter(PurchaseGstr2bReview.id == review_id).first()
+    if not review:
+        raise HTTPException(status_code=404, detail="GSTR-2B review not found")
+    require_same_tenant(review.tenant_id, current_user)
+
+    try:
+        rejected = reject_review(db, review_id, current_user.id, notes=req.notes or "")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except ReviewStateError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return get_review_detail(rejected)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# GSTR-2B Gap Triggers (Section 13.1/13.2) — outbound-messaging state for
+# Bucket A (not_in_books, client-request, accountant-gated) and Bucket B
+# (missing_in_2b, auto vendor-followup). See services/gstr2b_trigger_engine.py
+# and memory/project_gstr2b_client_trigger.md for the confirmed rules.
+# ─────────────────────────────────────────────────────────────────────────
+
+def _trigger_json(t) -> dict:
+    return {
+        "id": t.id,
+        "period": t.period,
+        "registration_gstin": t.registration_gstin,
+        "counterparty_gstin": t.counterparty_gstin,
+        "invoice_no": t.invoice_no,
+        "bucket": t.bucket,
+        "amount": t.amount,
+        "status": t.status,
+        "reviewed_by": t.reviewed_by,
+        "reviewed_at": t.reviewed_at.isoformat() if t.reviewed_at else None,
+        "last_triggered_at": t.last_triggered_at.isoformat() if t.last_triggered_at else None,
+        "trigger_count": t.trigger_count,
+        "resolved_at": t.resolved_at.isoformat() if t.resolved_at else None,
+        "created_at": t.created_at.isoformat() if t.created_at else None,
+    }
+
+
+@app.get("/api/gstr2b/triggers")
+async def list_gstr2b_triggers(
+    status: Optional[str] = None,
+    bucket: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Lists this tenant's gap triggers, most recent first. Optional status/bucket filters."""
+    if not current_user.tenant_id:
+        return []
+    q = db.query(Gstr2bGapTrigger).filter(Gstr2bGapTrigger.tenant_id == current_user.tenant_id)
+    if status:
+        q = q.filter(Gstr2bGapTrigger.status == status)
+    if bucket:
+        q = q.filter(Gstr2bGapTrigger.bucket == bucket)
+    triggers = q.order_by(Gstr2bGapTrigger.created_at.desc()).all()
+    return [_trigger_json(t) for t in triggers]
+
+
+@app.post("/api/gstr2b/triggers/{trigger_id}/approve")
+async def approve_gstr2b_trigger_endpoint(
+    trigger_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RoleChecker(["owner", "auditor"])),
+):
+    """Accountant approves a Bucket A (not_in_books) client-request so it becomes eligible to send."""
+    from services.gstr2b_trigger_engine import approve_trigger
+
+    trigger = db.query(Gstr2bGapTrigger).filter(Gstr2bGapTrigger.id == trigger_id).first()
+    if not trigger:
+        raise HTTPException(status_code=404, detail="Trigger not found")
+    require_same_tenant(trigger.tenant_id, current_user)
+
+    try:
+        approved = approve_trigger(db, trigger_id, current_user.id)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return _trigger_json(approved)
+
+
+@app.post("/api/gstr2b/triggers/{trigger_id}/reject")
+async def reject_gstr2b_trigger_endpoint(
+    trigger_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RoleChecker(["owner", "auditor"])),
+):
+    """Accountant rejects a Bucket A client-request — no client contact this cycle."""
+    from services.gstr2b_trigger_engine import reject_trigger
+
+    trigger = db.query(Gstr2bGapTrigger).filter(Gstr2bGapTrigger.id == trigger_id).first()
+    if not trigger:
+        raise HTTPException(status_code=404, detail="Trigger not found")
+    require_same_tenant(trigger.tenant_id, current_user)
+
+    try:
+        rejected = reject_trigger(db, trigger_id, current_user.id)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return _trigger_json(rejected)
+
+
+@app.post("/api/gstr2b/triggers/run")
+async def run_gstr2b_triggers_endpoint(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RoleChecker(["owner", "auditor"])),
+):
+    """
+    Sends whatever is currently due for this tenant (approved Bucket A rows,
+    policy-enabled Bucket B rows, respecting the monthly re-trigger gate).
+    Manual trigger for now — hook this up to a Celery beat schedule once the
+    real email provider is wired in (send_fn is still the audit-log-only
+    stub, see gstr2b_trigger_engine.default_send_fn).
+    """
+    from services.gstr2b_trigger_engine import run_due_triggers
+
+    if not current_user.tenant_id:
+        raise HTTPException(status_code=400, detail="Current user has no tenant assigned")
+
+    try:
+        return run_due_triggers(db, current_user.tenant_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+class Gstr2bTriggerSettingsRequest(BaseModel):
+    client_contact_email: Optional[str] = None
+    auto_vendor_followup_enabled: Optional[bool] = None
+    bucket_a_require_review: Optional[bool] = None
+
+
+@app.put("/api/gstr2b/trigger-settings")
+async def update_gstr2b_trigger_settings(
+    req: Gstr2bTriggerSettingsRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RoleChecker(["owner"])),
+):
+    """
+    Sets the destination email + both outbound policy toggles (Notion §13.1:
+    "Firm settings: outbound policy toggles (A-request gate on/off, B-auto-send
+    on/off)") for the current tenant. Owner-only — flipping either toggle off
+    changes whether real messages go out without a human step, once a
+    provider is wired in.
+    """
+    tenant = db.query(Tenant).filter(Tenant.id == current_user.tenant_id).first()
+    if not tenant:
+        raise HTTPException(status_code=400, detail="Current user has no tenant assigned")
+
+    if req.client_contact_email is not None:
+        tenant.client_contact_email = req.client_contact_email
+    if req.auto_vendor_followup_enabled is not None:
+        tenant.auto_vendor_followup_enabled = req.auto_vendor_followup_enabled
+    if req.bucket_a_require_review is not None:
+        tenant.bucket_a_require_review = req.bucket_a_require_review
+    db.commit()
+
+    return {
+        "client_contact_email": tenant.client_contact_email,
+        "auto_vendor_followup_enabled": tenant.auto_vendor_followup_enabled,
+        "bucket_a_require_review": tenant.bucket_a_require_review,
+    }
+
+
 class MSMEVerifyRequest(BaseModel):
     udyam_number: str
 
 @app.post("/api/verify-msme")
-async def verify_msme_status(req: MSMEVerifyRequest, current_user: User = Depends(RoleChecker(["owner", "hr"]))):
+async def verify_msme_status(req: MSMEVerifyRequest, current_user: User = Depends(RoleChecker(["owner", "senior"]))):
     """
     Authorized integration point for MSME status verification.
     This simulates a query to the Ministry of MSME database or an authorized API provider.
@@ -1202,7 +1928,7 @@ async def verify_msme_status(req: MSMEVerifyRequest, current_user: User = Depend
     })
 
 @app.post("/api/tax/parse-udyam")
-async def upload_udyam_certificate(file: UploadFile = File(...), current_user: User = Depends(RoleChecker(["owner", "hr"]))):
+async def upload_udyam_certificate(file: UploadFile = File(...), current_user: User = Depends(RoleChecker(["owner", "senior"]))):
     """
     Ingests a vendor's Udyam Registration Certificate PDF, extracts metadata
     and normalizes the enterprise classification status.
@@ -1229,7 +1955,7 @@ class MSMEComplianceRequest(BaseModel):
     amount: float
 
 @app.post("/api/tax/compliance")
-async def calculate_compliance_metrics(req: MSMEComplianceRequest, current_user: User = Depends(RoleChecker(["owner", "hr"]))):
+async def calculate_compliance_metrics(req: MSMEComplianceRequest, current_user: User = Depends(RoleChecker(["owner", "senior"]))):
     """
     Computes statutory MSME 43B(h) compliance metrics.
     """
@@ -1254,7 +1980,8 @@ async def calculate_compliance_metrics(req: MSMEComplianceRequest, current_user:
 async def bank_parse_endpoint(
     file: UploadFile = File(...),
     password: str = Form(""),
-    confidence_min: str = None
+    confidence_min: str = None,
+    current_user: User = Depends(get_current_user),
 ):
     """
     Multi-stage bank statement parser with confidence scoring.
@@ -1313,7 +2040,7 @@ async def bank_parse_endpoint(
         raise HTTPException(status_code=500, detail=f"Parsing failed: {type(e).__name__}: {str(e)}")
 
 @app.post("/api/docs/split-portal")
-async def split_portal_endpoint(file: UploadFile = File(...), target_mb: float = Form(4.5)):
+async def split_portal_endpoint(file: UploadFile = File(...), target_mb: float = Form(4.5), current_user: User = Depends(get_current_user)):
     """
     Splits heavy PDF files into sub-5MB chunks, returning them bundled inside a single ZIP file.
     """
@@ -1340,7 +2067,7 @@ async def split_portal_endpoint(file: UploadFile = File(...), target_mb: float =
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/docs/enhance-scan")
-async def enhance_scan_endpoint(file: UploadFile = File(...)):
+async def enhance_scan_endpoint(file: UploadFile = File(...), current_user: User = Depends(get_current_user)):
     """
     Applies adaptive contrast thresholding to a scanned image, generating a clean PDF.
     Uses OpenCV (cv2) with PIL fallback for maximum compatibility.
@@ -1367,7 +2094,7 @@ async def enhance_scan_endpoint(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=f"Image enhancement failed: {str(e)}")
 
 @app.post("/api/docs/compress")
-async def compress_pdf_endpoint(file: UploadFile = File(...), quality: int = Form(50)):
+async def compress_pdf_endpoint(file: UploadFile = File(...), quality: int = Form(50), current_user: User = Depends(get_current_user)):
     """
     Optimizes a PDF, outputting compaction metrics in custom response headers.
     """
@@ -1396,6 +2123,10 @@ async def compress_pdf_endpoint(file: UploadFile = File(...), quality: int = For
 class ItemUpdateRequest(BaseModel):
     field: str
     value: Any
+    # Bootstrap Task 4: optional, backend-only addition — existing frontend
+    # calls that don't send it are unaffected (defaults to None), so this
+    # doesn't require a UI change to be usable.
+    reason: Optional[str] = None
 
 @app.put("/api/items/{item_id}")
 async def update_item(
@@ -1403,7 +2134,7 @@ async def update_item(
     type: str,
     req: ItemUpdateRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(RoleChecker(["owner", "auditor"])),
+    current_user: User = Depends(RoleChecker(["owner", "senior", "accountant"])),
 ):
     if type == "sales":
         item = db.query(SalesLineItem).filter(SalesLineItem.id == item_id).first()
@@ -1474,15 +2205,43 @@ async def update_item(
                 extracted_value=old_value,
                 ca_corrected_value=req.value,
                 composite_score=composite_score,
-                db_session=db
+                db_session=db,
+                tenant_id=resource_tenant_id
             )
         except Exception as e:
             print(f"Error logging CA flag: {e}")
-            
+
+        # Bootstrap Task 4: structured correction-event record. Distinct from
+        # (not a replacement for) the ObservabilityLog write above -- that's
+        # the system-level audit/alerting event; this is the queryable,
+        # structured table a future review-prioritization or learning pass
+        # actually reads from (RFC-002's episodic-memory / correction-capture
+        # doctrine). UserAnnotation and its /api/tasks/{id}/annotate endpoint
+        # already existed for this exact shape of data but were never wired
+        # to the one place a correction actually happens -- this closes that
+        # gap by reusing the model instead of introducing a new one.
+        try:
+            from models import UserAnnotation
+            annotation = UserAnnotation(
+                user_id=current_user.id,
+                task_id=task_id,
+                field_name=req.field,
+                note=req.reason,
+                original_value=str(old_value) if old_value is not None else None,
+                corrected_value=str(req.value) if req.value is not None else None,
+                confidence_before=composite_score,
+                validation_status=getattr(task, "validation_status", None) if task else None,
+                reconciliation_status=getattr(task, "recon_status", None) if task else None,
+            )
+            db.add(annotation)
+            db.commit()
+        except Exception as e:
+            print(f"Error logging correction annotation: {e}")
+
     return {"status": "success"}
 
 @app.post("/api/invoice-metadata")
-async def ocr_extract_endpoint(file: UploadFile = File(...), provider: str = Form("auto")):
+async def ocr_extract_endpoint(file: UploadFile = File(...), provider: str = Form("auto"), current_user: User = Depends(get_current_user)):
     """
     Tiered OCR extraction with intelligent fallback.
 
@@ -1537,9 +2296,25 @@ async def ocr_extract_endpoint(file: UploadFile = File(...), provider: str = For
 # ── Google Drive Auto-Sync ────────────────────────────────────────────────────
 
 class GoogleDriveSyncConfigRequest(BaseModel):
-    folder_id: str
+    # Legacy single-folder mode - optional now, a tenant may only want the
+    # self-resolving mode below.
+    folder_id: Optional[str] = None
     invoice_type: str = "both"
     schedule: str = "0 0 1 * *"
+
+    # Self-resolving month-folder mode (Sales/Purchase/GSTR-2B) - added
+    # 2026-07-09 so any tenant can configure this from the UI instead of
+    # needing a hand-edited data/drive_paths/<slug>.json file (see
+    # models.GoogleDriveSyncConfig's docstring). All optional - a tenant
+    # sets whichever of these three they actually use.
+    fiscal_year_start_month: Optional[int] = None
+    month_folder_pattern: Optional[str] = None
+    sales_root_folder_id: Optional[str] = None
+    purchase_root_folder_id: Optional[str] = None
+    gstr2b_root_folder_id: Optional[str] = None
+    sales_schedule: Optional[str] = None
+    purchase_schedule: Optional[str] = None
+    gstr2b_schedule: Optional[str] = None
 
 
 class GoogleDriveSyncTriggerRequest(BaseModel):
@@ -1559,10 +2334,16 @@ class GoogleDriveSyncTriggerRequest(BaseModel):
     subfolder_id: Optional[str] = None
 
 
+class IngestionTriggerRequest(BaseModel):
+    # Optional period override, format "YYYY-MM" (e.g. "2026-06").
+    # When omitted the task resolves the current month via date.today().
+    period: Optional[str] = None
+
+
 @app.get("/api/google-drive-sync/config")
 async def get_drive_sync_config(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(RoleChecker(["owner", "senior"])),
 ):
     """Return the saved Google Drive sync config for the current tenant."""
     if not current_user.tenant_id:
@@ -1578,6 +2359,14 @@ async def get_drive_sync_config(
             "folder_id": cfg.folder_id,
             "invoice_type": cfg.invoice_type,
             "schedule": cfg.schedule,
+            "fiscal_year_start_month": cfg.fiscal_year_start_month,
+            "month_folder_pattern": cfg.month_folder_pattern,
+            "sales_root_folder_id": cfg.sales_root_folder_id,
+            "purchase_root_folder_id": cfg.purchase_root_folder_id,
+            "gstr2b_root_folder_id": cfg.gstr2b_root_folder_id,
+            "sales_schedule": cfg.sales_schedule,
+            "purchase_schedule": cfg.purchase_schedule,
+            "gstr2b_schedule": cfg.gstr2b_schedule,
             "updated_at": cfg.updated_at.isoformat() if cfg.updated_at else None,
         }
     })
@@ -1591,8 +2380,15 @@ async def save_drive_sync_config(
 ):
     """
     Save (or update) the Google Drive sync config for this tenant.
-    Also writes the Celery Beat schedule to beat_schedules.json so the
-    periodic sync picks up after a celery beat restart.
+    Also writes Celery Beat schedule entries to beat_schedules.json so
+    periodic syncs pick up after a celery beat restart - both the legacy
+    single-folder mode (if folder_id is set) and the self-resolving
+    Sales/Purchase/GSTR-2B mode (for whichever of those root folder IDs
+    are set), added 2026-07-09 so a tenant self-configures both modes
+    from this one endpoint instead of needing a hand-edited
+    data/drive_paths/<slug>.json file for the self-resolving mode (see
+    models.GoogleDriveSyncConfig's docstring for why that only ever
+    worked for OneStack).
     """
     # Auto-create a tenant for this user if they don't have one yet
     if not current_user.tenant_id:
@@ -1613,50 +2409,107 @@ async def save_drive_sync_config(
     cfg = db.query(GoogleDriveSyncConfig).filter(
         GoogleDriveSyncConfig.tenant_id == current_user.tenant_id
     ).first()
-    if cfg:
-        cfg.folder_id    = req.folder_id
-        cfg.invoice_type = req.invoice_type
-        cfg.schedule     = req.schedule
-    else:
-        cfg = GoogleDriveSyncConfig(
-            tenant_id=current_user.tenant_id,
-            folder_id=req.folder_id,
-            invoice_type=req.invoice_type,
-            schedule=req.schedule,
-        )
+    if not cfg:
+        cfg = GoogleDriveSyncConfig(tenant_id=current_user.tenant_id)
         db.add(cfg)
+
+    cfg.folder_id    = req.folder_id
+    cfg.invoice_type = req.invoice_type
+    cfg.schedule     = req.schedule
+    cfg.fiscal_year_start_month = req.fiscal_year_start_month
+    cfg.month_folder_pattern    = req.month_folder_pattern
+    cfg.sales_root_folder_id    = req.sales_root_folder_id
+    cfg.purchase_root_folder_id = req.purchase_root_folder_id
+    cfg.gstr2b_root_folder_id   = req.gstr2b_root_folder_id
+    cfg.sales_schedule          = req.sales_schedule
+    cfg.purchase_schedule       = req.purchase_schedule
+    cfg.gstr2b_schedule         = req.gstr2b_schedule
     db.commit()
 
-    # Register Celery Beat schedule
+    tenant = db.query(Tenant).filter(Tenant.id == current_user.tenant_id).first()
+    tenant_slug = tenant.slug if tenant else current_user.tenant_id
+
+    # Register Celery Beat schedules - one entry per configured mode.
     import json as _json
     beat_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "beat_schedules.json")
     try:
         registry = _json.load(open(beat_file, encoding="utf-8")) if os.path.exists(beat_file) else {}
-        registry[f"google_drive_sync_{current_user.tenant_id}"] = {
-            "task": "tasks.google_drive_sync_task",
-            "cron": req.schedule,
-            "kwargs": {
-                "tenant_id": current_user.tenant_id,
-                "google_drive_folder_id": req.folder_id,
-                "excel_output_path": f"/data/sync_{current_user.tenant_id}.xlsx",
-                "invoice_type": req.invoice_type,
-                "model_config": None,
-            },
-            "options": {"queue": "default"},
-            "registered_at": datetime.utcnow().isoformat(),
-        }
+
+        if req.folder_id:
+            registry[f"google_drive_sync_{current_user.tenant_id}"] = {
+                "task": "tasks.google_drive_sync_task",
+                "cron": req.schedule,
+                "kwargs": {
+                    "tenant_id": current_user.tenant_id,
+                    "google_drive_folder_id": req.folder_id,
+                    "excel_output_path": f"/data/sync_{current_user.tenant_id}.xlsx",
+                    "invoice_type": req.invoice_type,
+                    "model_config": None,
+                },
+                "options": {"queue": "default"},
+                "registered_at": datetime.utcnow().isoformat(),
+            }
+
+        if req.sales_root_folder_id:
+            registry[f"sales_ingestion_{tenant_slug}"] = {
+                "task": "tasks.sales_ingestion_task",
+                "cron": req.sales_schedule or "0 2 * * *",
+                "kwargs": {
+                    "tenant_id": current_user.tenant_id,
+                    "tenant_slug": tenant_slug,
+                    "excel_output_path": f"/data/sync_{current_user.tenant_id}_sales.xlsx",
+                    "invoice_type": "sales",
+                    "model_config": None,
+                },
+                "options": {"queue": "drive_sync", "priority": 10},
+                "registered_at": datetime.utcnow().isoformat(),
+            }
+
+        if req.purchase_root_folder_id:
+            registry[f"purchase_ingestion_{tenant_slug}"] = {
+                "task": "tasks.purchase_ingestion_task",
+                "cron": req.purchase_schedule or "0 2 * * *",
+                "kwargs": {
+                    "tenant_id": current_user.tenant_id,
+                    "tenant_slug": tenant_slug,
+                    "excel_output_path": f"/data/sync_{current_user.tenant_id}_purchase.xlsx",
+                    "model_config": None,
+                },
+                "options": {"queue": "drive_sync", "priority": 10},
+                "registered_at": datetime.utcnow().isoformat(),
+            }
+
+        if req.gstr2b_root_folder_id:
+            registry[f"gstr2b_ingestion_{tenant_slug}"] = {
+                "task": "tasks.gstr2b_ingestion_task",
+                "cron": req.gstr2b_schedule or "0 3 * * *",
+                "kwargs": {
+                    "tenant_id": current_user.tenant_id,
+                    "tenant_slug": tenant_slug,
+                },
+                "options": {"queue": "drive_sync", "priority": 10},
+                "registered_at": datetime.utcnow().isoformat(),
+            }
+
         with open(beat_file, "w", encoding="utf-8") as f:
             _json.dump(registry, f, indent=2)
     except Exception as e:
         logger.warning("Could not update beat_schedules.json: %s", e)
 
-    return JSONResponse(content={"ok": True, "folder_id": cfg.folder_id, "invoice_type": cfg.invoice_type})
+    return JSONResponse(content={
+        "ok": True,
+        "folder_id": cfg.folder_id,
+        "invoice_type": cfg.invoice_type,
+        "sales_root_folder_id": cfg.sales_root_folder_id,
+        "purchase_root_folder_id": cfg.purchase_root_folder_id,
+        "gstr2b_root_folder_id": cfg.gstr2b_root_folder_id,
+    })
 
 
 @app.get("/api/google-drive-sync/subfolders")
 async def list_drive_subfolders(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(RoleChecker(["owner", "senior"])),
 ):
     """
     List the immediate subfolders of the tenant's configured Drive folder —
@@ -1684,7 +2537,7 @@ async def list_drive_subfolders(
 async def trigger_google_drive_sync(
     req: GoogleDriveSyncTriggerRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(RoleChecker(["owner", "senior"])),
 ):
     """
     Trigger an immediate Google Drive sync for the current tenant.
@@ -1731,8 +2584,99 @@ async def trigger_google_drive_sync(
     })
 
 
+def _tenant_slug_for(db: Session, current_user: User) -> str:
+    tenant = db.query(Tenant).filter(Tenant.id == current_user.tenant_id).first()
+    return tenant.slug if tenant else current_user.tenant_id
+
+
+@app.post("/api/google-drive-sync/trigger-sales")
+async def trigger_sales_ingestion(
+    req: IngestionTriggerRequest = IngestionTriggerRequest(),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RoleChecker(["owner", "auditor", "developer"])),
+):
+    """
+    Runs tasks.sales_ingestion_task immediately for the current tenant -
+    the self-resolving Sales pipeline (Phase 6), triggered on demand from
+    the Drive Sync UI instead of only via a Celery Beat schedule.
+
+    Optional body param ``period`` (format "YYYY-MM") overrides which
+    month's folder is resolved - without it, the task uses date.today().
+    """
+    from celery_app import sales_ingestion_task
+
+    if not current_user.tenant_id:
+        raise HTTPException(status_code=400, detail="No tenant assigned to this user")
+    cfg = db.query(GoogleDriveSyncConfig).filter(GoogleDriveSyncConfig.tenant_id == current_user.tenant_id).first()
+    if not cfg or not cfg.sales_root_folder_id:
+        raise HTTPException(status_code=400, detail="No sales_root_folder_id configured. Save config first.")
+
+    tenant_slug = _tenant_slug_for(db, current_user)
+    task = sales_ingestion_task.delay(
+        tenant_id=current_user.tenant_id,
+        tenant_slug=tenant_slug,
+        excel_output_path=f"/data/sync_{current_user.tenant_id}_sales.xlsx",
+        invoice_type="sales",
+        model_config=None,
+        period=req.period,
+    )
+    return JSONResponse(content={"status": "sync_started", "task_id": task.id})
+
+
+@app.post("/api/google-drive-sync/trigger-purchase")
+async def trigger_purchase_ingestion(
+    req: IngestionTriggerRequest = IngestionTriggerRequest(),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RoleChecker(["owner", "auditor", "developer"])),
+):
+    """Runs tasks.purchase_ingestion_task immediately for the current tenant.
+
+    Optional body param ``period`` (format "YYYY-MM") overrides which
+    month's folder is resolved - without it, the task uses date.today().
+    """
+    from celery_app import purchase_ingestion_task
+
+    if not current_user.tenant_id:
+        raise HTTPException(status_code=400, detail="No tenant assigned to this user")
+    cfg = db.query(GoogleDriveSyncConfig).filter(GoogleDriveSyncConfig.tenant_id == current_user.tenant_id).first()
+    if not cfg or not cfg.purchase_root_folder_id:
+        raise HTTPException(status_code=400, detail="No purchase_root_folder_id configured. Save config first.")
+
+    tenant_slug = _tenant_slug_for(db, current_user)
+    task = purchase_ingestion_task.delay(
+        tenant_id=current_user.tenant_id,
+        tenant_slug=tenant_slug,
+        excel_output_path=f"/data/sync_{current_user.tenant_id}_purchase.xlsx",
+        model_config=None,
+        period=req.period,
+    )
+    return JSONResponse(content={"status": "sync_started", "task_id": task.id})
+
+
+@app.post("/api/google-drive-sync/trigger-gstr2b")
+async def trigger_gstr2b_ingestion(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RoleChecker(["owner", "auditor", "developer"])),
+):
+    """Runs tasks.gstr2b_ingestion_task immediately for the current tenant."""
+    from celery_app import gstr2b_ingestion_task
+
+    if not current_user.tenant_id:
+        raise HTTPException(status_code=400, detail="No tenant assigned to this user")
+    cfg = db.query(GoogleDriveSyncConfig).filter(GoogleDriveSyncConfig.tenant_id == current_user.tenant_id).first()
+    if not cfg or not cfg.gstr2b_root_folder_id:
+        raise HTTPException(status_code=400, detail="No gstr2b_root_folder_id configured. Save config first.")
+
+    tenant_slug = _tenant_slug_for(db, current_user)
+    task = gstr2b_ingestion_task.delay(
+        tenant_id=current_user.tenant_id,
+        tenant_slug=tenant_slug,
+    )
+    return JSONResponse(content={"status": "sync_started", "task_id": task.id})
+
+
 @app.get("/api/google-drive-sync/status/{task_id}")
-async def get_sync_status(task_id: str):
+async def get_sync_status(task_id: str, current_user: User = Depends(get_current_user)):
     """Poll status of a running sync task. Returns result including batch_id on SUCCESS."""
     from celery_app import celery_app as _celery
 
@@ -1749,10 +2693,32 @@ async def get_sync_status(task_id: str):
     })
 
 
+@app.post("/api/google-drive-sync/cancel/{task_id}")
+async def cancel_google_drive_sync(
+    task_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RoleChecker(["owner", "auditor", "developer"])),
+):
+    """Cancel a running Google Drive sync task by its Celery task ID."""
+    from celery_app import celery_app as _celery
+
+    _celery.control.revoke(task_id, terminate=True, signal="SIGTERM")
+
+    sync_job = db.query(GoogleDriveSyncJob).filter(
+        GoogleDriveSyncJob.celery_task_id == task_id
+    ).first()
+    if sync_job:
+        sync_job.status = "cancelled"
+        sync_job.completed_at = datetime.utcnow()
+        db.commit()
+
+    return JSONResponse(content={"status": "cancelled", "task_id": task_id})
+
+
 @app.get("/api/google-drive-sync/history")
 async def get_sync_history(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(RoleChecker(["owner", "senior"])),
     limit: int = 20,
 ):
     """
@@ -1800,7 +2766,7 @@ class ReconcileRequest(BaseModel):
 
 
 @app.post("/api/reconcile")
-async def reconcile_gstr2b(req: ReconcileRequest):
+async def reconcile_gstr2b(req: ReconcileRequest, current_user: User = Depends(get_current_user)):
     """
     Match extracted invoice items against GSTR-2B data.
     Returns annotated rows (with recon_status) + a summary.
@@ -1829,6 +2795,8 @@ async def reconcile_gstr2b(req: ReconcileRequest):
 
 class BatchReconcileRequest(BaseModel):
     gstr2b: Any   # raw GSTR-2B JSON from portal
+    period: Optional[str] = None             # "YYYY-MM" - needed for trigger tracking, not for matching itself
+    registration_gstin: Optional[str] = None # the audited company's own GSTIN - same reason
 
 
 @app.post("/api/reconcile/from-batch/{batch_id}")
@@ -1882,8 +2850,112 @@ async def reconcile_from_batch(
         raise HTTPException(status_code=500, detail=f"Reconciliation error: {e}")
 
 
+@app.post("/api/reconcile/from-batch/{batch_id}/export")
+async def export_reconciliation_from_batch(
+    batch_id: str,
+    req: BatchReconcileRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Same reconciliation as reconcile_from_batch above, but returns the
+    canonical color-coded workbook (services/gstr2b_excel_export.py) instead
+    of raw JSON - including the Section 13.1 Bucket A Drive-verify columns
+    ("In Drive?", "Entry Missing in Tally"), wired here for the first time
+    via services/gstr2b_drive_verify.py (intentionally left unwired when the
+    Excel writer itself was built - see gstr2b_excel_export.py's docstring -
+    until this targeted Drive-verify service existed).
+
+    Drive-verify is best-effort: if the tenant has no Google Drive sync
+    configured, or the Drive check errors for any reason, the export still
+    succeeds with blank Drive-verify columns rather than failing outright -
+    a missing/broken Drive connection should never block the accountant
+    from getting the reconciliation workbook itself.
+    """
+    from services.gstr2b_reconciler import parse_gstr2b, reconcile as recon_match
+    from services.gstr2b_excel_export import write_gstr2b_reconciliation_excel, annotate_recon_result
+
+    batch = db.query(BatchJob).filter(BatchJob.id == batch_id).first()
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch not found")
+    require_same_tenant(batch.tenant_id, current_user)
+
+    tasks = db.query(InvoiceTask).filter(InvoiceTask.batch_id == batch_id).all()
+    purchase_items = []
+    for t in tasks:
+        for item in (getattr(t, "purchase_items", None) or []):
+            purchase_items.append(
+                {c.name: getattr(item, c.name) for c in item.__table__.columns}
+            )
+
+    if not purchase_items:
+        raise HTTPException(
+            status_code=400,
+            detail="No purchase items found in this batch. Run purchase extraction first.",
+        )
+
+    try:
+        raw_2b = req.gstr2b
+        if isinstance(raw_2b, str):
+            raw_2b = json.loads(raw_2b)
+        gstr2b_records = parse_gstr2b(raw_2b)
+        if not gstr2b_records:
+            raise HTTPException(
+                status_code=422,
+                detail="No B2B invoice records found in the GSTR-2B JSON.",
+            )
+        result = recon_match(purchase_items, gstr2b_records)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Reconciliation error: {e}")
+
+    drive_checker = None
+    if batch.tenant_id:
+        try:
+            from services.google_drive import GoogleDriveConnector
+            from services.drive_path_resolver import load_tenant_path_config_from_db
+            from services.gstr2b_drive_verify import make_drive_checker
+
+            cfg_row = db.query(GoogleDriveSyncConfig).filter(
+                GoogleDriveSyncConfig.tenant_id == batch.tenant_id
+            ).first()
+            if cfg_row and cfg_row.purchase_root_folder_id:
+                tenant = db.query(Tenant).filter(Tenant.id == batch.tenant_id).first()
+                drive_cfg = load_tenant_path_config_from_db(cfg_row, tenant.slug if tenant else "")
+                connector = GoogleDriveConnector(cfg_row.purchase_root_folder_id)
+                tmp_dir = tempfile.mkdtemp(prefix="gstr2b_drive_verify_")
+                drive_checker = make_drive_checker(connector, drive_cfg, tmp_dir)
+        except Exception as e:
+            logger.warning(f"[gstr2b export] Drive-verify unavailable, exporting without it: {e}")
+            drive_checker = None
+
+    # Annotate once (Drive check is the expensive step) so both the workbook
+    # and the trigger-sync below see the same in_drive / client_action values.
+    annotated = annotate_recon_result(result, drive_checker)
+
+    if batch.tenant_id and req.registration_gstin:
+        try:
+            from services.gstr2b_trigger_engine import sync_gap_triggers
+            sync_gap_triggers(
+                db, batch.tenant_id, req.registration_gstin,
+                req.period or datetime.utcnow().strftime("%Y-%m"), annotated,
+            )
+        except Exception as e:
+            logger.warning(f"[gstr2b export] Trigger sync failed, export still proceeds: {e}")
+
+    output_path = os.path.join(tempfile.gettempdir(), f"gstr2b_reconciliation_{batch_id}.xlsx")
+    write_gstr2b_reconciliation_excel(annotated, output_path, drive_checker=None)
+
+    return FileResponse(
+        path=output_path,
+        filename="gstr2b_reconciliation.xlsx",
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
 @app.post("/api/reconcile/export")
-async def export_reconciliation(req: ReconcileRequest):
+async def export_reconciliation(req: ReconcileRequest, current_user: User = Depends(get_current_user)):
     """
     Run reconciliation and return a color-coded Excel file with two sheets:
       Sheet 1 — Reconciliation (all rows, color-coded by status)

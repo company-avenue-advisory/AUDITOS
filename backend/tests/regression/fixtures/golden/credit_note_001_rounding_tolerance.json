@@ -1,0 +1,11 @@
+{
+  "case_id": "credit_note_001_rounding_tolerance",
+  "document_type": "credit_note",
+  "source": "synthetic",
+  "fields": {
+    "original_invoice_no": {"extracted": "INV-2026-0042", "expected": "INV-2026-0042", "confidence": 0.95},
+    "credit_note_no":      {"extracted": "CN-2026-0005",  "expected": "CN-2026-0005",  "confidence": 0.94},
+    "taxable_value":       {"extracted": 999.995,          "expected": 1000.0,          "confidence": 0.90},
+    "note":                {"extracted": " Rate Difference ", "expected": "Rate Difference", "confidence": 0.85}
+  }
+}

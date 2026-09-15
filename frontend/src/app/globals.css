@@ -1,59 +1,76 @@
 @import "tailwindcss";
 
+/*
+ * Design tokens — "Ledger & Tick" system: paper-white surfaces, ink text,
+ * a single vermilion-tick accent for primary actions, and a teal "agent"
+ * hue for AI/automation affordances. Light-first (matches how the app is
+ * actually used - well-lit desks, printed-ledger muscle memory), with an
+ * explicit dark counterpart. Variable names are unchanged from the prior
+ * theme so every page already consuming var(--accent)/var(--bg-card)/etc.
+ * picks up the new palette without its own edits.
+ */
 :root {
-  --bg-base:       #06060a;
-  --bg-surface:    rgba(255,255,255,0.035);
-  --bg-card:       rgba(255,255,255,0.05);
-  --bg-card-hover: rgba(255,255,255,0.08);
-  --border:        rgba(255,255,255,0.08);
-  --border-strong: rgba(255,255,255,0.14);
-  --text-primary:  #f5f5f7;
-  --text-secondary:#a1a1aa;
-  --text-muted:    #52525b;
-  --accent:        #6366f1;
-  --accent-glow:   rgba(99,102,241,0.25);
-  --accent-soft:   rgba(99,102,241,0.12);
-  --amber:         #f59e0b;
-  --amber-soft:    rgba(245,158,11,0.10);
-  --green:         #22c55e;
-  --green-soft:    rgba(34,197,94,0.10);
-  --red:           #ef4444;
-  --red-soft:      rgba(239,68,68,0.10);
-  --blue:          #60a5fa;
-  --blue-soft:     rgba(96,165,250,0.10);
-  --radius-sm:     10px;
-  --radius-md:     16px;
-  --radius-lg:     22px;
-  --radius-xl:     28px;
-  --scrollbar-thumb: rgba(255,255,255,0.12);
-  --scrollbar-thumb-hover: rgba(255,255,255,0.22);
-  --sidebar-hover: rgba(255,255,255,0.04);
+  --radius-sm:     8px;
+  --radius-md:     10px;
+  --radius-lg:     14px;
+  --radius-xl:     18px;
+  --font-mono: var(--font-mono-plex), ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace;
 }
 
-[data-theme="light"] {
-  --bg-base:       #fafafa;
-  --bg-surface:    rgba(0,0,0,0.02);
-  --bg-card:       rgba(255,255,255,0.8);
-  --bg-card-hover: #ffffff;
-  --border:        rgba(0,0,0,0.08);
-  --border-strong: rgba(0,0,0,0.16);
-  --text-primary:  #09090b;
-  --text-secondary:#52525b;
-  --text-muted:    #a1a1aa;
-  --accent:        #4f46e5;
-  --accent-glow:   rgba(79,70,229,0.2);
-  --accent-soft:   rgba(79,70,229,0.1);
-  --amber:         #d97706;
-  --amber-soft:    rgba(217,119,6,0.1);
-  --green:         #16a34a;
-  --green-soft:    rgba(22,163,74,0.1);
-  --red:           #dc2626;
-  --red-soft:      rgba(220,38,38,0.1);
-  --blue:          #2563eb;
-  --blue-soft:     rgba(37,99,235,0.1);
-  --scrollbar-thumb: rgba(0,0,0,0.12);
-  --scrollbar-thumb-hover: rgba(0,0,0,0.22);
-  --sidebar-hover: rgba(0,0,0,0.04);
+:root, :root[data-theme="light"] {
+  --bg-base:       #F4F5F2;
+  --bg-surface:    #EAEBE7;
+  --bg-card:       #FFFFFF;
+  --bg-card-hover: #EAEBE7;
+  --border:        #CBD0D6;
+  --border-strong: #9AA1AC;
+  --text-primary:  #12203A;
+  --text-secondary:#45506B;
+  --text-muted:    #7C8494;
+  --accent:        #C23B22;
+  --accent-glow:   rgba(194,59,34,0.10);
+  --accent-soft:   rgba(194,59,34,0.08);
+  --amber:         #8B6A2A;
+  --amber-soft:    rgba(139,106,42,0.10);
+  --green:         #157F4A;
+  --green-soft:    rgba(21,127,74,0.08);
+  --red:           #A32D18;
+  --red-soft:      rgba(163,45,24,0.08);
+  --blue:          #2F6366;
+  --blue-soft:     rgba(47,99,102,0.10);
+  --agent:         #2F6366;
+  --agent-soft:    rgba(47,99,102,0.08);
+  --scrollbar-thumb: rgba(18,32,58,0.14);
+  --scrollbar-thumb-hover: rgba(18,32,58,0.26);
+  --sidebar-hover: rgba(18,32,58,0.04);
+}
+
+[data-theme="dark"], :root[data-theme="dark"] {
+  --bg-base:       #0E1626;
+  --bg-surface:    #0A101D;
+  --bg-card:       #16203A;
+  --bg-card-hover: #1B2740;
+  --border:        #2A344A;
+  --border-strong: #3C4863;
+  --text-primary:  #ECEFF3;
+  --text-secondary:#AEB6C7;
+  --text-muted:    #7C8494;
+  --accent:        #E1573A;
+  --accent-glow:   rgba(225,87,58,0.16);
+  --accent-soft:   rgba(225,87,58,0.12);
+  --amber:         #C9A354;
+  --amber-soft:    rgba(201,163,84,0.12);
+  --green:         #5FD493;
+  --green-soft:    rgba(95,212,147,0.12);
+  --red:           #F26F52;
+  --red-soft:      rgba(242,111,82,0.12);
+  --blue:          #5FAFB3;
+  --blue-soft:     rgba(95,175,179,0.12);
+  --agent:         #5FAFB3;
+  --agent-soft:    rgba(95,175,179,0.12);
+  --scrollbar-thumb: rgba(255,255,255,0.12);
+  --scrollbar-thumb-hover: rgba(255,255,255,0.22);
+  --sidebar-hover: rgba(255,255,255,0.05);
 }
 
 *, *::before, *::after { box-sizing: border-box; }
@@ -63,33 +80,40 @@ html { scroll-behavior: smooth; }
 body {
   background: var(--bg-base);
   color: var(--text-primary);
-  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  font-family: var(--font-sans), system-ui, -apple-system, sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   min-height: 100vh;
-  /* Subtle ambient grid — lightweight SVG bg, no JS */
-  background-image:
-    radial-gradient(ellipse 80vw 60vh at 50% -10%, rgba(99,102,241,0.12) 0%, transparent 70%),
-    radial-gradient(ellipse 60vw 40vh at 80% 100%, rgba(139,92,246,0.07) 0%, transparent 60%);
-  background-attachment: fixed;
 }
 
-/* ─── Glass Card ─── */
+/* ─── Clean card with subtle shadow (light) / flat (dark) ─── */
 .glass {
   background: var(--bg-card);
   border: 1px solid var(--border);
-  backdrop-filter: blur(20px) saturate(160%);
-  -webkit-backdrop-filter: blur(20px) saturate(160%);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
-.glass:hover { border-color: var(--border-strong); }
+.glass:hover {
+  border-color: var(--border-strong);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+}
+[data-theme="dark"] .glass {
+  box-shadow: none;
+}
+[data-theme="dark"] .glass:hover {
+  box-shadow: none;
+}
 
-/* ─── Glow ring on focus ─── */
+/* ─── Focus ring ─── */
 .focus-ring:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
-/* ─── Lightweight CSS animations ─── */
+/* ─── Lightweight CSS animations (used for content entry only, not decoration) ─── */
 @keyframes fade-up {
   from { opacity: 0; transform: translateY(14px); }
   to   { opacity: 1; transform: translateY(0); }
@@ -99,60 +123,47 @@ body {
   50%       { opacity: 0.5; }
 }
 @keyframes spin { to { transform: rotate(360deg); } }
-@keyframes shimmer {
-  from { background-position: -200% center; }
-  to   { background-position: 200% center; }
-}
 
 .animate-fade-up   { animation: fade-up 0.45s cubic-bezier(.22,1,.36,1) both; }
 .animate-pulse-slow{ animation: pulse-slow 2s ease-in-out infinite; }
 .animate-spin      { animation: spin 1s linear infinite; }
 
-/* Gradient text */
-.gradient-text {
-  background: linear-gradient(135deg, #e0e7ff 0%, #818cf8 40%, #c084fc 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-}
-
-/* Shimmer on brand title */
+/* Page titles - flat solid color, no animated gradient/shimmer. Class name
+ * kept as "shimmer-text"/"gradient-text" so existing pages using them don't
+ * need their own edits - only the definition changed. */
+.gradient-text,
 .shimmer-text {
-  background: linear-gradient(90deg,
-    #c7d2fe 0%, #818cf8 30%, #e879f9 60%, #818cf8 80%, #c7d2fe 100%
-  );
-  background-size: 200% auto;
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-  animation: shimmer 4s linear infinite;
+  color: var(--text-primary);
+  background: none;
+  -webkit-text-fill-color: unset;
 }
 
-/* Accent button */
+/* Flat accent button with subtle shadow on white */
 .btn-primary {
-  background: linear-gradient(135deg, #6366f1, #818cf8);
+  background: var(--accent);
   color: #fff;
   border: none;
   border-radius: var(--radius-md);
   font-weight: 600;
+  font-size: 14px;
   letter-spacing: -0.01em;
-  box-shadow: 0 0 0 1px rgba(99,102,241,0.4), 0 4px 24px rgba(99,102,241,0.25);
-  transition: transform 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+  transition: opacity 0.15s ease, transform 0.1s ease, box-shadow 0.15s ease;
 }
-.btn-primary:hover:not(:disabled) {
-  transform: translateY(-1px);
-  box-shadow: 0 0 0 1px rgba(99,102,241,0.6), 0 8px 32px rgba(99,102,241,0.35);
-}
-.btn-primary:active:not(:disabled) { transform: translateY(0) scale(0.98); }
+.btn-primary:hover:not(:disabled) { opacity: 0.92; box-shadow: 0 2px 6px rgba(37,99,235,0.18); }
+.btn-primary:active:not(:disabled) { transform: scale(0.98); }
 .btn-primary:disabled { opacity: 0.35; cursor: not-allowed; }
+[data-theme="dark"] .btn-primary { box-shadow: none; }
+[data-theme="dark"] .btn-primary:hover:not(:disabled) { box-shadow: none; }
 
 /* Ghost button */
 .btn-ghost {
-  background: var(--bg-card);
+  background: var(--bg-surface);
   border: 1px solid var(--border);
   color: var(--text-secondary);
   border-radius: var(--radius-sm);
   font-weight: 500;
+  font-size: 13px;
   transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
 }
 .btn-ghost:hover { background: var(--bg-card-hover); border-color: var(--border-strong); color: var(--text-primary); }
@@ -188,8 +199,8 @@ body {
   background: var(--red-soft);
 }
 
-/* ─── Metric card hover lift ─── */
-.glass {
-  transition: border-color 0.15s ease, transform 0.15s ease;
+/* ─── Financial figures - monospace for scannability ─── */
+.figure {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
 }
-

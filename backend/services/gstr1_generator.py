@@ -139,9 +139,47 @@ def _round2(v) -> float:
     return round(float(v or 0), 2)
 
 
+def _cn_sign(item) -> int:
+    """
+    -1 for credit/debit notes, +1 otherwise. Their amounts are stored
+    positive (the note's own value - see invoice_processor.extract_credit_note's
+    docstring) but they reduce net turnover, so any aggregate built across
+    items (envelope totals, HSN summary) must subtract them, not sum them
+    in like a second independent sale - the same defect found in both
+    generate_gstr1_json's summary totals and _build_hsn against a real MH
+    filing this session (an accountant flagged the HSN sheet specifically:
+    credit notes were missing from it entirely, silently overstating the
+    filed taxable value under every HSN they touched).
+    """
+    vt = str(getattr(item, "voucher_type", "") or "").lower()
+    return -1 if ("credit" in vt or "debit" in vt) else 1
+
+
 # ---------------------------------------------------------------------------
 # Invoice-level aggregation
 # ---------------------------------------------------------------------------
+
+def _resolve_category(item) -> str:
+    """
+    voucher_type is the authoritative signal for credit/debit notes -
+    always routes them to CDNR/CDNUR here regardless of item.gstr1_category,
+    which may be None (e.g. credit notes ingested via
+    credit_note_ingest.py never call classify_gstr1_item) or stale from an
+    older extraction path. Without this override, an unclassified item
+    falls through to the "or 'B2CS'" default below and a credit note's
+    amount gets silently summed into the B2CS consolidated total instead
+    of its own CDNR/CDNUR section - which is exactly how a B2CS bucket
+    ends up negative (credit notes reduce a customer's liability, they
+    aren't "negative sales") and how a filed total stops matching the
+    source PDFs (a credit note has its own reporting treatment, it isn't
+    interchangeable with a negative B2CS delta).
+    """
+    voucher_type = str(getattr(item, "voucher_type", "") or "").lower()
+    if "credit" in voucher_type or "debit" in voucher_type:
+        has_gstin = len(str(item.party_gstin or "").strip()) >= 15
+        return "CDNR" if has_gstin else "CDNUR"
+    return str(item.gstr1_category or "B2CS").upper()
+
 
 def _group_by_invoice(items) -> dict:
     """
@@ -153,7 +191,7 @@ def _group_by_invoice(items) -> dict:
         key = (
             str(item.invoice_no or "").strip(),
             str(item.party_gstin or "").strip(),
-            str(item.gstr1_category or "B2CS").upper(),
+            _resolve_category(item),
         )
         groups[key].append(item)
     return groups
@@ -367,22 +405,26 @@ def _build_nil(items) -> dict:
 
 
 def _build_hsn(items) -> dict:
-    """HSN summary — aggregated by HSN + GST rate."""
+    """HSN summary — aggregated by HSN + GST rate. Credit/debit notes
+    subtract from their HSN's totals rather than being omitted or summed
+    in (see _cn_sign's docstring) - omitting them entirely (the pre-fix
+    behavior) silently overstated every HSN bucket a credit note touched."""
     by_hsn: dict = defaultdict(lambda: {"qty": 0.0, "txval": 0.0, "iamt": 0.0, "camt": 0.0, "samt": 0.0, "val": 0.0, "desc": ""})
 
     for item in items:
         hsn = str(item.hsn or "").strip()
         if not hsn:
             continue
-        taxable = _round2(item.taxable_value)
-        cgst    = _round2(item.cgst_amount)
-        sgst    = _round2(item.sgst_amount)
-        igst    = _round2(item.igst_amount)
-        total   = _round2(item.total_invoice_value) or taxable + cgst + sgst + igst
-        rate    = _derive_gst_rate(taxable, cgst, sgst, igst)
+        sign    = _cn_sign(item)
+        taxable = sign * _round2(item.taxable_value)
+        cgst    = sign * _round2(item.cgst_amount)
+        sgst    = sign * _round2(item.sgst_amount)
+        igst    = sign * _round2(item.igst_amount)
+        total   = sign * (_round2(item.total_invoice_value) or (abs(taxable) + abs(cgst) + abs(sgst) + abs(igst)))
+        rate    = _derive_gst_rate(abs(taxable), abs(cgst), abs(sgst), abs(igst))
         key     = (hsn, rate)
         row     = by_hsn[key]
-        row["qty"]   += float(item.qty or 0)
+        row["qty"]   += sign * float(item.qty or 0)
         row["txval"] += taxable
         row["iamt"]  += igst
         row["camt"]  += cgst
@@ -472,11 +514,12 @@ def generate_gstr1_json(items, firm_gstin: str = None) -> dict:
     hsn   = _build_hsn(items)
     doc   = _build_doc_summary(items, b2b, b2cl, b2cs, exp, cdnr, cdnur)
 
-    # Summary totals for the envelope
-    total_taxable = _round2(sum(float(i.taxable_value or 0) for i in items))
-    total_igst    = _round2(sum(float(i.igst_amount  or 0) for i in items))
-    total_cgst    = _round2(sum(float(i.cgst_amount  or 0) for i in items))
-    total_sgst    = _round2(sum(float(i.sgst_amount  or 0) for i in items))
+    # Summary totals for the envelope - NET of credit/debit notes (see
+    # _cn_sign's docstring for why these must subtract, not sum).
+    total_taxable = _round2(sum(_cn_sign(i) * float(i.taxable_value or 0) for i in items))
+    total_igst    = _round2(sum(_cn_sign(i) * float(i.igst_amount  or 0) for i in items))
+    total_cgst    = _round2(sum(_cn_sign(i) * float(i.cgst_amount  or 0) for i in items))
+    total_sgst    = _round2(sum(_cn_sign(i) * float(i.sgst_amount  or 0) for i in items))
     total_tax     = _round2(total_igst + total_cgst + total_sgst)
 
     return {

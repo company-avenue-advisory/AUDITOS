@@ -43,6 +43,7 @@ export default function FirmSettingsPage() {
 
   // Invite member
   const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteRole, setInviteRole] = useState("accountant");
   const [inviting, setInviting] = useState(false);
   const [inviteMsg, setInviteMsg] = useState("");
   const [inviteError, setInviteError] = useState("");
@@ -132,18 +133,34 @@ export default function FirmSettingsPage() {
     setInviting(true);
     try {
       const res = await fetch(
-        `${API_BASE_URL}/api/admin/tenants/${firm.id}/assign-user?user_email=${encodeURIComponent(inviteEmail)}`,
+        `${API_BASE_URL}/api/admin/tenants/${firm.id}/assign-user?user_email=${encodeURIComponent(inviteEmail)}&role=${inviteRole}`,
         { method: "POST", headers: authHeaders() }
       );
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Failed to add member");
-      setInviteMsg(`${inviteEmail} added to firm.`);
+      setInviteMsg(`${inviteEmail} added to firm as ${inviteRole}.`);
       setInviteEmail("");
+      setInviteRole("accountant");
       await fetchFirm();
     } catch (e: any) {
       setInviteError(e.message);
     } finally {
       setInviting(false);
+    }
+  }
+
+  async function handleRoleChange(userId: string, newRole: string) {
+    if (!firm) return;
+    try {
+      const res = await fetch(
+        `${API_BASE_URL}/api/admin/tenants/${firm.id}/users/${userId}/role?role=${newRole}`,
+        { method: "PATCH", headers: authHeaders() }
+      );
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Failed to update role");
+      await fetchFirm();
+    } catch (e: any) {
+      alert(e.message);
     }
   }
 
@@ -193,19 +210,19 @@ export default function FirmSettingsPage() {
     fontSize: 13,
     background:
       variant === "primary" ? "var(--accent)" :
-      variant === "danger" ? "rgba(239,68,68,0.1)" : "var(--bg-card)",
+      variant === "danger" ? "var(--red-soft)" : "var(--bg-card)",
     color:
       variant === "primary" ? "#fff" :
-      variant === "danger" ? "#ef4444" : "var(--text-secondary)",
+      variant === "danger" ? "var(--red)" : "var(--text-secondary)",
     border:
       variant === "primary" ? "none" :
-      variant === "danger" ? "1px solid rgba(239,68,68,0.25)" : "1px solid var(--border)",
+      variant === "danger" ? "1px solid var(--red)" : "1px solid var(--border)",
   });
 
   const roleColor: Record<string, string> = {
-    owner: "#6366f1", auditor: "#22d3ee", hr: "#f59e0b",
-    developer: "#10b981", other: "var(--text-muted)",
+    owner: "#6366f1", senior: "#22d3ee", accountant: "#f59e0b", developer: "#10b981",
   };
+  const ROLES = ["owner", "senior", "accountant"];
 
   return (
     <div style={{ maxWidth: 720, margin: "0 auto", padding: "40px 24px", color: "var(--text-primary)" }}>
@@ -213,16 +230,15 @@ export default function FirmSettingsPage() {
       <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 32 }}>
         <div style={{
           width: 44, height: 44, borderRadius: 12,
-          background: "linear-gradient(135deg,#6366f1,#818cf8)",
+          background: "var(--accent)",
           display: "flex", alignItems: "center", justifyContent: "center",
-          boxShadow: "0 0 20px rgba(99,102,241,0.3)",
         }}>
           <Building2 size={22} color="#fff" />
         </div>
         <div>
           <h1 style={{ fontSize: 22, fontWeight: 800, margin: 0, letterSpacing: "-0.03em" }}>Firm Settings</h1>
           <p style={{ fontSize: 13, color: "var(--text-muted)", margin: "4px 0 0" }}>
-            Manage your CA firm's name, slug, and team members.
+            Manage your CA firm's name, URL, and team members.
           </p>
         </div>
         <button onClick={fetchFirm} style={{ marginLeft: "auto", ...btn("secondary") }}>
@@ -235,7 +251,7 @@ export default function FirmSettingsPage() {
       )}
 
       {error && (
-        <div style={{ padding: 14, borderRadius: 8, background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.2)", color: "#ef4444", fontSize: 13, marginBottom: 20 }}>
+        <div style={{ padding: 14, borderRadius: 8, background: "var(--red-soft)", border: "1px solid var(--red)", color: "var(--red)", fontSize: 13, marginBottom: 20 }}>
           <AlertCircle size={14} style={{ display: "inline", marginRight: 6 }} />{error}
         </div>
       )}
@@ -262,14 +278,14 @@ export default function FirmSettingsPage() {
               />
             </div>
             <div>
-              <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-secondary)", display: "block", marginBottom: 6 }}>Slug <span style={{ fontWeight: 400, color: "var(--text-muted)" }}>(URL-safe, auto-generated)</span></label>
+              <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-secondary)", display: "block", marginBottom: 6 }}>URL Name <span style={{ fontWeight: 400, color: "var(--text-muted)" }}>(auto-generated)</span></label>
               <input style={input} placeholder="avenue-advisory-llp" value={newFirmSlug}
                 onChange={(e) => setNewFirmSlug(e.target.value.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, ""))}
                 required
               />
             </div>
-            {createError && <div style={{ fontSize: 12, color: "#ef4444" }}>{createError}</div>}
-            {createSuccess && <div style={{ fontSize: 12, color: "#22d3ee" }}><CheckCircle size={12} style={{ display: "inline", marginRight: 4 }} />{createSuccess}</div>}
+            {createError && <div style={{ fontSize: 12, color: "var(--red)" }}>{createError}</div>}
+            {createSuccess && <div style={{ fontSize: 12, color: "var(--blue)" }}><CheckCircle size={12} style={{ display: "inline", marginRight: 4 }} />{createSuccess}</div>}
             <button type="submit" style={btn("primary")} disabled={creating}>
               {creating ? "Creating..." : "Create Firm"}
             </button>
@@ -286,7 +302,6 @@ export default function FirmSettingsPage() {
                 <div style={{ fontSize: 11, fontWeight: 700, color: "var(--accent)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>Your Firm</div>
                 <div style={{ fontSize: 20, fontWeight: 800, letterSpacing: "-0.02em" }}>{firm.name}</div>
                 <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 4, fontFamily: "monospace" }}>/{firm.slug}</div>
-                <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 6 }}>ID: {firm.id}</div>
               </div>
               {!editing && (
                 <button onClick={() => setEditing(true)} style={btn("secondary")}>
@@ -301,13 +316,13 @@ export default function FirmSettingsPage() {
                   <input style={input} value={editName} onChange={(e) => setEditName(e.target.value)} required />
                 </div>
                 <div>
-                  <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-secondary)", display: "block", marginBottom: 6 }}>Slug</label>
+                  <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-secondary)", display: "block", marginBottom: 6 }}>URL Name</label>
                   <input style={input} value={editSlug}
                     onChange={(e) => setEditSlug(e.target.value.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, ""))}
                     required
                   />
                 </div>
-                {editError && <div style={{ fontSize: 12, color: "#ef4444" }}>{editError}</div>}
+                {editError && <div style={{ fontSize: 12, color: "var(--red)" }}>{editError}</div>}
                 <div style={{ display: "flex", gap: 10 }}>
                   <button type="submit" style={btn("primary")}>Save Changes</button>
                   <button type="button" onClick={() => { setEditing(false); setEditName(firm.name); setEditSlug(firm.slug); setEditError(""); }} style={btn("secondary")}>Cancel</button>
@@ -327,7 +342,7 @@ export default function FirmSettingsPage() {
                   <div key={m.id} style={{
                     display: "flex", alignItems: "center", gap: 12,
                     padding: "12px 14px", borderRadius: 8,
-                    background: "rgba(255,255,255,0.02)", border: "1px solid var(--border)",
+                    background: "var(--bg-card)", border: "1px solid var(--border)",
                   }}>
                     <div style={{
                       width: 32, height: 32, borderRadius: "50%",
@@ -339,10 +354,20 @@ export default function FirmSettingsPage() {
                     </div>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontSize: 13, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={m.email}>{m.email}</div>
-                      <div style={{ fontSize: 11, fontWeight: 700, color: roleColor[m.role] || "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginTop: 2 }}>{m.role}</div>
+                      <select
+                        value={m.role}
+                        onChange={(e) => handleRoleChange(m.id, e.target.value)}
+                        style={{
+                          fontSize: 11, fontWeight: 700, color: roleColor[m.role] || "var(--text-muted)",
+                          textTransform: "uppercase", letterSpacing: "0.05em", marginTop: 2,
+                          background: "transparent", border: "none", cursor: "pointer", padding: 0,
+                        }}
+                      >
+                        {ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
+                      </select>
                     </div>
                     {!m.is_active && (
-                      <span style={{ fontSize: 10, fontWeight: 700, color: "#f59e0b", background: "rgba(245,158,11,0.1)", borderRadius: 4, padding: "2px 6px" }}>INACTIVE</span>
+                      <span style={{ fontSize: 10, fontWeight: 700, color: "var(--amber)", background: "var(--amber-soft)", borderRadius: 4, padding: "2px 6px" }}>INACTIVE</span>
                     )}
                     <button
                       onClick={() => handleRemove(m.id, m.email)}
@@ -371,21 +396,28 @@ export default function FirmSettingsPage() {
                   onChange={(e) => setInviteEmail(e.target.value)}
                   required
                 />
+                <select
+                  value={inviteRole}
+                  onChange={(e) => setInviteRole(e.target.value)}
+                  style={{ ...input, width: "auto" }}
+                >
+                  {ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
+                </select>
                 <button type="submit" style={btn("primary")} disabled={inviting}>
                   <UserPlus size={14} />
                   {inviting ? "Adding..." : "Add"}
                 </button>
               </form>
-              {inviteMsg && <div style={{ fontSize: 12, color: "#22d3ee", marginTop: 10 }}><CheckCircle size={12} style={{ display: "inline", marginRight: 4 }} />{inviteMsg}</div>}
-              {inviteError && <div style={{ fontSize: 12, color: "#ef4444", marginTop: 10 }}>{inviteError}</div>}
+              {inviteMsg && <div style={{ fontSize: 12, color: "var(--blue)", marginTop: 10 }}><CheckCircle size={12} style={{ display: "inline", marginRight: 4 }} />{inviteMsg}</div>}
+              {inviteError && <div style={{ fontSize: 12, color: "var(--red)", marginTop: 10 }}>{inviteError}</div>}
             </div>
           </div>
 
           {/* GSTIN info */}
-          <div style={{ ...card, background: "rgba(99,102,241,0.05)", border: "1px solid rgba(99,102,241,0.2)" }}>
+          <div style={{ ...card, background: "var(--accent-soft)", border: "1px solid var(--accent-glow)" }}>
             <div style={{ fontSize: 12, fontWeight: 600, color: "var(--accent)", marginBottom: 8 }}>Firm GSTIN</div>
             <div style={{ fontSize: 13, color: "var(--text-secondary)", marginBottom: 4 }}>
-              Set in <code style={{ background: "rgba(255,255,255,0.06)", padding: "1px 6px", borderRadius: 4, fontSize: 12 }}>backend/.env</code> as <code style={{ background: "rgba(255,255,255,0.06)", padding: "1px 6px", borderRadius: 4, fontSize: 12 }}>FIRM_GSTIN</code>.
+              Contact your administrator to update the firm GSTIN.
             </div>
             <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
               The first 2 digits determine your state code for B2B/B2CS/B2CL inter-state split in GSTR-1 exports. Update this before exporting.

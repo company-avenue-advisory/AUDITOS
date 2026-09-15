@@ -71,18 +71,22 @@ def _cache_set(key: str, result: InvoiceExtractionResponse):
         pass
 
 # ---------------------------------------------------------------------------
-# Concurrency controls — tuned for Gemini 2.5 Flash FREE tier (15 RPM limit).
+# Concurrency controls — defaults tuned for Gemini 2.5 Flash FREE tier
+# (15 RPM limit), but env-driven so a paid key doesn't stay pinned to
+# free-tier throughput. This was the single biggest wall-clock ceiling in
+# the pipeline (confirmed: comment itself noted paid Flash allows ~3500 RPM
+# while the hardcoded values kept every batch throttled to free-tier speed
+# regardless of the actual API tier in use).
 #
 # llm_semaphore   : max simultaneous LLM threads in-flight across all batches.
-#                   3 concurrent threads × ~3s per call = ~60s per minute cap,
-#                   keeping us safely under 15 RPM with the RpmGuard below.
+#                   LLM_CONCURRENCY env var, default 3 (free-tier safe).
 #
 # RpmGuard        : sliding-window RPM limiter per model family.
-#                   Gemini Flash paid → 4000 RPM safe ceiling set to 3500.
-#                   Gemini Pro free   → 50 RPM ceiling.
-#                   Falls back to no-op when provider is unknown.
+#                   RPM_GEMINI_FLASH / RPM_GEMINI_PRO / RPM_GROQ / RPM_DEFAULT
+#                   env vars, defaulting to the same free-tier-safe values as
+#                   before. Falls back to no-op when provider is unknown.
 # ---------------------------------------------------------------------------
-llm_semaphore = asyncio.Semaphore(3)  # Free tier: 3 concurrent = safe under 15 RPM
+llm_semaphore = asyncio.Semaphore(int(os.getenv("LLM_CONCURRENCY", "3")))
 
 
 class RpmGuard:
@@ -113,11 +117,13 @@ class RpmGuard:
 
 
 # One guard per model family — shared across all concurrent coroutines.
+# Env-driven: bump these once a paid tier is in use, instead of hand-editing
+# code. Defaults match the previous hardcoded free-tier-safe values exactly.
 _rpm_guards: dict[str, RpmGuard] = {
-    "gemini-flash": RpmGuard(10),    # Gemini 2.5 Flash FREE: 15 RPM limit; 10 = safe headroom
-    "gemini-pro":   RpmGuard(10),    # Gemini 2.5 Pro free:  15 RPM
-    "groq":         RpmGuard(18),    # Groq free: ~20 RPM effective
-    "default":      RpmGuard(10),
+    "gemini-flash": RpmGuard(int(os.getenv("RPM_GEMINI_FLASH", "10"))),  # Free: 15 RPM limit; 10 = safe headroom. Paid Flash allows ~3500 RPM.
+    "gemini-pro":   RpmGuard(int(os.getenv("RPM_GEMINI_PRO", "10"))),    # Free: 15 RPM
+    "groq":         RpmGuard(int(os.getenv("RPM_GROQ", "18"))),          # Free: ~20 RPM effective
+    "default":      RpmGuard(int(os.getenv("RPM_DEFAULT", "10"))),
 }
 
 def _get_rpm_guard(model_config: dict) -> RpmGuard:
@@ -201,7 +207,8 @@ async def process_batch(batch_id: str, tasks: list, model_config: dict, type_val
             total_files=total,
             batch_type=type_val,
             environment="development",
-            db_session=db
+            db_session=db,
+            tenant_id=_tenant_id
         )
     except Exception as e:
         print(f"Error logging batch envelope: {e}")
@@ -223,7 +230,8 @@ async def process_batch(batch_id: str, tasks: list, model_config: dict, type_val
         ObsLogger.emit_file_manifest(
             batch_id=batch_id,
             files_meta=files_meta,
-            db_session=db
+            db_session=db,
+            tenant_id=_tenant_id
         )
     except Exception as e:
         print(f"Error logging file manifest: {e}")
@@ -329,6 +337,14 @@ async def process_batch(batch_id: str, tasks: list, model_config: dict, type_val
                     db.add(db_item)
             
             # Phase 4A: Run Financial Reconciliation Engine and persist audit report
+            #
+            # recon_report is initialized to None here (not left undefined) so that
+            # the observability calls further down — which read its status and
+            # overall_confidence for the quality-score / flag / failure-tracking
+            # payloads — have a well-defined "reconciliation did not complete"
+            # value to report instead of raising a NameError or, worse, silently
+            # falling through with a stale value from a previous loop iteration.
+            recon_report = None
             try:
                 from core.reconciliation.engine import FinancialReconciliationEngine
                 from core.reconciliation.adapter import build_canonical_invoice
@@ -417,6 +433,26 @@ async def process_batch(batch_id: str, tasks: list, model_config: dict, type_val
                     no_igst_cgst_conflict = False
                     break
 
+            # Bootstrap Task 4: persist this same PASSED/FAILED verdict onto the
+            # task row (not just the observability event below) so the review
+            # queue can prioritize on it and a correction event can record
+            # "what did validation say at the time of this fix" without
+            # re-deriving these three checks or re-querying ObservabilityLog.
+            task.validation_status = "PASSED" if (
+                statutory_math_balanced and gstin_format_valid and no_igst_cgst_conflict
+            ) else "FAILED"
+            db.commit()
+
+            # grounding_score previously a hardcoded 0.85 regardless of what the
+            # reconciliation engine actually found. It now reflects the real
+            # ReconciliationReport.overall_confidence when reconciliation
+            # completed (Phase 4A above), and a low, explicit fallback (not a
+            # false-confident default) when reconciliation itself failed to run —
+            # a missing reconciliation result is itself evidence of a problem,
+            # not a reason to report high confidence.
+            recon_confidence = recon_report.overall_confidence if recon_report is not None else 0.3
+            recon_status = recon_report.status if recon_report is not None else "RECONCILIATION_ERROR"
+
             # Step 5 — Emit Quality Score
             score = logger.emit_quality_score(
                 filename=task.file_name,
@@ -429,7 +465,7 @@ async def process_batch(batch_id: str, tasks: list, model_config: dict, type_val
                 variance_inr=variance,
                 gstin_format_valid=gstin_format_valid,
                 no_igst_cgst_conflict=no_igst_cgst_conflict,
-                grounding_score=0.85
+                grounding_score=recon_confidence
             )
 
             # Step 6 — Evaluate Flags
@@ -443,7 +479,9 @@ async def process_batch(batch_id: str, tasks: list, model_config: dict, type_val
                 no_igst_cgst_conflict=no_igst_cgst_conflict,
                 total_cost_inr=cost_info["total_cost_inr"],
                 batch_avg_cost=0.0,  # Batch average evaluated at batch level
-                raw_items=len(res.sales_items) + len(res.purchase_items)
+                raw_items=len(res.sales_items) + len(res.purchase_items),
+                reconciliation_status=recon_status,
+                reconciliation_confidence=recon_confidence
             )
 
             # Step 4a — Emit File Metrics
@@ -455,8 +493,8 @@ async def process_batch(batch_id: str, tasks: list, model_config: dict, type_val
                 model_identifier=model_identifier,
                 correction_meta=res.correction_meta or {},
                 llm_retries=res.total_retries or 0,
-                stage_failed=None,
-                error_type=None
+                stage_failed="reconciliation" if recon_report is None else None,
+                error_type="RECONCILIATION_ERROR" if recon_report is None else None
             )
 
             # Step 7a — Emit Debug Record if Flagged
@@ -542,7 +580,8 @@ async def process_batch(batch_id: str, tasks: list, model_config: dict, type_val
             tasks_meta=batch_tasks_meta,
             model_identifier=model_identifier,
             api_provider=api_provider,
-            db_session=db
+            db_session=db,
+            tenant_id=batch.tenant_id if batch else None
         )
     except Exception as e:
         print(f"Error logging batch metrics: {e}")

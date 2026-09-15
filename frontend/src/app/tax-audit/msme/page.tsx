@@ -327,12 +327,12 @@ export default function MSMEAuditPage() {
               display: "inline-flex",
               alignItems: "center",
               gap: 6,
-              background: "rgba(99,102,241,0.12)",
-              border: "1px solid rgba(99,102,241,0.25)",
+              background: "var(--accent-soft)",
+              border: "1px solid var(--accent-glow)",
               borderRadius: 99,
               padding: "5px 14px",
               fontSize: 12,
-              color: "#a5b4fc",
+              color: "var(--accent)",
               fontWeight: 500,
               marginBottom: 16,
             }}
@@ -380,7 +380,7 @@ export default function MSMEAuditPage() {
               padding: "32px 24px",
               textAlign: "center",
               cursor: "pointer",
-              background: dragActive ? "var(--accent-soft)" : "rgba(255,255,255,0.015)",
+              background: dragActive ? "var(--accent-soft)" : "var(--bg-surface)",
               transition: "all 0.2s ease",
               display: "flex",
               flexDirection: "column",
@@ -422,7 +422,7 @@ export default function MSMEAuditPage() {
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "center",
-                    border: "1px solid rgba(99,102,241,0.2)",
+                    border: "1px solid var(--accent-glow)",
                   }}
                 >
                   <UploadCloud size={20} style={{ color: "var(--accent)" }} />
@@ -445,8 +445,8 @@ export default function MSMEAuditPage() {
           <div
             style={{
               background: "var(--green-soft)",
-              border: "1px solid rgba(34,197,94,0.25)",
-              color: "#86efac",
+              border: "1px solid var(--green)",
+              color: "var(--green)",
               padding: "12px 18px",
               borderRadius: "var(--radius-md)",
               fontSize: 13,
@@ -464,8 +464,8 @@ export default function MSMEAuditPage() {
           <div
             style={{
               background: "var(--red-soft)",
-              border: "1px solid rgba(239,68,68,0.25)",
-              color: "#fca5a5",
+              border: "1px solid var(--red)",
+              color: "var(--red)",
               padding: "12px 18px",
               borderRadius: "var(--radius-md)",
               fontSize: 13,
@@ -560,7 +560,7 @@ export default function MSMEAuditPage() {
                   </div>
                   <div
                     style={{
-                      fontSize: 10,
+                      fontSize: 11,
                       fontWeight: 600,
                       color: "var(--text-muted)",
                       textTransform: "uppercase",
@@ -592,7 +592,7 @@ export default function MSMEAuditPage() {
               display: "flex",
               alignItems: "center",
               justifyContent: "space-between",
-              background: "rgba(255,255,255,0.01)",
+              background: "var(--bg-surface)",
             }}
           >
             <div style={{ display: "flex", gap: 8 }}>
@@ -606,10 +606,10 @@ export default function MSMEAuditPage() {
                   onClick={() => setActiveTab(tab.id as any)}
                   style={{
                     background: activeTab === tab.id ? "var(--accent-soft)" : "transparent",
-                    border: activeTab === tab.id ? "1px solid rgba(99,102,241,0.25)" : "1px solid transparent",
+                    border: activeTab === tab.id ? "1px solid var(--accent-glow)" : "1px solid transparent",
                     borderRadius: "var(--radius-sm)",
                     padding: "4px 10px",
-                    color: activeTab === tab.id ? "#a5b4fc" : "var(--text-secondary)",
+                    color: activeTab === tab.id ? "var(--accent)" : "var(--text-secondary)",
                     fontSize: 11,
                     fontWeight: 600,
                     cursor: "pointer",
@@ -627,7 +627,7 @@ export default function MSMEAuditPage() {
                 display: "inline-flex",
                 alignItems: "center",
                 gap: 6,
-                background: "rgba(255,255,255,0.05)",
+                background: "var(--bg-surface)",
                 border: "1px solid var(--border)",
                 borderRadius: "var(--radius-sm)",
                 padding: "6px 12px",
@@ -637,8 +637,8 @@ export default function MSMEAuditPage() {
                 cursor: "pointer",
                 transition: "all 0.15s ease",
               }}
-              onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(255,255,255,0.08)")}
-              onMouseLeave={(e) => (e.currentTarget.style.background = "rgba(255,255,255,0.05)")}
+              onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-card-hover)")}
+              onMouseLeave={(e) => (e.currentTarget.style.background = "var(--bg-surface)")}
             >
               <Plus size={12} />
               Add Ledger Item
@@ -657,7 +657,7 @@ export default function MSMEAuditPage() {
               <thead>
                 <tr
                   style={{
-                    background: "rgba(255,255,255,0.015)",
+                    background: "var(--bg-surface)",
                     borderBottom: "1px solid var(--border)",
                   }}
                 >
@@ -681,10 +681,10 @@ export default function MSMEAuditPage() {
                   const isVerified = row.udyamStatus !== "UNKNOWN";
                   const statusColors = {
                     UNKNOWN: { color: "var(--text-secondary)", bg: "var(--bg-surface)" },
-                    MICRO: { color: "#fca5a5", bg: "var(--red-soft)" },
-                    SMALL: { color: "#fcd34d", bg: "var(--amber-soft)" },
-                    MEDIUM: { color: "#93c5fd", bg: "var(--blue-soft)" },
-                    LARGE: { color: "#86efac", bg: "var(--green-soft)" },
+                    MICRO: { color: "var(--red)", bg: "var(--red-soft)" },
+                    SMALL: { color: "var(--amber)", bg: "var(--amber-soft)" },
+                    MEDIUM: { color: "var(--blue)", bg: "var(--blue-soft)" },
+                    LARGE: { color: "var(--green)", bg: "var(--green-soft)" },
                   };
                   
                   return (
@@ -741,7 +741,7 @@ export default function MSMEAuditPage() {
                           style={{ width: "100%" }}
                         />
                         {!row.paymentDate && (
-                          <div style={{ fontSize: 8, color: "var(--red)", marginTop: 2, paddingLeft: 6 }}>
+                          <div style={{ fontSize: 11, color: "var(--red)", marginTop: 2, paddingLeft: 6 }}>
                             Unpaid (Comp. today)
                           </div>
                         )}
@@ -770,7 +770,7 @@ export default function MSMEAuditPage() {
                             border: "1px solid var(--border)",
                             borderRadius: 6,
                             padding: "2px 6px",
-                            fontSize: 10,
+                            fontSize: 11,
                             fontWeight: 700,
                             outline: "none",
                             cursor: "pointer",
@@ -819,7 +819,7 @@ export default function MSMEAuditPage() {
                         ) : (
                           <span style={{ color: "var(--green)" }}>0d</span>
                         )}
-                        <span style={{ fontSize: 8, color: "var(--text-muted)", display: "block" }}>
+                        <span style={{ fontSize: 11, color: "var(--text-muted)", display: "block" }}>
                           ({details.limitDays}d limit)
                         </span>
                       </td>
@@ -862,12 +862,12 @@ export default function MSMEAuditPage() {
                                 ? "var(--green-soft)"
                                 : "var(--accent-soft)",
                               border: `1px solid ${
-                                isVerified ? "rgba(34,197,94,0.2)" : "rgba(99,102,241,0.2)"
+                                isVerified ? "var(--green)" : "var(--accent-glow)"
                               }`,
                               borderRadius: 6,
                               padding: "4px 6px",
-                              color: isVerified ? "#86efac" : "#a5b4fc",
-                              fontSize: 9,
+                              color: isVerified ? "var(--green)" : "var(--accent)",
+                              fontSize: 11,
                               fontWeight: 600,
                               cursor: row.isVerifying || !row.udyamNumber ? "not-allowed" : "pointer",
                               opacity: !row.udyamNumber ? 0.4 : 1,
@@ -888,11 +888,11 @@ export default function MSMEAuditPage() {
                           <button
                             onClick={() => deleteRow(row.id)}
                             style={{
-                              background: "rgba(239,68,68,0.1)",
-                              border: "1px solid rgba(239,68,68,0.2)",
+                              background: "var(--red-soft)",
+                              border: "1px solid var(--red)",
                               borderRadius: 6,
                               padding: "4px 6px",
-                              color: "#fca5a5",
+                              color: "var(--red)",
                               cursor: "pointer",
                               display: "flex",
                               alignItems: "center",
@@ -974,7 +974,7 @@ const thStyle: React.CSSProperties = {
   textAlign: "left",
   color: "var(--text-muted)",
   fontWeight: 600,
-  fontSize: 10,
+  fontSize: 11,
   textTransform: "uppercase",
   letterSpacing: "0.06em",
   whiteSpace: "nowrap",

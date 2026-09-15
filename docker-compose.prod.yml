@@ -1,0 +1,108 @@
+version: "3.9"
+
+# Single-droplet DigitalOcean deployment for internal (firm-employee-only) use.
+# Frontend is deployed separately on Vercel (see docs/DIGITALOCEAN_DEPLOY.md);
+# this droplet runs the backend, worker, beat, Postgres, and Redis only,
+# replacing the equivalent Render services in render.yaml.
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: auditos
+      POSTGRES_USER: auditos
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U auditos"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://auditos:${POSTGRES_PASSWORD}@db:5432/auditos
+      CELERY_BROKER_URL: redis://redis:6379/0
+      ENVIRONMENT: production
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend/data:/app/data
+      - ./secrets:/app/secrets:ro
+
+  worker:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    command: celery -A celery_app worker --loglevel=info -Q celery,default,ocr,drive_sync
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://auditos:${POSTGRES_PASSWORD}@db:5432/auditos
+      CELERY_BROKER_URL: redis://redis:6379/0
+      ENVIRONMENT: production
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend/data:/app/data
+      - ./secrets:/app/secrets:ro
+
+  beat:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    command: celery -A celery_app beat --loglevel=info
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://auditos:${POSTGRES_PASSWORD}@db:5432/auditos
+      CELERY_BROKER_URL: redis://redis:6379/0
+      ENVIRONMENT: production
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./secrets:/app/secrets:ro
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - backend
+
+volumes:
+  db_data:
+  redis_data:
+  caddy_data:
+  caddy_config:

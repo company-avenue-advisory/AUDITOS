@@ -1,0 +1,13 @@
+{
+  "case_id": "purchase_001_exact_match",
+  "document_type": "purchase_invoice",
+  "source": "synthetic",
+  "fields": {
+    "supplier_gstin":  {"extracted": "27AAAAA1111A1Z1", "expected": "27AAAAA1111A1Z1", "confidence": 0.97},
+    "invoice_no":      {"extracted": "INV-2026-0042",   "expected": "INV-2026-0042",   "confidence": 0.95},
+    "taxable_value":   {"extracted": 10000.0,           "expected": 10000.0,           "confidence": 0.96},
+    "cgst_amount":     {"extracted": 900.0,              "expected": 900.0,             "confidence": 0.96},
+    "sgst_amount":     {"extracted": 900.0,              "expected": 900.0,             "confidence": 0.96},
+    "hsn":             {"extracted": "8471",             "expected": "8471",            "confidence": 0.90}
+  }
+}

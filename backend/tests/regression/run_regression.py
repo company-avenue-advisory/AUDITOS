@@ -83,6 +83,58 @@ SUITES = {
         "label": "GSTR-2B Reconciliation Engine",
         "module": "backend.tests.regression.test_gstr2b_regression",
     },
+    "sales_line_items": {
+        "label": "Sales Line-Item Extraction (deterministic, OneStack template)",
+        "module": "backend.tests.regression.test_sales_line_item_extraction",
+    },
+    "credit_notes": {
+        "label": "Credit Note Extraction (deterministic, OneStack template)",
+        "module": "backend.tests.regression.test_credit_note_extraction",
+    },
+    "client_sheet": {
+        "label": "Client Sheet Parser (OneStack masterdata schema)",
+        "module": "backend.tests.regression.test_client_sheet_parser",
+    },
+    "sales_reconciliation": {
+        "label": "Sales 3-Way Reconciliation (OS vs Client Sheet)",
+        "module": "backend.tests.regression.test_sales_reconciliation",
+    },
+    "gstr1_filing": {
+        "label": "GSTR-1 Filing Orchestration (reconciliation-gated, multi-GSTIN)",
+        "module": "backend.tests.regression.test_gstr1_filing",
+    },
+    "celery_scheduling": {
+        "label": "Celery Beat Scheduling (self-resolving monthly ingestion)",
+        "module": "backend.tests.regression.test_celery_scheduling",
+    },
+    "period_review": {
+        "label": "Sales Period Review Gate (approve/reject before filing)",
+        "module": "backend.tests.regression.test_period_review",
+    },
+    "gstr1_generator": {
+        "label": "GSTR-1 JSON Generator (credit-note categorization + net totals)",
+        "module": "backend.tests.regression.test_gstr1_generator",
+    },
+    "drive_classifier_purchase": {
+        "label": "Purchase-side Drive Classification (any-vendor, category folders)",
+        "module": "backend.tests.regression.test_drive_classifier_purchase",
+    },
+    "purchase_review": {
+        "label": "GSTR-2B Review Gate (Phase A Drive-drop automation)",
+        "module": "backend.tests.regression.test_purchase_review",
+    },
+    "observability": {
+        "label": "Observability Instrumentation (tenant_id threading + reconciliation-aware flags)",
+        "module": "backend.tests.regression.test_observability_regression",
+    },
+    "review_priority": {
+        "label": "Correction Capture & Review Queue Prioritization",
+        "module": "backend.tests.regression.test_review_priority_regression",
+    },
+    "golden_dataset": {
+        "label": "Golden Dataset & Regression Framework",
+        "module": "backend.tests.regression.test_golden_dataset_regression",
+    },
 }
 
 

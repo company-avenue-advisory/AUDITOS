@@ -2,8 +2,19 @@
 Google Drive auto-sync pipeline — the orchestrator.
 
 Workflow:
-  1. List files from Google Drive folder
-  2. Filter PDFs only (mime type: application/pdf)
+  1. Recursively walk the Drive folder and classify every file
+     (invoice / credit_note / client_sheet / ignore / unknown) - see
+     drive_classifier.py. Folder location is the classification signal,
+     never the filename (proven unreliable against OneStack's real tree).
+  2. INVOICE files go through the existing extraction pipeline. CREDIT_NOTE
+     files go through invoice_processor.extract_credit_note (a separate,
+     deterministic path - never through the invoice extractor, which would
+     misparse them the same way the discount-line bug did). Buyer GSTIN is
+     resolved by looking up the credit note's Original Invoice Number
+     against this tenant's own past invoices; if that invoice isn't on
+     record, the credit note is still stored (GSTIN left blank) rather than
+     lost, flagged for manual resolution - never a fabricated GSTIN.
+     CLIENT_SHEET is still just tracked - no parser exists yet.
   3. Check dedup database (track by id + md5Checksum)
   4. Download new/changed files
   5. Process through existing extraction pipeline
@@ -28,6 +39,10 @@ from models import (
     GoogleDriveFileTracker, GoogleDriveSyncJob
 )
 from services.duplicate_detector import _norm as _dup_norm
+from services.drive_classifier import (
+    walk_and_classify, walk_and_classify_purchase, classify_local_directory_purchase,
+    DocumentType, ClassifiedFile,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +53,9 @@ class GoogleDriveSyncPipeline:
     """
 
     def __init__(self, tenant_id: str, google_drive_folder_id: str,
-                 excel_output_path: str, invoice_type: str = "both"):
+                 excel_output_path: str, invoice_type: str = "both",
+                 period: str = None, max_files: int = None,
+                 subfolder_id: str = None, celery_task_id: str = None):
         """
         Initialize sync pipeline.
 
@@ -47,6 +64,26 @@ class GoogleDriveSyncPipeline:
             google_drive_folder_id: Google Drive folder ID containing invoices
             excel_output_path: Path where Excel file should be saved
             invoice_type: "sales", "purchase", or "both"
+            max_files: Cap on how many new/changed files this run will
+                process, across credit notes, archives and invoices
+                combined. Extraction is LLM-bound (~80-90s/file) against a
+                1-hour Celery hard time limit, so a large folder must be
+                drained over several bounded triggers rather than one
+                unbounded run. None = no cap. Anything over the cap is
+                simply left untracked, so the next run picks it up.
+            subfolder_id: Restrict this run to one subfolder of the
+                configured tree (e.g. a single month), instead of walking
+                from google_drive_folder_id. None = walk the whole tree.
+            period: "YYYY-MM" for the month this folder represents. When
+                set (only passed by sales_ingestion_task's scheduled runs -
+                the legacy google_drive_sync_task still passes None), a
+                SalesPeriodReview is generated automatically at the end of
+                run() once a client sheet is found, via the same
+                generate_period_review_for_tenant() the manual
+                /api/sales/period-reviews/generate endpoint uses. Left None
+                to skip - a folder without a known period (or a
+                purchase-only sync, where reconciliation doesn't apply)
+                shouldn't try to auto-generate a review.
         """
         from services.google_drive import GoogleDriveConnector, GoogleDriveFileTracker as DBTracker
         from services.excel_sync import ExcelSyncService
@@ -55,8 +92,16 @@ class GoogleDriveSyncPipeline:
         self.google_drive_folder_id = google_drive_folder_id
         self.excel_output_path = excel_output_path
         self.invoice_type = invoice_type
+        self.period = period
+        self.max_files = max_files if (max_files is None or max_files > 0) else None
+        self.subfolder_id = subfolder_id
+        self.celery_task_id = celery_task_id
+        # Remaining per-run file budget, decremented as files are consumed.
+        # None = unlimited.
+        self._files_budget = self.max_files
+        self._files_deferred = 0
 
-        self.drive = GoogleDriveConnector(google_drive_folder_id)
+        self.drive = GoogleDriveConnector(subfolder_id or google_drive_folder_id)
         self.db = SessionLocal()
         self.file_tracker = DBTracker(self.db)
 
@@ -66,24 +111,12 @@ class GoogleDriveSyncPipeline:
         if invoice_type in ["purchase", "both"]:
             self.excel_purchase = ExcelSyncService(excel_output_path.replace(".xlsx", "_purchase.xlsx"), "purchase")
 
-    def run(self, model_config: Dict = None, max_files: Optional[int] = None) -> Dict:
+    def run(self, model_config: Dict = None) -> Dict:
         """
         Execute the full sync pipeline.
 
-        Args:
-            max_files: Cap on how many new/changed files to actually process this
-                run. Extraction is LLM-bound at ~80-90s/file, and the Celery task
-                wrapping this has a hard time_limit=3600 (1 hour) — an unbounded
-                run against a large folder (e.g. ~419 files, ~9-10 hours) would
-                never finish; it gets killed mid-run by Celery's time limit,
-                leaving files stuck in "processing" state. Passing a max_files
-                keeps each run inside that budget; already-processed files are
-                tracked via file_tracker dedup, so repeated triggers naturally
-                page through the backlog a batch at a time. None = no cap
-                (only safe for small folders / already-synced backlogs).
-
         Returns:
-            Summary dict with statistics, including `remaining_files` when capped.
+            Summary dict with statistics
         """
         sync_job_id = str(uuid4())
         start_time = datetime.utcnow()
@@ -94,21 +127,79 @@ class GoogleDriveSyncPipeline:
                 id=sync_job_id,
                 tenant_id=self.tenant_id,
                 sync_timestamp=start_time,
-                status="in_progress"
+                status="in_progress",
+                celery_task_id=self.celery_task_id,
             )
             self.db.add(sync_job)
             self.db.commit()
 
             logger.info(f"[GoogleDriveSync] Starting sync job {sync_job_id} for tenant {self.tenant_id}")
 
-            # Step 1: List files from Google Drive (PDFs and ZIPs)
-            logger.info("[GoogleDriveSync] Listing files from Google Drive...")
-            drive_files = self.drive.list_files(file_types=["application/pdf", "application/zip", "application/x-zip-compressed"])
-            sync_job.total_files_found = len(drive_files)
+            # Step 1: Recursively walk the Drive folder and classify every file
+            logger.info("[GoogleDriveSync] Walking and classifying Drive folder tree...")
+            classified_files = self._discover_and_classify()
+            sync_job.total_files_found = len(classified_files)
             self.db.commit()
 
+            invoice_files = [f for f in classified_files if f.document_type == DocumentType.INVOICE]
+            credit_note_files = [f for f in classified_files if f.document_type == DocumentType.CREDIT_NOTE]
+            client_sheet_files = [f for f in classified_files if f.document_type == DocumentType.CLIENT_SHEET]
+            archive_files = [f for f in classified_files if f.document_type == DocumentType.ARCHIVE]
+            unknown_files = [f for f in classified_files if f.document_type == DocumentType.UNKNOWN]
+
+            logger.info(
+                f"[GoogleDriveSync] Classified {len(classified_files)} files: "
+                f"{len(invoice_files)} invoice, {len(credit_note_files)} credit_note, "
+                f"{len(client_sheet_files)} client_sheet, {len(archive_files)} archive, "
+                f"{len(unknown_files)} unknown"
+            )
+            for f in unknown_files:
+                logger.warning(f"[GoogleDriveSync] UNKNOWN document type, not processed: {'/'.join(f.path)}/{f.name}")
+
+            # Credit notes now have an extractor - process them.
+            temp_dir_cn = tempfile.mkdtemp(prefix="google_drive_sync_cn_")
+            cn_processed, cn_failed = self._process_credit_note_files(credit_note_files, temp_dir_cn, sync_job)
+
+            # Archives (.zip) only ever show up in a Purchase sync - a
+            # vendor's own zipped batch (confirmed present in OneStack's
+            # real Purchase tree this session). Extract + process their
+            # contents through the same purchase extraction path.
+            temp_dir_archive = tempfile.mkdtemp(prefix="google_drive_sync_archive_")
+            archive_processed, archive_failed = self._process_archive_files(
+                archive_files, temp_dir_archive, sync_job, model_config
+            )
+
+            # Client sheet now has a parser - parse and log a summary. Not
+            # persisted to the DB yet: there's no reconciliation engine (a
+            # later phase) to consume it, and its storage schema should be
+            # designed against what that engine actually needs, not guessed
+            # now. Parsing here at least proves the parser against the real
+            # file every run and surfaces its shape immediately.
+            self._log_client_sheet_summary(client_sheet_files)
+
+            # Auto-generate a period review now (not persisted purely by
+            # side effect of ingestion - see _maybe_generate_period_review)
+            # so it reflects this run's newly-ingested rows too, and runs
+            # regardless of whether there are new invoice files below (a
+            # client sheet arriving after all invoices were already synced
+            # is exactly the case this needs to still catch).
+            self._period_review_result = self._maybe_generate_period_review()
+
+            # stashed on self so _build_summary() can include them from every
+            # return point in this method without threading them through each one
+            self._credit_notes_found = len(credit_note_files)
+            self._credit_notes_processed = cn_processed
+            self._credit_notes_failed = cn_failed
+            self._client_sheets_found = len(client_sheet_files)
+            self._archives_found = len(archive_files)
+            self._archives_processed = archive_processed
+            self._archives_failed = archive_failed
+            self._unknown_found = len(unknown_files)
+
+            drive_files = invoice_files
+
             if not drive_files:
-                logger.warning("[GoogleDriveSync] No PDF files found in Google Drive folder")
+                logger.warning("[GoogleDriveSync] No invoice files found in Google Drive folder")
                 sync_job.status = "completed"
                 sync_job.completed_at = datetime.utcnow()
                 self.db.commit()
@@ -118,10 +209,19 @@ class GoogleDriveSyncPipeline:
             logger.info("[GoogleDriveSync] Checking which files are new or updated...")
             files_to_process = []
             for drive_file in drive_files:
-                file_id = drive_file["id"]
-                md5 = drive_file.get("md5Checksum", "")
+                file_id = drive_file.id
+                md5 = drive_file.md5_checksum or ""
 
                 if not self.file_tracker.is_file_processed(file_id, md5):
+                    # Respect the remaining max_files budget (credit notes and
+                    # archives above have already drawn from it). Over-budget
+                    # files are left entirely untracked so the next triggered
+                    # run picks them up.
+                    if self._budget_exhausted():
+                        self._files_deferred += 1
+                        continue
+                    self._consume_budget()
+
                     files_to_process.append(drive_file)
                     if self.file_tracker.db.query(GoogleDriveFileTracker).filter(
                         GoogleDriveFileTracker.google_drive_id == file_id
@@ -131,7 +231,11 @@ class GoogleDriveSyncPipeline:
                         sync_job.new_files += 1
 
             self.db.commit()
-            logger.info(f"[GoogleDriveSync] {len(files_to_process)} new/updated files to process")
+            logger.info(
+                f"[GoogleDriveSync] {len(files_to_process)} new/updated files to process"
+                + (f" ({self._files_deferred} deferred by max_files={self.max_files})"
+                   if self._files_deferred else "")
+            )
 
             if not files_to_process:
                 logger.info("[GoogleDriveSync] No new files to process. Sync complete.")
@@ -140,187 +244,37 @@ class GoogleDriveSyncPipeline:
                 self.db.commit()
                 return self._build_summary(sync_job)
 
-            # Cap this run's actual work to max_files (see docstring). The rest
-            # stay unprocessed in Drive/untracked and will be picked up by the
-            # next trigger — dedup means we never reprocess what's already done.
-            files_to_run = files_to_process[:max_files] if max_files else files_to_process
-            remaining_after_this_run = len(files_to_process) - len(files_to_run)
-            if remaining_after_this_run > 0:
-                logger.info(
-                    f"[GoogleDriveSync] max_files={max_files}: processing {len(files_to_run)} of "
-                    f"{len(files_to_process)} new/updated files this run, {remaining_after_this_run} remaining"
-                )
-
-            # Step 3: Download files, extract concurrently, then persist sequentially.
-            #
-            # Extraction (process_pdf -> Gemini) is the ~80-90s/file bottleneck;
-            # everything else (DB writes on self.db, Excel appends) is fast and
-            # NOT thread-safe to run concurrently against one shared session/
-            # workbook. So downloads + DB/Excel bookkeeping stay sequential here,
-            # while only the extraction step for plain PDFs runs concurrently,
-            # bounded by the same llm_semaphore + RpmGuard already tuned in
-            # async_tasks.py for the interactive upload pipeline — both pipelines
-            # now share one real rate budget against Gemini's RPM limit instead
-            # of each unknowingly competing for it.
-            logger.info(f"[GoogleDriveSync] Processing {len(files_to_run)} files...")
+            # Step 3: Download and process files
+            logger.info(f"[GoogleDriveSync] Processing {len(files_to_process)} files...")
             temp_dir = tempfile.mkdtemp(prefix="google_drive_sync_")
 
-            zip_jobs: List[Dict] = []
-            pdf_jobs: List[Dict] = []
-
-            for drive_file in files_to_run:
-                file_id = drive_file["id"]
-                filename = drive_file["name"]
-                md5 = drive_file.get("md5Checksum", "")
-                modified_time = drive_file.get("modifiedTime", "")
-
+            for drive_file in files_to_process:
                 try:
-                    logger.info(f"[GoogleDriveSync] Downloading {filename}...")
+                    file_id = drive_file.id
+                    filename = drive_file.name
+                    md5 = drive_file.md5_checksum or ""
+                    modified_time = drive_file.modified_time or ""
+
+                    logger.info(f"[GoogleDriveSync] Processing {filename}...")
+
+                    # Mark as processing
                     self.file_tracker.mark_as_processing(file_id, self.tenant_id, filename, md5, modified_time)
 
+                    # Download file
                     local_path = os.path.join(temp_dir, filename)
                     if not self.drive.download_file(file_id, filename, local_path):
                         raise Exception(f"Failed to download {filename}")
 
-                    is_zip = filename.lower().endswith('.zip') or drive_file.get("mimeType") in ["application/zip", "application/x-zip-compressed"]
+                    # Process through extraction pipeline
+                    task_id = self._process_invoice(local_path, filename, model_config)
 
-                    if is_zip:
-                        zip_jobs.append({"drive_file": drive_file, "local_path": local_path})
-                    else:
-                        # Create the task row now (before extraction) so a failed
-                        # extraction still leaves a FAILED task in the audit trail,
-                        # same as the previous sequential behavior.
-                        task = self._create_pending_task(filename)
-                        pdf_jobs.append({"drive_file": drive_file, "local_path": local_path, "task": task})
-
-                except Exception as e:
-                    logger.error(f"[GoogleDriveSync] Error downloading {filename}: {e}")
-                    self.file_tracker.mark_as_failed(file_id, str(e))
-                    sync_job.failed_files += 1
-
-            # Concurrent extraction phase — plain PDFs only.
-            extraction_results: Dict[str, Tuple] = {}
-            if pdf_jobs:
-                extraction_results = asyncio.run(self._extract_batch_concurrent(pdf_jobs, model_config))
-
-            # Sequential persistence phase — original order, DB/Excel writes.
-            for job in pdf_jobs:
-                drive_file = job["drive_file"]
-                file_id = drive_file["id"]
-                filename = drive_file["name"]
-                task = job["task"]
-
-                res, pre_recon_status, attempts_used, extract_error = extraction_results.get(
-                    file_id, (None, None, 0, Exception("missing extraction result"))
-                )
-
-                if extract_error is not None:
-                    logger.error(f"[GoogleDriveSync] Error processing {filename}: {extract_error}")
-                    self.file_tracker.mark_as_failed(file_id, str(extract_error))
-                    try:
-                        task.status = TaskStatus.FAILED
-                        task.error_message = str(extract_error)
-                        self.db.commit()
-                    except Exception:
-                        pass
-                    sync_job.failed_files += 1
-                    continue
-
-                try:
-                    result = self._finish_invoice(task, filename, res, pre_recon_status, attempts_used)
-
-                    if not result or not result.get("task_id"):
-                        raise Exception(f"Failed to extract invoice from {filename}")
-
-                    task_id = result["task_id"]
-
-                    if result.get("is_duplicate"):
-                        # Same (invoice_no, party_gstin, voucher_date) already exists
-                        # for this tenant — do NOT append to Excel (would double-count
-                        # the invoice in GST filings). Still counted as processed.
-                        self.file_tracker.mark_as_completed(file_id, task_id)
-                        self._set_tracker_status(file_id, "duplicate_skipped", result.get("duplicate_reason"))
-                        logger.warning(f"[GoogleDriveSync] {filename} SKIPPED — duplicate of {result.get('duplicate_reason')}")
-                        sync_job.processed_files += 1
-                        continue
-
-                    recon_status = result.get("recon_status")
-                    if recon_status == "ERP_READY":
-                        # Only reconciled, arithmetically-sound invoices go into the
-                        # clean output Excel that feeds GSTR-1/ITC exports.
+                    if task_id:
+                        # Append to Excel
                         self._append_to_excel(task_id, filename)
                         self.file_tracker.mark_as_completed(file_id, task_id)
-                    else:
-                        # NEEDS_REVIEW / BLOCKED — line items don't reconcile against
-                        # the invoice's own printed totals. Route to the review file
-                        # instead of silently mixing unverified data into the main sheet.
-                        self._append_to_review_excel(task_id, filename, recon_status)
-                        self._set_tracker_status(file_id, "needs_review", recon_status)
-                        logger.warning(f"[GoogleDriveSync] {filename} flagged {recon_status} — routed to review file, not main Excel")
-
-                    sync_job.processed_files += 1
-
-                except Exception as e:
-                    logger.error(f"[GoogleDriveSync] Error processing {filename}: {e}")
-                    self.file_tracker.mark_as_failed(file_id, str(e))
-                    sync_job.failed_files += 1
-
-            # Zip jobs stay sequential (rare path, and each zip can contain a
-            # variable number of nested PDFs) — unchanged from before.
-            for job in zip_jobs:
-                drive_file = job["drive_file"]
-                local_path = job["local_path"]
-                file_id = drive_file["id"]
-                filename = drive_file["name"]
-
-                try:
-                    from services.google_drive_zip import PDFExtractor
-                    with open(local_path, "rb") as f:
-                        zip_data = f.read()
-
-                    extracted_pdfs = PDFExtractor.extract_nested_zips(zip_data, filename)
-                    if not extracted_pdfs:
-                        logger.info(f"[GoogleDriveSync] No PDFs found inside {filename}")
-                        self.file_tracker.mark_as_completed(file_id, "no_pdfs_in_zip")
                         sync_job.processed_files += 1
-                        continue
-
-                    all_successful = True
-                    for pdf in extracted_pdfs:
-                        pdf_filename = pdf["filename"]
-                        pdf_data = pdf["data"]
-
-                        pdf_local_path = os.path.join(temp_dir, f"{uuid4().hex}_{os.path.basename(pdf_filename)}")
-                        with open(pdf_local_path, "wb") as f:
-                            f.write(pdf_data)
-
-                        # Tag the nested filename inside the zip for Excel output
-                        tagged_filename = f"{filename}/{pdf_filename}"
-                        result = self._process_invoice(pdf_local_path, tagged_filename, model_config)
-
-                        if not result or not result.get("task_id"):
-                            logger.error(f"[GoogleDriveSync] Failed to extract invoice from {pdf_filename} inside {filename}")
-                            all_successful = False
-                            continue
-
-                        task_id = result["task_id"]
-
-                        if result.get("is_duplicate"):
-                            logger.warning(f"[GoogleDriveSync] {tagged_filename} SKIPPED — duplicate of {result.get('duplicate_reason')}")
-                            continue
-
-                        recon_status = result.get("recon_status")
-                        if recon_status == "ERP_READY":
-                            self._append_to_excel(task_id, tagged_filename)
-                        else:
-                            self._append_to_review_excel(task_id, tagged_filename, recon_status)
-
-                    if all_successful:
-                        self.file_tracker.mark_as_completed(file_id, "zip_processed")
                     else:
-                        self.file_tracker.mark_as_failed(file_id, "some_pdfs_failed_in_zip")
-
-                    sync_job.processed_files += 1
+                        raise Exception(f"Failed to extract invoice from {filename}")
 
                 except Exception as e:
                     logger.error(f"[GoogleDriveSync] Error processing {filename}: {e}")
@@ -336,9 +290,7 @@ class GoogleDriveSyncPipeline:
             self.db.commit()
 
             logger.info(f"[GoogleDriveSync] Sync job {sync_job_id} completed successfully")
-            summary = self._build_summary(sync_job)
-            summary["remaining_files"] = remaining_after_this_run
-            return summary
+            return self._build_summary(sync_job)
 
         except Exception as e:
             logger.error(f"[GoogleDriveSync] Fatal error in sync job {sync_job_id}: {e}")
@@ -353,6 +305,368 @@ class GoogleDriveSyncPipeline:
 
         finally:
             self.db.close()
+
+    def _discover_and_classify(self) -> List[ClassifiedFile]:
+        """
+        Recursively walks self.google_drive_folder_id and classifies every
+        file found. Kept as its own method (pure w.r.t. the rest of the
+        pipeline - only touches self.drive.list_files) so it can be unit
+        tested against a fixture lister without live Drive credentials,
+        DB, or Celery.
+
+        A pure "purchase" sync uses walk_and_classify_purchase instead of
+        the Sales-tree walker - OneStack's real Purchase Drive tree
+        organizes invoices into the vendor's own expense-category
+        subfolders (HR, Telecom, Rental, ...), which carry no document-
+        type meaning the way Sales' "Credit Note"/"Sales Invoice" folders
+        do (see drive_classifier.classify_purchase_file). "both" still
+        uses the Sales walker since it's a single Drive tree being walked
+        either way - a true multi-root Purchase+Sales sync is two
+        separate pipeline runs (two different root folder IDs), not one.
+        """
+        def lister(folder_id: str):
+            return self.drive.list_files(file_types=None, folder_id=folder_id)
+        # subfolder_id (when given) scopes the whole run to one branch of
+        # the tree - e.g. a single month - instead of the configured root.
+        walk_root = self.subfolder_id or self.google_drive_folder_id
+        if self.invoice_type == "purchase":
+            return walk_and_classify_purchase(lister, walk_root)
+        return walk_and_classify(lister, walk_root)
+
+    def _budget_exhausted(self) -> bool:
+        """True once this run has consumed its max_files budget."""
+        return self._files_budget is not None and self._files_budget <= 0
+
+    def _consume_budget(self, n: int = 1):
+        """Charge n files against this run's max_files budget (no-op if uncapped)."""
+        if self._files_budget is not None:
+            self._files_budget -= n
+
+    def _track_unprocessed(self, files: List[ClassifiedFile], reason: str):
+        """
+        Logs files found this run without writing anything to the dedup
+        tracker DB. Deliberately not marking them "seen" - once whatever's
+        missing (an extractor, a downstream consumer) exists, they must
+        still be picked up on the next run, not silently skipped because
+        an earlier run already saw the file.
+        """
+        for f in files:
+            location = "/".join(f.path) if f.path else "(month root)"
+            logger.info(f"[GoogleDriveSync] Found but not yet processed ({reason}): {location}/{f.name}")
+
+    def _log_client_sheet_summary(self, client_sheet_files: List[ClassifiedFile]):
+        """
+        Downloads and parses each classified client-sheet file, logging a
+        summary (row counts, doc-type split), and stashes the local path of
+        the last one successfully parsed on self._client_sheet_local_path
+        for _maybe_generate_period_review() to reconcile against. Not
+        marked "seen" in the dedup tracker: every run must still re-surface
+        the client sheet, since it's the reconciliation input, not a
+        document to ingest once and forget.
+        """
+        from services.client_sheet_parser import parse_client_sheet
+
+        self._client_sheet_local_path = None
+        for cf in client_sheet_files:
+            location = "/".join(cf.path) if cf.path else "(month root)"
+            try:
+                temp_dir = tempfile.mkdtemp(prefix="google_drive_sync_cs_")
+                local_path = os.path.join(temp_dir, cf.name)
+                if not self.drive.download_file(cf.id, cf.name, local_path):
+                    raise Exception(f"Failed to download {cf.name}")
+                rows = parse_client_sheet(local_path)
+                invoices = sum(1 for r in rows if r["doc_type"] == "Invoice")
+                credit_notes = sum(1 for r in rows if r["doc_type"] == "Credit Note")
+                logger.info(
+                    f"[GoogleDriveSync] Parsed client sheet {location}/{cf.name}: "
+                    f"{len(rows)} rows ({invoices} invoice, {credit_notes} credit note)"
+                )
+                self._client_sheet_local_path = local_path
+            except Exception as e:
+                logger.error(f"[GoogleDriveSync] Error parsing client sheet {cf.name}: {e}")
+
+    def _maybe_generate_period_review(self) -> dict:
+        """
+        Generates a SalesPeriodReview for self.period if a client sheet was
+        found this run and a period was given at construction time (only
+        true for the scheduled sales_ingestion_task path - see __init__).
+        skip_if_pending=True: a daily scheduled sync shouldn't pile up a
+        fresh unreviewed row every day while a human hasn't acted on
+        yesterday's yet.
+        """
+        if not self.period or not getattr(self, "_client_sheet_local_path", None):
+            return {"attempted": False}
+
+        from services.period_review import generate_period_review_for_tenant
+
+        try:
+            review, created = generate_period_review_for_tenant(
+                self.db, self.tenant_id, self.period,
+                self._client_sheet_local_path, skip_if_pending=True,
+            )
+            logger.info(
+                f"[GoogleDriveSync] Period review for {self.period}: "
+                f"{'created new' if created else 'skipped, already pending'} review {review.id}"
+            )
+            return {"attempted": True, "created": created, "review_id": review.id}
+        except Exception as e:
+            logger.error(f"[GoogleDriveSync] Failed to auto-generate period review for {self.period}: {e}")
+            return {"attempted": True, "created": False, "error": str(e)}
+
+    def _process_credit_note_files(self, credit_note_files: List[ClassifiedFile],
+                                    temp_dir: str, sync_job) -> Tuple[int, int]:
+        """
+        Downloads and stores each classified credit-note file via the
+        shared credit_note_ingest module (also used by main.py's zip
+        upload path, so GSTIN resolution and SalesLineItem construction
+        don't drift between the two entry points). Returns
+        (processed_count, failed_count).
+
+        voucher_type="Credit Note" is what classify_gstr1_item already
+        keys off to route these into CDNR/CDNUR in gstr1_generator.py -
+        no new downstream plumbing needed for the ones with a resolvable
+        GSTIN.
+        """
+        from services.credit_note_ingest import ingest_credit_note_pdf
+
+        processed = 0
+        failed = 0
+        for cf in credit_note_files:
+            file_id = cf.id
+            filename = cf.name
+            md5 = cf.md5_checksum or ""
+            modified_time = cf.modified_time or ""
+
+            if self.file_tracker.is_file_processed(file_id, md5):
+                continue
+
+            if self._budget_exhausted():
+                self._files_deferred += 1
+                logger.info(f"[GoogleDriveSync] max_files budget reached - deferring credit note {filename}")
+                continue
+
+            self._consume_budget()
+
+            try:
+                self.file_tracker.mark_as_processing(file_id, self.tenant_id, filename, md5, modified_time)
+
+                local_path = os.path.join(temp_dir, filename)
+                if not self.drive.download_file(file_id, filename, local_path):
+                    raise Exception(f"Failed to download {filename}")
+
+                batch_id = f"sync_{self.tenant_id}_{datetime.now().strftime('%Y%m%d')}"
+                batch = self.db.query(BatchJob).filter(BatchJob.id == batch_id).first()
+                if not batch:
+                    batch = BatchJob(id=batch_id, tenant_id=self.tenant_id, total_files=0, status=TaskStatus.PENDING)
+                    self.db.add(batch)
+                    self.db.commit()
+
+                task_id = ingest_credit_note_pdf(self.db, self.tenant_id, batch_id, local_path, filename)
+                if not task_id:
+                    raise Exception(f"{filename} classified as credit_note but 'Credit Note Number' not found in text")
+
+                self.file_tracker.mark_as_completed(file_id, task_id)
+                sync_job.processed_files += 1
+                processed += 1
+
+            except Exception as e:
+                logger.error(f"[GoogleDriveSync] Error processing credit note {filename}: {e}")
+                self.file_tracker.mark_as_failed(file_id, str(e))
+                sync_job.failed_files += 1
+                failed += 1
+
+        self.db.commit()
+        return processed, failed
+
+    def _process_archive_files(self, archive_files: List[ClassifiedFile], temp_dir: str,
+                                sync_job, model_config: Dict = None) -> Tuple[int, int]:
+        """
+        Downloads and extracts each classified .zip (only produced by a
+        Purchase sync - see classify_purchase_file), classifies its
+        contents the same extension-only way as the rest of a Purchase
+        sync, and processes every nested invoice found inside through the
+        normal purchase extraction path. Dedup is tracked against the
+        ZIP's own Drive file id/md5 as a single unit (re-processing every
+        file inside only when the zip itself changes), not per nested
+        file, since nested files have no Drive file id of their own.
+
+        Returns (processed_count, failed_count) - counts of nested
+        invoices actually extracted, not archives themselves.
+        """
+        import zipfile
+        from services.drive_classifier import classify_local_directory_purchase as _classify_purchase_dir
+
+        processed = 0
+        failed = 0
+        for cf in archive_files:
+            file_id = cf.id
+            filename = cf.name
+            md5 = cf.md5_checksum or ""
+            modified_time = cf.modified_time or ""
+
+            if self.file_tracker.is_file_processed(file_id, md5):
+                continue
+
+            # A zip is charged as a single unit, matching how it's deduped
+            # (see docstring) - its nested files have no Drive id of their own.
+            if self._budget_exhausted():
+                self._files_deferred += 1
+                logger.info(f"[GoogleDriveSync] max_files budget reached - deferring archive {filename}")
+                continue
+
+            self._consume_budget()
+
+            try:
+                self.file_tracker.mark_as_processing(file_id, self.tenant_id, filename, md5, modified_time)
+
+                zip_local_path = os.path.join(temp_dir, filename)
+                if not self.drive.download_file(file_id, filename, zip_local_path):
+                    raise Exception(f"Failed to download {filename}")
+
+                extract_dir = os.path.join(temp_dir, f"extracted_{uuid4().hex[:8]}")
+                os.makedirs(extract_dir, exist_ok=True)
+                with zipfile.ZipFile(zip_local_path, "r") as zf:
+                    zf.extractall(extract_dir)
+
+                nested = _classify_purchase_dir(extract_dir)
+                for nf in nested:
+                    if nf.document_type != DocumentType.INVOICE:
+                        logger.warning(
+                            f"[GoogleDriveSync] {filename}: found but not processed "
+                            f"({nf.document_type.value}): {'/'.join(nf.path)}/{nf.name}"
+                        )
+                        continue
+                    nested_path = nf.id  # local_directory_lister sets id to the real file path
+                    task_id = self._process_invoice(nested_path, nf.name, model_config)
+                    if task_id:
+                        self._append_to_excel(task_id, f"{filename}::{nf.name}")
+                        sync_job.processed_files += 1
+                        processed += 1
+                    else:
+                        logger.error(f"[GoogleDriveSync] Failed to extract invoice from {filename}::{nf.name}")
+                        sync_job.failed_files += 1
+                        failed += 1
+
+                self.file_tracker.mark_as_completed(file_id, None)
+
+            except Exception as e:
+                logger.error(f"[GoogleDriveSync] Error processing archive {filename}: {e}")
+                self.file_tracker.mark_as_failed(file_id, str(e))
+                failed += 1
+
+        self.db.commit()
+        return processed, failed
+
+    def _process_invoice(self, file_path: str, filename: str, model_config: Dict = None) -> str:
+        """
+        Process invoice through extraction pipeline.
+        Returns task_id if successful, None otherwise.
+        """
+        from invoice_processor import process_pdf
+        import time
+
+        try:
+            batch_id = f"sync_{self.tenant_id}_{datetime.now().strftime('%Y%m%d')}"
+
+            # Create batch job if doesn't exist
+            batch = self.db.query(BatchJob).filter(BatchJob.id == batch_id).first()
+            if not batch:
+                batch = BatchJob(
+                    id=batch_id,
+                    tenant_id=self.tenant_id,
+                    total_files=0,
+                    status=TaskStatus.PENDING
+                )
+                self.db.add(batch)
+                self.db.commit()
+
+            # Create task
+            task_id = str(uuid4())
+            task = InvoiceTask(
+                id=task_id,
+                batch_id=batch_id,
+                file_name=filename,
+                status=TaskStatus.PENDING,
+                invoice_type=self.invoice_type
+            )
+            self.db.add(task)
+            self.db.commit()
+
+            # Process PDF
+            logger.info(f"[GoogleDriveSync] Extracting {filename}...")
+            t_start = time.time()
+
+            # Determine invoice type for processing
+            process_type = self.invoice_type if self.invoice_type != "both" else "both"
+
+            res = process_pdf(file_path, model_config or {}, process_type)
+
+            # Save extraction results to DB
+            if res.sales_items:
+                for item in res.sales_items:
+                    db_item = SalesLineItem(
+                        task_id=task.id,
+                        voucher_date=item.voucher_date,
+                        voucher_type=item.voucher_type,
+                        invoice_no=item.invoice_no,
+                        party_ledger_name=item.party_ledger_name,
+                        party_gstin=item.party_gstin,
+                        place_of_supply=item.place_of_supply,
+                        particulars=item.particulars,
+                        hsn=item.hsn,
+                        qty=item.qty,
+                        rate=item.rate,
+                        taxable_value=item.taxable_value,
+                        discount=item.discount,
+                        advances=item.advances,
+                        cgst_amount=item.cgst_amount,
+                        sgst_amount=item.sgst_amount,
+                        igst_amount=item.igst_amount,
+                        total_invoice_value=item.total_invoice_value,
+                        gstr1_category=item.gstr1_category,
+                        narration=item.narration
+                    )
+                    self.db.add(db_item)
+
+            if res.purchase_items:
+                for item in res.purchase_items:
+                    db_item = PurchaseLineItem(
+                        task_id=task.id,
+                        voucher_date=item.voucher_date,
+                        voucher_type=item.voucher_type,
+                        invoice_no=item.invoice_no,
+                        party_ledger_name=item.party_ledger_name,
+                        party_gstin=item.party_gstin,
+                        place_of_supply=item.place_of_supply,
+                        particulars=item.particulars,
+                        hsn=item.hsn,
+                        qty=item.qty,
+                        rate=item.rate,
+                        taxable_value=item.taxable_value,
+                        cgst_amount=item.cgst_amount,
+                        sgst_amount=item.sgst_amount,
+                        igst_amount=item.igst_amount,
+                        total_invoice_value=item.total_invoice_value,
+                        itc_eligibility=item.itc_category,
+                        narration=item.narration
+                    )
+                    self.db.add(db_item)
+
+            task.status = TaskStatus.COMPLETED
+            self.db.commit()
+
+            logger.info(f"[GoogleDriveSync] Extracted {filename} in {time.time() - t_start:.2f}s")
+            return task_id
+
+        except Exception as e:
+            logger.error(f"[GoogleDriveSync] Error processing {filename}: {e}")
+            try:
+                task.status = TaskStatus.FAILED
+                task.error_message = str(e)
+                self.db.commit()
+            except Exception:
+                pass
+            return None
 
     def _check_duplicate(self, invoice_no: str, party_gstin: str, voucher_date: str, exclude_task_id: str) -> Optional[str]:
         """
@@ -766,4 +1080,20 @@ class GoogleDriveSyncPipeline:
             "needs_review_files": needs_review_count,
             "excel_output_path": sync_job.excel_output_path,
             "duration_seconds": (sync_job.completed_at - sync_job.sync_timestamp).total_seconds() if sync_job.completed_at else None,
+            # not persisted on GoogleDriveSyncJob (no migration for this yet) -
+            # in-memory only, so these don't survive a server restart mid-run
+            "credit_notes_found": getattr(self, "_credit_notes_found", 0),
+            "credit_notes_processed": getattr(self, "_credit_notes_processed", 0),
+            "credit_notes_failed": getattr(self, "_credit_notes_failed", 0),
+            "client_sheets_found": getattr(self, "_client_sheets_found", 0),
+            "archives_found": getattr(self, "_archives_found", 0),
+            "archives_processed": getattr(self, "_archives_processed", 0),
+            "archives_failed": getattr(self, "_archives_failed", 0),
+            "unknown_found": getattr(self, "_unknown_found", 0),
+            # how the run was scoped, and what it left behind for the next
+            # trigger because of the cap (0 when uncapped / fully drained)
+            "max_files": self.max_files,
+            "subfolder_id": self.subfolder_id,
+            "files_deferred": self._files_deferred,
+            "period_review": getattr(self, "_period_review_result", {"attempted": False}),
         }

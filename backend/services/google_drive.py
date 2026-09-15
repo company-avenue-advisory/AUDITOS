@@ -132,15 +132,17 @@ class GoogleDriveConnector:
             key=lambda f: f["name"],
         )
 
-    def list_files(self, file_types: List[str] = None, recursive: bool = True) -> List[Dict]:
+    def list_files(self, file_types: List[str] = None, folder_id: str = None) -> List[Dict]:
         """
-        List files in the monitored folder (and, by default, all of its subfolders).
+        List files in the monitored folder.
 
         Args:
             file_types: MIME types to filter (e.g., ["application/pdf"])
-                       If None, returns all files.
-            recursive: If True (default), also walks into subfolders. Clients
-                       commonly organize invoices into month/year subfolders.
+                       If None, returns all files (including subfolders,
+                       whose mimeType is "application/vnd.google-apps.folder").
+            folder_id: overrides self.folder_id for this one call - lets
+                       callers recurse into subfolders without constructing
+                       a new connector per folder level.
 
         Returns:
             List of file metadata dicts with keys:
@@ -154,23 +156,33 @@ class GoogleDriveConnector:
         if not self.service:
             raise RuntimeError("Not authenticated with Google Drive")
 
-        mime_query = None
-        if file_types:
-            mime_query = " or ".join([f"mimeType='{mime}'" for mime in file_types])
-
+        target_folder_id = folder_id or self.folder_id
+        files = []
         try:
-            folder_ids = [self.folder_id]
-            if recursive:
-                folder_ids += self._get_all_subfolder_ids(self.folder_id)
+            # Build query for files in the folder
+            query = f"'{target_folder_id}' in parents and trashed=false"
 
-            files = []
-            for folder_id in folder_ids:
-                files.extend(self._list_children(folder_id, mime_query=mime_query))
+            # Filter by MIME type if specified (PDFs only for invoices)
+            if file_types:
+                mime_filters = " or ".join([f"mimeType='{mime}'" for mime in file_types])
+                query += f" and ({mime_filters})"
 
-            logger.info(
-                f"Found {len(files)} files across {len(folder_ids)} folder(s) "
-                f"under Google Drive folder {self.folder_id}"
-            )
+            page_token = None
+            while True:
+                results = self.service.files().list(
+                    q=query,
+                    spaces="drive",
+                    pageSize=100,
+                    fields="nextPageToken, files(id, name, mimeType, md5Checksum, modifiedTime, webViewLink, size)",
+                    pageToken=page_token
+                ).execute()
+
+                files.extend(results.get("files", []))
+                page_token = results.get("nextPageToken")
+                if not page_token:
+                    break
+
+            logger.info(f"Found {len(files)} files in Google Drive folder {target_folder_id}")
             return files
 
         except Exception as e:
@@ -252,6 +264,7 @@ class GoogleDriveFileTracker:
         Returns False if:
           - File ID doesn't exist (new file)
           - File ID exists but md5Checksum changed (file was updated)
+          - File ID exists but processing_status is not "completed" (crashed/failed)
         """
         try:
             existing = self.db.query(self.DBTracker).filter(
@@ -265,6 +278,11 @@ class GoogleDriveFileTracker:
             if existing.md5_checksum != md5_checksum:
                 logger.info(f"File {google_drive_id} was updated (md5 changed)")
                 return False  # File was updated, needs reprocessing
+
+            # Check if previous processing actually completed
+            if existing.processing_status != "completed":
+                logger.info(f"File {google_drive_id} has status '{existing.processing_status}', will retry")
+                return False  # Previous run didn't finish, needs reprocessing
 
             return True  # Already processed with same content
 

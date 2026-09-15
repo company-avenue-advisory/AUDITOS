@@ -24,6 +24,39 @@ AuditOS is a highly specialized, enterprise-grade AI pipeline designed to automa
 - **43B(h) MSME Compliance:** Tracks vendor payment timelines against Section 43B(h) limits and flags at-risk outstanding balances.
 - **Duplicate Invoice Detection:** Cross-batch deduplication using composite key hashing (GSTIN + invoice number + date + amount) to prevent double-booking.
 
+### TallyPrime Direct Connector
+- **XML-over-HTTP connector** (`services/tally_connector.py`) talks directly to TallyPrime's built-in server (default port 9000) over LAN — no cloud API, no manual Excel re-import into Tally.
+- **Read:** company list, chart of accounts (ledgers with GSTIN/state/opening balance), and vouchers by date range.
+- **Write:** pushes approved Sales, Purchase, Credit Note, and Debit Note line items as Tally vouchers. Credit/Debit Note are booked as the exact accounting reversal of Sales/Purchase (every ledger leg's sign negated), verified live to produce the correct Dr/Cr balance direction.
+- **Ledger auto-resolution:** if a party (customer/vendor) doesn't yet exist in Tally, it's created automatically under Sundry Debtors/Creditors with GSTIN and state carried over — the voucher push never fails on an unknown-ledger error.
+- **Idempotent by design:** every push attempt is logged (`TallyPushLog`); re-running a push on the same batch skips items already pushed successfully instead of creating duplicate vouchers.
+- **Approval-gated:** only pushes line items with `recon_status == "ERP_READY"` (the same reconciliation-review checkpoint used elsewhere) — never pushes unreviewed data.
+- One-click **"Push to Tally"** button in the invoice extractor UI, with per-invoice success/skip/fail reporting (no silent failures).
+- Connection settings (host/port/company) are saved per-tenant after the first successful push, so the modal pre-fills instead of asking every time.
+- See [`backend/docs/TALLY_CONNECTOR_SETUP.md`](backend/docs/TALLY_CONNECTOR_SETUP.md) for onboarding a new client's Tally machine — firewall rules, subnet troubleshooting, and the port-collision check that matters on shared machines.
+
+**Current flow — requires AuditOS's backend and the Tally machine on the same LAN** (true for local dev and any on-prem deployment; not yet true once the backend is cloud-hosted, since a cloud server can't reach into a firm's private network):
+
+```mermaid
+graph LR
+    UI["Push to Tally button<br/>invoice-extractor UI"]:::built --> API
+    API["POST /api/tally/push<br/>ERP_READY items only"]:::built --> CONN
+    CONN["tally_connector.py<br/>XML-over-HTTP"]:::built --> TALLY
+    LOG["TallyPushLog<br/>idempotency"]:::built -.->|checked before every push| CONN
+    CFG["TallyConnectionConfig<br/>saved host/port/company"]:::built -.->|pre-fills| UI
+
+    subgraph LAN["Same LAN (required today)"]
+        TALLY["TallyPrime<br/>Server mode, port 9000"]:::built
+    end
+
+    BRIDGE["Local Bridge Agent<br/>outbound-only relay, LAN auto-discovery<br/>lets cloud-hosted AuditOS reach any firm's Tally"]:::planned -.->|replaces direct LAN link| CONN
+
+    classDef built fill:#d1f3ea,stroke:#0f6e56,color:#04342c
+    classDef planned fill:#f1efe8,stroke:#888780,color:#2c2c2a,stroke-dasharray: 5 5
+```
+
+**Planned (not yet built):** a lightweight local agent an accountant pairs once (6-digit code, no IP/firewall config) that opens an outbound connection to the cloud backend and relays push jobs to their local Tally — the standard pattern for reaching a private LAN from a cloud product (same approach as Zoom/ngrok/TeamViewer).
+
 ### Google Drive Auto-Sync
 - **One-click pull:** Configure a Drive folder once (folder URL or ID), then trigger a sync from the UI — no CLI needed.
 - Per-tenant config persisted in the database (`GoogleDriveSyncConfig`); subsequent triggers reuse the saved folder without re-entering it.
@@ -75,6 +108,45 @@ graph TD
     H --> I[Excel / GSTR-1 JSON Export]
 ```
 
+### Sales Ingestion Pipeline (OneStack) — Build Status
+
+Client-specific pipeline for OneStack Solution's monthly Sales ingestion, built folder-by-folder against their real Google Drive tree rather than a generic template. Green = built and verified (regression-tested); gray = not yet built; orange = deferred to its own phase (Purchase/Vendor Invoices needs a different extraction strategy — heterogeneous multi-vendor formats vs. Sales' single fixed template).
+
+```mermaid
+graph TD
+    subgraph Source["Source (real Drive tree, confirmed)"]
+        SI["Sales Invoice / Other Invoices"]
+        CN["Credit Note folder"]
+        CS["Client sheet (.xlsx)"]
+        ZIP["Manual zip / PDF upload"]
+    end
+
+    SI --> CLASS
+    CN --> CLASS
+    CS --> CLASS
+    ZIP --> CLASS
+
+    CLASS["drive_classifier.py<br/>folder-based, not filename"]:::built --> RESOLVE
+    RESOLVE["drive_path_resolver.py<br/>config + date to month folder ID"]:::built --> LINEITEM
+    RESOLVE --> CREDITNOTE
+    RESOLVE --> CLIENTPARSE
+
+    LINEITEM["extract_deterministic_line_items<br/>invoice_processor.py"]:::built --> RECON
+    CREDITNOTE["extract_credit_note<br/>+ credit_note_ingest.py"]:::built --> RECON
+    CLIENTPARSE["client_sheet_parser.py<br/>parses, not yet persisted"]:::built --> RECON
+
+    RECON["Reconciliation engine<br/>PDF vs OS vs client, tolerance-aware"]:::pending --> GSTR1SVC
+    GSTR1SVC["GSTR-1 workbook service<br/>tie into gstr1_generator.py"]:::pending --> SCHED
+    SCHED["Celery beat scheduling<br/>monthly, unattended"]:::pending --> REVIEW
+    REVIEW["Review gate + delivery<br/>audit trail, client handoff"]:::pending
+
+    PURCHASE["Purchase / Vendor Invoices<br/>deferred - multi-vendor,<br/>Nanonets candidate (Phase 0b)"]:::deferred
+
+    classDef built fill:#d1f3ea,stroke:#0f6e56,color:#04342c
+    classDef pending fill:#f1efe8,stroke:#888780,color:#2c2c2a
+    classDef deferred fill:#faece7,stroke:#d85a30,color:#4a1b0c
+```
+
 ---
 
 ## Local Development Setup
@@ -119,6 +191,10 @@ CELERY_BROKER_URL="redis://localhost:6379/0"
 # Google Drive sync (optional)
 GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON=/path/to/service-account-key.json
 GOOGLE_DRIVE_FOLDER_ID=YOUR_GOOGLE_DRIVE_FOLDER_ID_HERE
+
+# LLM throughput tuning (optional — defaults are free-tier-safe; raise once on a paid key)
+LLM_CONCURRENCY=3
+RPM_GEMINI_FLASH=10
 
 # Observability (optional)
 SENTRY_DSN=""
@@ -206,6 +282,8 @@ backend/
     duplicate_detector.py # Cross-batch deduplication
     google_drive_sync.py  # Google Drive polling & webhook sync
     excel_sync.py         # Excel output with lockfile coordination
+    output_schema.py      # Canonical field dictionary + named Excel views
+    tally_connector.py    # TallyPrime XML-over-HTTP connector (read/write/idempotent)
     vendor_profile.py     # Per-vendor extraction hints
   tests/regression/       # GST math, GSTR-2B, ITC rules regression suite
   scripts/                # Setup, backtest, and training utilities

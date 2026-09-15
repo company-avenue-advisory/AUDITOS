@@ -1,0 +1,12 @@
+{
+  "case_id": "sales_001_exact_match",
+  "document_type": "sales_invoice",
+  "source": "synthetic",
+  "fields": {
+    "buyer_gstin":     {"extracted": "07CCCCC3333C3Z3", "expected": "07CCCCC3333C3Z3", "confidence": 0.98},
+    "invoice_no":      {"extracted": "SI-2026-0011",    "expected": "SI-2026-0011",    "confidence": 0.97},
+    "taxable_value":   {"extracted": 100000.0,          "expected": 100000.0,          "confidence": 0.97},
+    "igst_amount":     {"extracted": 18000.0,           "expected": 18000.0,           "confidence": 0.97},
+    "place_of_supply": {"extracted": "Delhi",           "expected": "Delhi",           "confidence": 0.92}
+  }
+}

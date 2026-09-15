@@ -2,14 +2,15 @@
 
 import React, { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Shield, Sparkles, LogIn, UserPlus, Eye, EyeOff } from "lucide-react";
+import { Sparkles, LogIn, UserPlus, Eye, EyeOff } from "lucide-react";
+import BrandMark from "../../components/BrandMark";
 
 export default function LoginPage() {
   const router = useRouter();
   const [isLogin, setIsLogin] = useState(true);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [role, setRole] = useState("auditor");
+  const [role, setRole] = useState("accountant");
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -82,39 +83,9 @@ export default function LoginPage() {
         alignItems: "center",
         justifyContent: "center",
         padding: "24px",
-        background: "#06060a",
-        position: "relative",
-        overflow: "hidden",
+        background: "var(--bg-base)",
       }}
     >
-      {/* Background blobs */}
-      <div
-        style={{
-          position: "absolute",
-          width: "40vw",
-          height: "40vw",
-          top: "-10vw",
-          left: "-10vw",
-          borderRadius: "50%",
-          background: "radial-gradient(circle, rgba(99,102,241,0.15) 0%, transparent 75%)",
-          filter: "blur(60px)",
-          pointerEvents: "none",
-        }}
-      />
-      <div
-        style={{
-          position: "absolute",
-          width: "35vw",
-          height: "35vw",
-          bottom: "-5vw",
-          right: "-5vw",
-          borderRadius: "50%",
-          background: "radial-gradient(circle, rgba(139,92,246,0.12) 0%, transparent 75%)",
-          filter: "blur(60px)",
-          pointerEvents: "none",
-        }}
-      />
-
       <div
         className="glass animate-fade-up"
         style={{
@@ -122,27 +93,19 @@ export default function LoginPage() {
           maxWidth: "440px",
           borderRadius: "var(--radius-lg)",
           padding: "40px 32px",
-          boxShadow: "0 20px 50px rgba(0,0,0,0.5)",
-          position: "relative",
-          zIndex: 1,
         }}
       >
         {/* Logo/Brand */}
         <div style={{ display: "flex", flexDirection: "column", alignItems: "center", marginBottom: "32px" }}>
           <div
             style={{
-              width: "48px",
-              height: "48px",
-              borderRadius: "14px",
-              background: "linear-gradient(135deg, #6366f1, #818cf8)",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
-              boxShadow: "0 0 24px rgba(99,102,241,0.4)",
               marginBottom: "16px",
             }}
           >
-            <Shield size={24} style={{ color: "#fff" }} />
+            <BrandMark size={48} />
           </div>
           <h1
             style={{
@@ -165,7 +128,7 @@ export default function LoginPage() {
               fontWeight: 600,
             }}
           >
-            Security Layer Enabled
+            Invoice Compliance Platform
           </p>
         </div>
 
@@ -173,7 +136,7 @@ export default function LoginPage() {
         <div
           style={{
             display: "flex",
-            background: "rgba(255,255,255,0.03)",
+            background: "var(--bg-card)",
             border: "1px solid var(--border)",
             borderRadius: "var(--radius-sm)",
             padding: "4px",
@@ -191,7 +154,7 @@ export default function LoginPage() {
               padding: "10px",
               borderRadius: "8px",
               border: "none",
-              background: isLogin ? "rgba(255,255,255,0.08)" : "transparent",
+              background: isLogin ? "var(--accent-soft)" : "transparent",
               color: isLogin ? "var(--text-primary)" : "var(--text-secondary)",
               fontSize: "13px",
               fontWeight: 600,
@@ -217,7 +180,7 @@ export default function LoginPage() {
               padding: "10px",
               borderRadius: "8px",
               border: "none",
-              background: !isLogin ? "rgba(255,255,255,0.08)" : "transparent",
+              background: !isLogin ? "var(--accent-soft)" : "transparent",
               color: !isLogin ? "var(--text-primary)" : "var(--text-secondary)",
               fontSize: "13px",
               fontWeight: 600,
@@ -240,7 +203,7 @@ export default function LoginPage() {
             <div
               style={{
                 background: "var(--red-soft)",
-                border: "1px solid rgba(239,68,68,0.2)",
+                border: "1px solid var(--red)",
                 color: "var(--red)",
                 padding: "12px 16px",
                 borderRadius: "var(--radius-sm)",
@@ -256,7 +219,7 @@ export default function LoginPage() {
             <div
               style={{
                 background: "var(--green-soft)",
-                border: "1px solid rgba(34,197,94,0.2)",
+                border: "1px solid var(--green)",
                 color: "var(--green)",
                 padding: "12px 16px",
                 borderRadius: "var(--radius-sm)",
@@ -280,7 +243,7 @@ export default function LoginPage() {
               onChange={(e) => setEmail(e.target.value)}
               className="focus-ring"
               style={{
-                background: "rgba(255,255,255,0.03)",
+                background: "var(--bg-card)",
                 border: "1px solid var(--border)",
                 borderRadius: "var(--radius-sm)",
                 padding: "12px 16px",
@@ -304,7 +267,7 @@ export default function LoginPage() {
                 onChange={(e) => setPassword(e.target.value)}
                 className="focus-ring"
                 style={{
-                  background: "rgba(255,255,255,0.03)",
+                  background: "var(--bg-card)",
                   border: "1px solid var(--border)",
                   borderRadius: "var(--radius-sm)",
                   padding: "12px 48px 12px 16px",
@@ -347,7 +310,7 @@ export default function LoginPage() {
                 onChange={(e) => setRole(e.target.value)}
                 className="focus-ring"
                 style={{
-                  background: "#0c0c14",
+                  background: "var(--bg-card)",
                   border: "1px solid var(--border)",
                   borderRadius: "var(--radius-sm)",
                   padding: "12px 16px",
@@ -357,13 +320,13 @@ export default function LoginPage() {
                   width: "100%",
                 }}
               >
-                <option value="owner">Owner (Full Admin Access)</option>
-                <option value="hr">HR (Compliance & Udyam Access)</option>
-                <option value="auditor">Auditor (Extractor & Audits)</option>
-                <option value="other">Other (Read-Only Views)</option>
+                <option value="owner">Owner (Firm Admin — starting a new firm)</option>
+                <option value="senior">Senior (Reviewer)</option>
+                <option value="accountant">Accountant (Operator)</option>
               </select>
               <span style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "2px" }}>
-                Roles define access rules for MSME tax audits, PDF extractor operations, and dashboard stats.
+                Only relevant if you're starting a new firm. Joining an existing firm? Pick anything —
+                your firm's Owner sets your real role when they add you.
               </span>
             </div>
           )}
@@ -423,7 +386,7 @@ export default function LoginPage() {
           }}
         >
           <Sparkles size={12} style={{ color: "var(--accent)" }} />
-          <span>Secured with cryptographic password hashing (bcrypt)</span>
+          <span>Your data is securely encrypted</span>
         </div>
       </div>
     </div>
