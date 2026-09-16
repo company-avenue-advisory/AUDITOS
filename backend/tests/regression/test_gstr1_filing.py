@@ -6,8 +6,11 @@ status policy confirmed with the user 2026-07-08:
   - UNRESOLVED_CONFLICT -> included, but flagged
   - MISSING_SOURCE_PDF / UNVERIFIABLE_NO_GSTIN -> excluded, surfaced as skipped
 
-Uses real invoice numbers/prefixes from this session's June 2026 batch
-(MH/OMH -> Maharashtra registration, HR/OHR -> Haryana registration).
+Uses synthetic invoice-number prefixes (MH/OMH -> one registration,
+HR/OHR -> another) and placeholder GSTINs - the actual registration
+mapping for a real tenant is loaded at runtime from a gitignored
+data/registration_maps/{tenant_slug}.json (see
+services.gstr1_filing.load_registration_map), never hardcoded.
 """
 import sys
 import os
@@ -19,9 +22,15 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../.
 
 from backend.services.gstr1_filing import (
     filter_items_for_filing, split_items_by_registration, generate_gstr1_filings,
-    ONESTACK_REGISTRATION_MAP,
 )
 from backend.services.sales_reconciliation import ReconEntry, ReconStatus
+
+# Synthetic registration map for testing - mirrors the shape
+# load_registration_map returns, without any real tenant's GSTINs.
+TEST_REGISTRATION_MAP = {
+    "MH": "27AAAAA1111A1Z1", "OMH": "27AAAAA1111A1Z1",
+    "HR": "06BBBBB2222B2Z2", "OHR": "06BBBBB2222B2Z2",
+}
 
 
 @dataclass
@@ -51,8 +60,8 @@ class TestFilterItemsForFiling(unittest.TestCase):
 
     def test_pass_client_error_and_client_missing_are_included(self):
         items = [
-            FakeLineItem("MH26061040", "27AAAAK0891Q2Z3", "B2B", 76.61, cgst_amount=6.89, sgst_amount=6.89, total_invoice_value=90.40),
-            FakeLineItem("MH26071001", "09AAAAT0091R1ZW", "B2B", 235.51, igst_amount=42.39, total_invoice_value=277.90),
+            FakeLineItem("MH26061040", "27CCCCC3333C3Z3", "B2B", 76.61, cgst_amount=6.89, sgst_amount=6.89, total_invoice_value=90.40),
+            FakeLineItem("MH26071001", "09GGGGG7777G7Z7", "B2B", 235.51, igst_amount=42.39, total_invoice_value=277.90),
         ]
         entries = [
             _entry("MH26061040", ReconStatus.CLIENT_SHEET_ERROR),
@@ -64,7 +73,7 @@ class TestFilterItemsForFiling(unittest.TestCase):
         self.assertEqual(result.skipped, [])
 
     def test_unresolved_conflict_included_but_flagged(self):
-        items = [FakeLineItem("CR26061011", "24AABFT9753E2Z3", "CDNR", 2500.0, igst_amount=450.0, total_invoice_value=2950.0)]
+        items = [FakeLineItem("CR26061011", "24BBBBB2222B2Z2", "CDNR", 2500.0, igst_amount=450.0, total_invoice_value=2950.0)]
         entries = [_entry("CR26061011", ReconStatus.UNRESOLVED_CONFLICT, "amounts differ, no signal")]
         result = filter_items_for_filing(items, entries)
         self.assertEqual(len(result.included), 1)
@@ -72,7 +81,7 @@ class TestFilterItemsForFiling(unittest.TestCase):
 
     def test_missing_source_pdf_and_no_gstin_excluded_and_surfaced(self):
         items = [
-            FakeLineItem("OHR26061001", "09AAAAT1031B1Z6", "B2B", 15984.0, igst_amount=2877.12, total_invoice_value=18861.12),
+            FakeLineItem("OHR26061001", "09EEEEE5555E5Z5", "B2B", 15984.0, igst_amount=2877.12, total_invoice_value=18861.12),
             FakeLineItem("CR26061004", None, "CDNUR", 4884.84, igst_amount=879.27, total_invoice_value=5764.11),
         ]
         entries = [
@@ -103,9 +112,9 @@ class TestSplitByRegistration(unittest.TestCase):
             FakeLineItem("HR26061001", "X", "B2B", 300.0),
             FakeLineItem("OHR26061001", "X", "B2B", 400.0),
         ]
-        by_reg = split_items_by_registration(items, ONESTACK_REGISTRATION_MAP)
-        self.assertEqual(len(by_reg["27AADCO0061H1ZQ"]), 2)
-        self.assertEqual(len(by_reg["06AADCO0061H1ZU"]), 2)
+        by_reg = split_items_by_registration(items, TEST_REGISTRATION_MAP)
+        self.assertEqual(len(by_reg["27AAAAA1111A1Z1"]), 2)
+        self.assertEqual(len(by_reg["06BBBBB2222B2Z2"]), 2)
 
     def test_credit_note_routes_by_original_invoice_prefix_not_own_cr_prefix(self):
         # credit notes are always "CR"-prefixed regardless of which
@@ -113,24 +122,24 @@ class TestSplitByRegistration(unittest.TestCase):
         # never maps to a registration. Must route via the original
         # invoice number credit_note_ingest.py embeds in particulars.
         items = [
-            FakeLineItem("CR26061011", "24AABFT9753E2Z3", "CDNR", 2500.0,
+            FakeLineItem("CR26061011", "24BBBBB2222B2Z2", "CDNR", 2500.0,
                          particulars="Credit Note - Charges Reversed (against MH26041088)"),
-            FakeLineItem("CR26061009", "09AAAAL8739N1ZW", "CDNR", 257.57,
+            FakeLineItem("CR26061009", "09FFFFF6666F6Z6", "CDNR", 257.57,
                          particulars="Credit Note - Charges Reversed (against HR26041003)"),
         ]
-        by_reg = split_items_by_registration(items, ONESTACK_REGISTRATION_MAP)
-        self.assertEqual(len(by_reg["27AADCO0061H1ZQ"]), 1)
-        self.assertEqual(len(by_reg["06AADCO0061H1ZU"]), 1)
+        by_reg = split_items_by_registration(items, TEST_REGISTRATION_MAP)
+        self.assertEqual(len(by_reg["27AAAAA1111A1Z1"]), 1)
+        self.assertEqual(len(by_reg["06BBBBB2222B2Z2"]), 1)
         self.assertNotIn(None, by_reg)
 
     def test_credit_note_with_unparseable_particulars_falls_back_to_unknown(self):
         items = [FakeLineItem("CR26061099", "X", "CDNR", 100.0, particulars="Credit Note - no reference embedded")]
-        by_reg = split_items_by_registration(items, ONESTACK_REGISTRATION_MAP)
+        by_reg = split_items_by_registration(items, TEST_REGISTRATION_MAP)
         self.assertIn(None, by_reg)
 
     def test_unknown_prefix_surfaced_not_silently_dropped(self):
         items = [FakeLineItem("XYZ26061001", "X", "B2B", 100.0)]
-        by_reg = split_items_by_registration(items, ONESTACK_REGISTRATION_MAP)
+        by_reg = split_items_by_registration(items, TEST_REGISTRATION_MAP)
         self.assertIn(None, by_reg)
         self.assertEqual(len(by_reg[None]), 1)
 
@@ -139,24 +148,24 @@ class TestGenerateGstr1Filings(unittest.TestCase):
 
     def test_full_pipeline_real_shape(self):
         items = [
-            FakeLineItem("MH26061040", "27AAAAK0891Q2Z3", "B2B", 76.61, cgst_amount=6.89, sgst_amount=6.89, total_invoice_value=90.40),
-            FakeLineItem("HR26061001", "09AAAJA1597Q1ZO", "B2B", 1500.0, igst_amount=270.0, total_invoice_value=1770.0),
-            FakeLineItem("OHR26061001", "09AAAAT1031B1Z6", "B2B", 15984.0, igst_amount=2877.12, total_invoice_value=18861.12),
+            FakeLineItem("MH26061040", "27CCCCC3333C3Z3", "B2B", 76.61, cgst_amount=6.89, sgst_amount=6.89, total_invoice_value=90.40),
+            FakeLineItem("HR26061001", "09HHHHH8888H8Z8", "B2B", 1500.0, igst_amount=270.0, total_invoice_value=1770.0),
+            FakeLineItem("OHR26061001", "09EEEEE5555E5Z5", "B2B", 15984.0, igst_amount=2877.12, total_invoice_value=18861.12),
         ]
         entries = [
             _entry("MH26061040", ReconStatus.CLIENT_SHEET_ERROR),
             _entry("HR26061001", ReconStatus.PASS),
             _entry("OHR26061001", ReconStatus.MISSING_SOURCE_PDF, "client has it, we don't"),
         ]
-        results = generate_gstr1_filings(items, entries, ONESTACK_REGISTRATION_MAP)
+        results = generate_gstr1_filings(items, entries, TEST_REGISTRATION_MAP)
 
-        self.assertIn("27AADCO0061H1ZQ", results)
-        self.assertIn("06AADCO0061H1ZU", results)
-        mh_result = results["27AADCO0061H1ZQ"]
+        self.assertIn("27AAAAA1111A1Z1", results)
+        self.assertIn("06BBBBB2222B2Z2", results)
+        mh_result = results["27AAAAA1111A1Z1"]
         self.assertIsNotNone(mh_result["gstr1_json"])
-        self.assertEqual(mh_result["gstr1_json"]["gstin"], "27AADCO0061H1ZQ")
+        self.assertEqual(mh_result["gstr1_json"]["gstin"], "27AAAAA1111A1Z1")
 
-        hr_result = results["06AADCO0061H1ZU"]
+        hr_result = results["06BBBBB2222B2Z2"]
         # OHR26061001 was excluded (MISSING_SOURCE_PDF) - only HR26061001's
         # invoice should have made it into the HR registration's filing
         self.assertEqual(len(hr_result["gstr1_json"]["b2b"]), 1)

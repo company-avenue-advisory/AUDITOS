@@ -25,9 +25,10 @@ FOLDER_MIME = "application/vnd.google-apps.folder"
 
 def extract_recipient_gstin(raw: dict) -> Optional[str]:
     """
-    The GSTIN this GSTR-2B statement was issued FOR (one of OneStack's
-    own registrations, e.g. 27AADCO0061H1ZQ or 06AADCO0061H1ZU) - tries
-    the common top-level key shapes the GST portal / GSPs actually use.
+    The GSTIN this GSTR-2B statement was issued FOR (one of the tenant's
+    own registrations - a tenant with multiple state registrations will
+    have one GSTR-2B statement per GSTIN each period) - tries the common
+    top-level key shapes the GST portal / GSPs actually use.
     Returns None (not a guess) if not found - never assumed from
     filename, matching this codebase's established convention that
     document identity always comes from content, never a name (see

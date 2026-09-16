@@ -97,7 +97,7 @@ export default function GstinCheckPage() {
             style={input}
             value={gstin}
             onChange={(e) => setGstin(e.target.value)}
-            placeholder="e.g. 27AADCO0061H1ZQ"
+            placeholder="e.g. 27AAAAA0000A1Z5"
             maxLength={15}
           />
         </div>

@@ -219,7 +219,7 @@ export default function PurchaseGstr2bReviewPage() {
             </div>
             <input
               type="text"
-              placeholder="27AADCO0061H1ZQ"
+              placeholder="27AAAAA0000A1Z5"
               value={gstin}
               onChange={(e) => setGstin(e.target.value.toUpperCase())}
               style={{
