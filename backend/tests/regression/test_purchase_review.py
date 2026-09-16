@@ -32,7 +32,7 @@ def _write_gstr2b_json(path, gstin, inv_no, taxable, igst=0.0, cgst=0.0, sgst=0.
         "data": {
             "docdata": {
                 "b2b": [{
-                    "ctin": "27AAAAK0891Q2Z3",
+                    "ctin": "27CCCCC3333C3Z3",
                     "inv": [{
                         "inum": inv_no, "dt": "15-06-2026", "val": total,
                         "itms": [{"itm_det": {"txval": taxable, "igst": igst, "cgst": cgst, "sgst": sgst}}],
@@ -48,10 +48,10 @@ def _write_gstr2b_json(path, gstin, inv_no, taxable, igst=0.0, cgst=0.0, sgst=0.
 class TestExtractRecipientGstin(unittest.TestCase):
 
     def test_top_level_gstin_field(self):
-        self.assertEqual(extract_recipient_gstin({"gstin": "27AADCO0061H1ZQ"}), "27AADCO0061H1ZQ")
+        self.assertEqual(extract_recipient_gstin({"gstin": "27AAAAA1111A1Z1"}), "27AAAAA1111A1Z1")
 
     def test_nested_under_data(self):
-        self.assertEqual(extract_recipient_gstin({"data": {"gstin": "06AADCO0061H1ZU"}}), "06AADCO0061H1ZU")
+        self.assertEqual(extract_recipient_gstin({"data": {"gstin": "06BBBBB2222B2Z2"}}), "06BBBBB2222B2Z2")
 
     def test_missing_returns_none_not_a_guess(self):
         self.assertIsNone(extract_recipient_gstin({"docdata": {"b2b": []}}))
@@ -99,44 +99,44 @@ class TestPurchaseReviewLifecycle(unittest.TestCase):
         }
 
     def test_create_persists_pending_review(self):
-        review = create_review(self.db, "t1", "2026-06", "27AADCO0061H1ZQ", self.recon_result)
+        review = create_review(self.db, "t1", "2026-06", "27AAAAA1111A1Z1", self.recon_result)
         self.assertEqual(review.status, "PENDING_REVIEW")
-        self.assertEqual(review.gstin, "27AADCO0061H1ZQ")
+        self.assertEqual(review.gstin, "27AAAAA1111A1Z1")
         fetched = self.db.query(PurchaseGstr2bReview).filter(PurchaseGstr2bReview.id == review.id).first()
         self.assertEqual(fetched.period, "2026-06")
 
     def test_approve_transitions_and_records_reviewer(self):
-        review = create_review(self.db, "t1", "2026-06", "27AADCO0061H1ZQ", self.recon_result)
+        review = create_review(self.db, "t1", "2026-06", "27AAAAA1111A1Z1", self.recon_result)
         approved = approve_review(self.db, review.id, "u1", notes="looks good")
         self.assertEqual(approved.status, "APPROVED")
         self.assertEqual(approved.reviewed_by, "u1")
         self.assertIsNotNone(approved.reviewed_at)
 
     def test_cannot_approve_an_already_decided_review(self):
-        review = create_review(self.db, "t1", "2026-06", "27AADCO0061H1ZQ", self.recon_result)
+        review = create_review(self.db, "t1", "2026-06", "27AAAAA1111A1Z1", self.recon_result)
         approve_review(self.db, review.id, "u1")
         with self.assertRaises(ReviewStateError):
             approve_review(self.db, review.id, "u1")
 
     def test_reject_requires_a_reason(self):
-        review = create_review(self.db, "t1", "2026-06", "27AADCO0061H1ZQ", self.recon_result)
+        review = create_review(self.db, "t1", "2026-06", "27AAAAA1111A1Z1", self.recon_result)
         with self.assertRaises(ValueError):
             reject_review(self.db, review.id, "u1", notes="")
 
     def test_get_review_detail_deserializes_json_fields(self):
-        review = create_review(self.db, "t1", "2026-06", "27AADCO0061H1ZQ", self.recon_result)
+        review = create_review(self.db, "t1", "2026-06", "27AAAAA1111A1Z1", self.recon_result)
         detail = get_review_detail(review)
-        self.assertEqual(detail["gstin"], "27AADCO0061H1ZQ")
+        self.assertEqual(detail["gstin"], "27AAAAA1111A1Z1")
         self.assertEqual(detail["recon_summary"]["counts"]["matched"], 1)
 
     def test_two_gstins_same_period_are_independent_reviews(self):
         # OneStack has two registrations (MH/HR) - each gets its own 2B
         # and its own review, not one combined review for the tenant+period.
-        r1 = create_review(self.db, "t1", "2026-06", "27AADCO0061H1ZQ", self.recon_result)
-        r2 = create_review(self.db, "t1", "2026-06", "06AADCO0061H1ZU", self.recon_result)
+        r1 = create_review(self.db, "t1", "2026-06", "27AAAAA1111A1Z1", self.recon_result)
+        r2 = create_review(self.db, "t1", "2026-06", "06BBBBB2222B2Z2", self.recon_result)
         self.assertNotEqual(r1.id, r2.id)
-        self.assertEqual(get_latest_review(self.db, "t1", "2026-06", "27AADCO0061H1ZQ").id, r1.id)
-        self.assertEqual(get_latest_review(self.db, "t1", "2026-06", "06AADCO0061H1ZU").id, r2.id)
+        self.assertEqual(get_latest_review(self.db, "t1", "2026-06", "27AAAAA1111A1Z1").id, r1.id)
+        self.assertEqual(get_latest_review(self.db, "t1", "2026-06", "06BBBBB2222B2Z2").id, r2.id)
 
 
 class TestGenerateReviewForTenant(unittest.TestCase):
@@ -153,7 +153,7 @@ class TestGenerateReviewForTenant(unittest.TestCase):
         self.db.add(InvoiceTask(id="task1", batch_id="b1", file_name="vendor.pdf", status=TaskStatus.COMPLETED))
         self.db.add(PurchaseLineItem(
             task_id="task1", voucher_date="15-06-2026", invoice_no="INV-001",
-            party_gstin="27AAAAK0891Q2Z3", party_ledger_name="Some Vendor",
+            party_gstin="27CCCCC3333C3Z3", party_ledger_name="Some Vendor",
             taxable_value=5000.0, igst_amount=900.0, cgst_amount=0.0, sgst_amount=0.0,
             total_invoice_value=5900.0,
         ))
@@ -161,14 +161,14 @@ class TestGenerateReviewForTenant(unittest.TestCase):
 
         self.tmp_dir = tempfile.mkdtemp(prefix="gstr2b_review_test_")
         self.json_path = os.path.join(self.tmp_dir, "gstr2b.json")
-        _write_gstr2b_json(self.json_path, "27AADCO0061H1ZQ", "INV-001", 5000.0, igst=900.0)
+        _write_gstr2b_json(self.json_path, "27AAAAA1111A1Z1", "INV-001", 5000.0, igst=900.0)
 
     def tearDown(self):
         shutil.rmtree(self.tmp_dir, ignore_errors=True)
 
     def test_matches_real_purchase_item_against_real_2b_json(self):
         review, created = generate_review_for_tenant(
-            self.db, "t1", "2026-06", "27AADCO0061H1ZQ", self.json_path, skip_if_pending=False
+            self.db, "t1", "2026-06", "27AAAAA1111A1Z1", self.json_path, skip_if_pending=False
         )
         self.assertTrue(created)
         detail = get_review_detail(review)
@@ -177,10 +177,10 @@ class TestGenerateReviewForTenant(unittest.TestCase):
 
     def test_skip_if_pending_avoids_duplicate_daily_reviews(self):
         review1, created1 = generate_review_for_tenant(
-            self.db, "t1", "2026-06", "27AADCO0061H1ZQ", self.json_path, skip_if_pending=True
+            self.db, "t1", "2026-06", "27AAAAA1111A1Z1", self.json_path, skip_if_pending=True
         )
         review2, created2 = generate_review_for_tenant(
-            self.db, "t1", "2026-06", "27AADCO0061H1ZQ", self.json_path, skip_if_pending=True
+            self.db, "t1", "2026-06", "27AAAAA1111A1Z1", self.json_path, skip_if_pending=True
         )
         self.assertTrue(created1)
         self.assertFalse(created2)

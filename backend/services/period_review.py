@@ -208,8 +208,8 @@ def generate_period_review_for_tenant(db, tenant_id: str, period: str, client_sh
     """
     from services.client_sheet_parser import parse_client_sheet
     from services.sales_reconciliation import reconcile_period, reconcile_period_totals, detect_duplicates
-    from services.gstr1_filing import generate_gstr1_filings, ONESTACK_REGISTRATION_MAP
-    from models import SalesLineItem, InvoiceTask, BatchJob
+    from services.gstr1_filing import generate_gstr1_filings, load_registration_map
+    from models import SalesLineItem, InvoiceTask, BatchJob, Tenant
 
     if skip_if_pending:
         latest = get_latest_review(db, tenant_id, period)
@@ -234,9 +234,12 @@ def generate_period_review_for_tenant(db, tenant_id: str, period: str, client_sh
         "total": abs(i.total_invoice_value or 0), "party_gstin": i.party_gstin,
     } for i in period_items]
 
+    tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
+    registration_map = load_registration_map(tenant.slug) if tenant else {}
+
     recon_entries = reconcile_period(os_rows, client_rows)
     duplicates = detect_duplicates(os_rows, client_rows)
-    filings = generate_gstr1_filings(period_items, recon_entries, ONESTACK_REGISTRATION_MAP)
+    filings = generate_gstr1_filings(period_items, recon_entries, registration_map)
 
     # 3-way total match: OS vs client sheet vs the GSTR-1 filing(s) about
     # to be reviewed - summed across every registration this period's
