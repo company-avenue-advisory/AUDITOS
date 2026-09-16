@@ -36,7 +36,9 @@ data/output/
 .vscode/
 .idea/
 
-# Dev-only docs, tests, and one-off scripts — not imported by the running app
+# Dev-only docs and tests — not imported by the running app.
+# NOT scripts/ -- several of its scripts (migrate_add_*.py, setup_*.py) are
+# explicitly meant to be run inside the deployed container via
+# `docker compose exec backend python scripts/...`, per their own docstrings.
 docs/
 tests/
-scripts/
