@@ -1,8 +1,8 @@
 fastapi[standard]
 python-multipart
 pymupdf
-docling==2.109.0
-pdfplumber>=0.11.0
+docling==2.126.0
+pdfplumber>=0.11.10
 pandas
 openpyxl
 pydantic
@@ -18,22 +18,22 @@ pyjwt
 bcrypt
 
 # Observability
-sentry-sdk[fastapi]>=2.0.0
+sentry-sdk[fastapi]>=2.69.1
 
 # Image processing & OCR (Document Utilities)
-numpy>=1.24.0
-opencv-python-headless>=4.5.0
-pillow>=9.0.0
+numpy>=2.5.3
+opencv-python-headless>=5.0.0.93
+pillow>=12.3.0
 
 # OCR
 # easyocr is imported unconditionally by services/document_core.py, so it's
 # a hard dependency, not optional -- previously commented out here, but the
 # import was never actually skippable (~250MB download, unavoidable).
-easyocr>=1.7.0
+easyocr>=1.7.2
 # pytesseract>=0.3.10      # Tier 2 OCR (requires system tesseract-ocr binary)
 
 # Google Drive integration
-google-auth>=2.0.0
-google-auth-oauthlib>=1.0.0
-google-auth-httplib2>=0.2.0
-google-api-python-client>=2.0.0
+google-auth>=2.58.0
+google-auth-oauthlib>=1.4.1
+google-auth-httplib2>=0.4.2
+google-api-python-client>=2.200.0
