@@ -43,24 +43,24 @@ class TestDuplicateCheck(unittest.TestCase):
         Base.metadata.create_all(engine)
         self.db = sessionmaker(bind=engine)()
         self.tenant_id = "tenant-1"
-        _seed(self.db, self.tenant_id, "INV-2024-001", "27AADCO0061H1ZQ", "2024-06-15", "task-existing")
+        _seed(self.db, self.tenant_id, "INV-2024-001", "27AAAAA1111A1Z1", "2024-06-15", "task-existing")
         self.svc = _FakeSyncService(self.db, self.tenant_id)
 
     def test_case_and_whitespace_variant_is_caught(self):
         result = GoogleDriveSyncService._check_duplicate(
-            self.svc, "inv-2024-001 ", "27aadco0061h1zq", "2024-06-15", "task-new"
+            self.svc, "inv-2024-001 ", "27aaaaa1111a1z1", "2024-06-15", "task-new"
         )
         self.assertIsNotNone(result, "normalized-equal invoice_no/gstin must be caught as a duplicate")
 
     def test_different_voucher_date_is_not_a_duplicate(self):
         result = GoogleDriveSyncService._check_duplicate(
-            self.svc, "INV-2024-001", "27AADCO0061H1ZQ", "2024-07-15", "task-new"
+            self.svc, "INV-2024-001", "27AAAAA1111A1Z1", "2024-07-15", "task-new"
         )
         self.assertIsNone(result, "a different voucher_date must NOT be treated as the same invoice")
 
     def test_same_task_excluded(self):
         result = GoogleDriveSyncService._check_duplicate(
-            self.svc, "INV-2024-001", "27AADCO0061H1ZQ", "2024-06-15", "task-existing"
+            self.svc, "INV-2024-001", "27AAAAA1111A1Z1", "2024-06-15", "task-existing"
         )
         self.assertIsNone(result, "a task must not be flagged as a duplicate of itself")
 
