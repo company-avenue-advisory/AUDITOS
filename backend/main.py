@@ -156,33 +156,50 @@ class TokenResponse(BaseModel):
     role: str
     email: str
 
+# Registration allowlist: only staff on this roster may create an account in
+# production. "developer" is excluded on purpose — it's a platform-wide RBAC
+# bypass (see RoleChecker in services/auth.py) and is provisioned directly in
+# the DB, never through self-registration. Not enforced outside production
+# (see JWT_SECRET_KEY's ENVIRONMENT gate in services/auth.py for the same
+# pattern) so the existing registration test suite keeps using arbitrary
+# throwaway emails.
+REGISTRATION_ALLOWLIST = {
+    "anshika@companyavenueadvisory.com": "senior",
+    "ashwaniboora1404@gmail.com": "accountant",
+    "kishansharma2024@gmail.com": "senior",
+    "ravdeepsinghd@gmail.com": "accountant",
+    "shrivastavk041@gmail.com": "accountant",
+    "wk633949@gmail.com": "accountant",
+    "gsunit66@gmail.com": "accountant",
+    "jatin@companyavenueadvisory.com": "owner",
+}
+
 @app.post("/api/auth/register", status_code=201)
 async def register(req: UserRegisterRequest, db: Session = Depends(get_db)):
     """Creates a new user account with hashed password and RBAC role."""
+    email = req.email.lower()
+
+    allowed_roles = ["owner", "senior", "accountant"]
+    if os.getenv("ENVIRONMENT", "development").lower() == "production":
+        user_role = REGISTRATION_ALLOWLIST.get(email)
+        if user_role is None:
+            raise HTTPException(status_code=403, detail="Registration is restricted. Contact the firm owner for access.")
+    else:
+        # Validate role. "developer" is a platform-wide RBAC bypass (see
+        # RoleChecker in services/auth.py) and must never be self-assignable
+        # at signup — it can only be granted via direct database provisioning.
+        user_role = req.role.lower() if req.role else "accountant"
+        if user_role not in allowed_roles:
+            raise HTTPException(status_code=400, detail=f"Invalid role. Supported: {allowed_roles}")
+
     # Check if user already exists
-    existing_user = db.query(User).filter(User.email == req.email).first()
+    existing_user = db.query(User).filter(User.email == email).first()
     if existing_user:
         raise HTTPException(status_code=400, detail="Email is already registered")
-    
-    # Validate role. "developer" is a platform-wide RBAC bypass (see RoleChecker
-    # in services/auth.py) and must never be self-assignable at signup — it can
-    # only be granted via direct database provisioning.
-    #
-    # A role chosen here is provisional: it only matters for the "bootstrap my
-    # own firm" path (create_tenant auto-assigns tenant_id when role=="owner"
-    # and the caller has no tenant yet). The moment this account is assigned
-    # into an EXISTING tenant via POST /api/admin/tenants/{id}/assign-user,
-    # that endpoint resets the role to whatever the inviting Owner specifies
-    # (default: "accountant") — self-declaring "owner" at signup does not
-    # carry over into someone else's firm.
-    allowed_roles = ["owner", "senior", "accountant"]
-    user_role = req.role.lower() if req.role else "accountant"
-    if user_role not in allowed_roles:
-        raise HTTPException(status_code=400, detail=f"Invalid role. Supported: {allowed_roles}")
 
     new_user = User(
         id=str(uuid.uuid4()),
-        email=req.email,
+        email=email,
         hashed_password=hash_password(req.password),
         role=user_role
     )

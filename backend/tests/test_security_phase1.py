@@ -211,6 +211,36 @@ class TestRegisterRoleEscalation(SecurityPhase1TestCase):
         self.assertIsNone(user)
 
 
+class TestRegistrationAllowlistInProduction(SecurityPhase1TestCase):
+    """
+    In production, only staff on main.REGISTRATION_ALLOWLIST may self-register
+    -- see 'these are only mails which are allowed to enter the system'.
+    Not enforced outside production (this module runs with ENVIRONMENT=test)
+    so unrelated tests can keep using arbitrary throwaway emails.
+    """
+    def setUp(self):
+        super().setUp()
+        os.environ["ENVIRONMENT"] = "production"
+
+    def tearDown(self):
+        os.environ["ENVIRONMENT"] = "test"
+        super().tearDown()
+
+    def test_unlisted_email_rejected(self):
+        resp = client.post("/api/auth/register", json={
+            "email": _unique_email("randomoutsider"), "password": "Password123!",
+        })
+        self.assertEqual(resp.status_code, 403, resp.text)
+
+    def test_allowlisted_email_gets_its_assigned_role_regardless_of_request_body(self):
+        email = "jatin@companyavenueadvisory.com"
+        resp = client.post("/api/auth/register", json={
+            "email": email, "password": "Password123!", "role": "accountant",
+        })
+        self.assertEqual(resp.status_code, 201, resp.text)
+        self.assertEqual(resp.json()["role"], "owner")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Critical #3: path traversal on file download
 # ─────────────────────────────────────────────────────────────────────────────
