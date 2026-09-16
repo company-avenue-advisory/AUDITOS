@@ -1,7 +1,7 @@
 """
 Regression tests for services.gstr1_generator - specifically the
 credit-note categorization + net-taxable-total bug found against a real
-MH (Maharashtra, 27AADCO0061H1ZQ) filing this session:
+MH (Maharashtra, 27AAAAA1111A1Z1) filing this session:
 
   Summary For B2CS(7): Type OE, POS 36-Telangana, Rate 18.00,
   Taxable Value -7246.77
@@ -56,7 +56,7 @@ class TestResolveCategory(unittest.TestCase):
     def test_credit_note_with_no_gstr1_category_routes_to_cdnr_not_b2cs(self):
         # exactly the real-world shape: credit_note_ingest.py never sets
         # gstr1_category, so it's None here - the bug defaulted this to B2CS.
-        item = FakeLineItem("CR26061099", "27AAAAK0891Q2Z3", None, 7246.77,
+        item = FakeLineItem("CR26061099", "27CCCCC3333C3Z3", None, 7246.77,
                             igst_amount=1304.42, total_invoice_value=8551.19,
                             voucher_type="Credit Note")
         self.assertEqual(_resolve_category(item), "CDNR")
@@ -67,11 +67,11 @@ class TestResolveCategory(unittest.TestCase):
         self.assertEqual(_resolve_category(item), "CDNUR")
 
     def test_debit_note_also_routes_correctly(self):
-        item = FakeLineItem("DR26061001", "27AAAAK0891Q2Z3", None, 500.0, voucher_type="Debit Note")
+        item = FakeLineItem("DR26061001", "27CCCCC3333C3Z3", None, 500.0, voucher_type="Debit Note")
         self.assertEqual(_resolve_category(item), "CDNR")
 
     def test_regular_invoice_unaffected(self):
-        item = FakeLineItem("MH26061040", "27AAAAK0891Q2Z3", "B2B", 76.61)
+        item = FakeLineItem("MH26061040", "27CCCCC3333C3Z3", "B2B", 76.61)
         self.assertEqual(_resolve_category(item), "B2B")
 
     def test_unclassified_regular_item_still_defaults_to_b2cs(self):
@@ -94,7 +94,7 @@ class TestB2CSNeverGoesNegativeFromCreditNotes(unittest.TestCase):
                          total_invoice_value=8551.19, place_of_supply="36-Telangana",
                          voucher_type="Credit Note"),
         ]
-        result = generate_gstr1_json(items, firm_gstin="27AADCO0061H1ZQ")
+        result = generate_gstr1_json(items, firm_gstin="27AAAAA1111A1Z1")
 
         # B2CS must only contain the actual B2CS invoice - never negative,
         # never including the credit note's amount.
@@ -108,13 +108,13 @@ class TestB2CSNeverGoesNegativeFromCreditNotes(unittest.TestCase):
 
     def test_summary_total_taxable_nets_credit_notes_not_sums_them(self):
         items = [
-            FakeLineItem("MH26061041", "27AAAAK0891Q2Z3", "B2B", 5000.0,
+            FakeLineItem("MH26061041", "27CCCCC3333C3Z3", "B2B", 5000.0,
                          cgst_amount=450.0, sgst_amount=450.0, total_invoice_value=5900.0),
-            FakeLineItem("CR26061099", "27AAAAK0891Q2Z3", None, 1000.0,
+            FakeLineItem("CR26061099", "27CCCCC3333C3Z3", None, 1000.0,
                          cgst_amount=90.0, sgst_amount=90.0, total_invoice_value=1180.0,
                          voucher_type="Credit Note"),
         ]
-        result = generate_gstr1_json(items, firm_gstin="27AADCO0061H1ZQ")
+        result = generate_gstr1_json(items, firm_gstin="27AAAAA1111A1Z1")
 
         # net = 5000 - 1000 = 4000, NOT 6000 (which is what a plain sum -
         # the pre-fix bug - would have produced)
@@ -138,11 +138,11 @@ class TestHSNSummaryNetsCreditNotes(unittest.TestCase):
         # blended rates would land in separate buckets, which is correct
         # behavior, not this test's concern.
         items = [
-            FakeLineItem("MH26061999", "27AAAAK0891Q2Z3", "B2B", 1694121.0,
+            FakeLineItem("MH26061999", "27CCCCC3333C3Z3", "B2B", 1694121.0,
                          cgst_amount=152570.89, sgst_amount=152570.89, igst_amount=0.0,
                          total_invoice_value=1999262.78, hsn="997319"),
             # Pandharpur-shaped: intrastate CGST+SGST credit note, same HSN
-            FakeLineItem("CR26061001", "27AAAAT3361L1ZA", None, 47952.0,
+            FakeLineItem("CR26061001", "27DDDDD4444D4Z4", None, 47952.0,
                          cgst_amount=4315.68, sgst_amount=4315.68, igst_amount=0.0,
                          total_invoice_value=56583.36, hsn="997319", voucher_type="Credit Note"),
         ]
@@ -153,7 +153,7 @@ class TestHSNSummaryNetsCreditNotes(unittest.TestCase):
         self.assertAlmostEqual(row["samt"], 152570.89 - 4315.68, places=2)
 
     def test_hsn_bucket_with_only_a_credit_note_goes_negative_not_missing(self):
-        # Pochampally-shaped: an HSN bucket where the only line item this
+        # Bank N-shaped: an HSN bucket where the only line item this
         # period is a credit note (no offsetting invoice) - it must still
         # appear (negative), not be silently dropped.
         items = [
