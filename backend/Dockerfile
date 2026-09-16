@@ -31,7 +31,19 @@ COPY requirements.txt .
 # extracting libtorch_cuda.so). Installing the CPU-only wheel FIRST, from
 # PyTorch's own CPU index, satisfies requirements.txt's transitive
 # torch>=2.2.2 constraint before pip ever considers the CUDA build.
-RUN pip install --no-cache-dir torch==2.14.0 torchvision==0.29.0 --index-url https://download.pytorch.org/whl/cpu
+#
+# Two details matter here:
+#   - "+cpu" is pinned explicitly on the version, not just the index -- without
+#     it, pip resolves a same-numbered wheel ambiguously between this index and
+#     PyPI's default (CUDA) build.
+#   - "--extra-index-url" (adds to PyPI), not "--index-url" (replaces PyPI
+#     entirely) -- confirmed the latter breaks a real deploy: torch's own
+#     transitive deps (fsspec/sympy/networkx/typing-extensions) can still need
+#     PyPI, and one of them (typing-extensions) failed a wheel-metadata check
+#     here, fell back to a source build needing flit_core, which doesn't exist
+#     on PyTorch's index-only view -- "could not find a version that satisfies
+#     the requirement flit_core".
+RUN pip install --no-cache-dir torch==2.14.0+cpu torchvision==0.29.0+cpu --extra-index-url https://download.pytorch.org/whl/cpu
 
 # Install dependencies (fastapi/uvicorn/python-multipart already come from
 # requirements.txt via the fastapi[standard] extra — no need to reinstall them)
