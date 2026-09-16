@@ -2,14 +2,15 @@ name: CI
 
 # Bootstrap Program 8 (CI/CD Made Real). Two independent jobs:
 #   regression — runs the full deterministic regression suite. Required to pass.
-#   lint       — ruff, scoped to only the files a PR actually changes. The
-#                existing codebase has 132 pre-existing pyflakes-level issues
-#                (confirmed by running `ruff check backend/ --select=F` before
-#                writing this workflow); a repo-wide lint gate would fail
-#                against main itself and block every future PR for debt nobody
-#                touched. Diff-scoping means new code is held to the standard
-#                without that trap. Tightening to repo-wide is a deliberate
-#                future decision, not a default to slide into silently.
+#   lint       — ruff, scoped to only the files a PR actually changes, with a
+#                narrow blocking select (E9,F63,F7,F82,F811,F821,F822 — real
+#                bugs) plus an --exit-zero advisory full-style pass. File-level
+#                scoping alone isn't enough: any file (e.g. main.py) can carry
+#                unrelated pre-existing style debt (E701 etc.) far from a PR's
+#                actual diff, which would otherwise fail every future PR that
+#                so much as touches that file. Tightening the blocking gate to
+#                the full default rule set repo-wide is a deliberate future
+#                decision, not a default to slide into silently.
 
 on:
   pull_request:
@@ -62,9 +63,19 @@ jobs:
           FILES=$(git diff --name-only --diff-filter=ACMR "$BASE" HEAD -- '*.py' | tr '\n' ' ')
           echo "files=$FILES" >> "$GITHUB_OUTPUT"
 
-      - name: Run ruff on changed files
+      - name: Run ruff on changed files (blocking correctness gate)
         if: steps.changed.outputs.files != ''
-        run: ruff check ${{ steps.changed.outputs.files }}
+        # Same narrow select as the "Ruff correctness gate (blocking)" step in
+        # ci-backend.yml — real bugs (undefined names, syntax errors), not the
+        # full default rule set. A changed file can still carry unrelated
+        # pre-existing style debt (e.g. E701) elsewhere in the same file that
+        # this diff never touches; failing on that defeats the point of
+        # scoping to "changed files" in the first place.
+        run: ruff check ${{ steps.changed.outputs.files }} --select E9,F63,F7,F82,F811,F821,F822
+
+      - name: Run ruff on changed files (advisory full baseline)
+        if: steps.changed.outputs.files != ''
+        run: ruff check ${{ steps.changed.outputs.files }} --exit-zero
 
       - name: No changed Python files
         if: steps.changed.outputs.files == ''
