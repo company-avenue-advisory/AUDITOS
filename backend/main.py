@@ -1280,6 +1280,61 @@ async def export_gstr1_json(
     )
 
 
+@app.get("/api/export/{batch_id}/gstr1-excel")
+async def export_gstr1_excel(
+    batch_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Generate and download a GSTR-1 workbook matching the GSTN offline
+    tool's own Excel template (sheets: b2b, cdnr, hsn (b2b), hsn (b2c),
+    b2cs, docs) - see services/gstr1_excel_export.py. Same batch/tenant
+    scoping and BLOCKED/DUPLICATE exclusion as the JSON export above; the
+    two share generate_gstr1_json/build_gstr1_excel_rows's underlying
+    grouping logic so they can never disagree on which invoice landed in
+    which section.
+    """
+    from services.gstr1_generator import build_gstr1_excel_rows, _derive_fp
+    from services.gstr1_excel_export import write_gstr1_excel
+
+    batch = db.query(BatchJob).filter(BatchJob.id == batch_id).first()
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch not found")
+
+    require_same_tenant(batch.tenant_id, current_user)
+
+    from sqlalchemy import or_
+    tasks = db.query(InvoiceTask).filter(
+        InvoiceTask.batch_id == batch_id,
+        or_(InvoiceTask.recon_status.is_(None), InvoiceTask.recon_status.notin_(["BLOCKED", "DUPLICATE"])),
+    ).all()
+    sales_items = []
+    for t in tasks:
+        if getattr(t, "sales_items", None):
+            sales_items.extend(t.sales_items)
+
+    if not sales_items:
+        raise HTTPException(
+            status_code=400,
+            detail="No sales line items found for this batch. GSTR-1 requires sales invoices.",
+        )
+
+    firm_gstin = os.getenv("FIRM_GSTIN", "")
+    excel_rows = build_gstr1_excel_rows(sales_items, firm_gstin=firm_gstin)
+    fp = _derive_fp([str(i.voucher_date or "") for i in sales_items if i.voucher_date])
+    filename = f"GSTR1_{fp}_{batch_id[:8]}.xlsx"
+
+    output_path = os.path.join(tempfile.gettempdir(), f"gstr1_excel_{batch_id[:8]}.xlsx")
+    write_gstr1_excel(excel_rows, output_path)
+
+    return FileResponse(
+        path=output_path,
+        filename=filename,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
 # ─────────────────────────────────────────────────────────────────────────
 # Tally Push (Phase: Tally connector, direct-connect write path) —
 # pushes approved line items to TallyPrime as vouchers over its XML-over-HTTP
@@ -1523,6 +1578,93 @@ async def generate_period_review(
         raise HTTPException(status_code=400, detail=str(e))
 
     return get_review_detail(review)
+
+
+@app.post("/api/sales/sheet-first-ingest")
+async def sheet_first_ingest(
+    period: str = Form(...),  # "YYYY-MM"
+    client_sheet: UploadFile = File(...),
+    pdfs_zip: Optional[UploadFile] = File(None),
+    model: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RoleChecker(["owner", "senior", "accountant"])),
+):
+    """
+    Sheet-first ingestion: builds SalesLineItem records FROM the uploaded
+    client sheet directly (its own HSN/amounts are ground truth), instead
+    of independently extracting every PDF and reconciling afterward - see
+    services/sheet_first_ingestion.py. pdfs_zip (optional) is only used to
+    fill genuine gaps: a PDF with no matching row anywhere in the sheet at
+    all, or a Credit/Debit Note row (the sheet's own bucket columns don't
+    compute for those - its own PDF is the HSN source instead).
+
+    Without pdfs_zip, every sheet row is still stored (using its own
+    top-level totals for Credit/Debit Notes, since there's no PDF to read
+    a bucket breakdown from), but no gap gets filled in - a period with no
+    PDFs to back it up has nothing this endpoint can add beyond the sheet.
+
+    Once stored, the normal GSTR-1 generation / period-review endpoints
+    operate on these SalesLineItem rows exactly like any other ingestion
+    path - this endpoint only owns "how the rows got created".
+    """
+    from services.client_sheet_parser import parse_client_sheet
+    from services.sheet_first_ingestion import plan_sheet_first_ingestion, store_sheet_first_plan
+    from services.drive_classifier import classify_local_directory, DocumentType
+
+    if not current_user.tenant_id:
+        raise HTTPException(status_code=400, detail="Current user has no tenant assigned")
+
+    tmp_dir = tempfile.mkdtemp(prefix="sheet_first_")
+    sheet_path = os.path.join(tmp_dir, client_sheet.filename)
+    with open(sheet_path, "wb") as f:
+        shutil.copyfileobj(client_sheet.file, f)
+
+    try:
+        client_rows = parse_client_sheet(sheet_path)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    classified_files = []
+    if pdfs_zip is not None:
+        zip_path = os.path.join(tmp_dir, pdfs_zip.filename)
+        with open(zip_path, "wb") as f:
+            shutil.copyfileobj(pdfs_zip.file, f)
+        extract_dir = os.path.join(tmp_dir, "extracted")
+        os.makedirs(extract_dir, exist_ok=True)
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            zf.extractall(extract_dir)
+        classified_files = [
+            cf for cf in classify_local_directory(extract_dir)
+            if cf.document_type in (DocumentType.INVOICE, DocumentType.CREDIT_NOTE)
+        ]
+
+    def _text_reader(cf):
+        try:
+            import fitz
+            doc = fitz.open(cf.id)
+            return "\n".join(p.get_text() for p in doc)
+        except Exception as e:
+            print(f"[sheet_first_ingest] Could not read {cf.name}: {e}")
+            return None
+
+    plan = plan_sheet_first_ingestion(client_rows, classified_files, _text_reader)
+
+    batch_id = str(uuid.uuid4())
+    batch = BatchJob(id=batch_id, tenant_id=current_user.tenant_id, user_id=current_user.id,
+                      total_files=len(classified_files), status=TaskStatus.PENDING)
+    db.add(batch)
+    db.commit()
+
+    model_config = MODEL_OPTIONS.get(model or "auto")
+    result = store_sheet_first_plan(db, current_user.tenant_id, batch_id, plan, model_config)
+    batch.status = TaskStatus.COMPLETED
+    db.commit()
+
+    return JSONResponse(content={
+        "period": period, "batch_id": batch_id,
+        "gap_files": [f.name for f in plan["gap_files"]],
+        **result,
+    })
 
 
 @app.get("/api/sales/period-reviews")
@@ -1973,6 +2115,34 @@ async def calculate_compliance_metrics(req: MSMEComplianceRequest, current_user:
         })
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/gstin/{gstin}/verify")
+async def verify_gstin_endpoint(
+    gstin: str,
+    as_of_date: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RoleChecker(["owner", "senior", "accountant"])),
+):
+    """
+    On-demand GSTIN registry lookup (cache-first, see gstin_verification.py).
+    Pass as_of_date (DD-MM-YYYY, an invoice date) to also resolve b2b_status
+    AS OF that date rather than just the registry's current live status --
+    a GSTIN suspended/cancelled after that date still counts as B2B for an
+    invoice raised before the change. Omit as_of_date for a plain live check.
+    """
+    from services.gstin_verification import get_gstin_info, resolve_b2b_status
+
+    gstin_clean = (gstin or "").strip().upper()
+    info = get_gstin_info(gstin_clean, db)
+    if info is None:
+        raise HTTPException(status_code=502, detail="GSTIN could not be verified (no API key configured, or the lookup failed).")
+
+    result = {"gstin": gstin_clean, **info}
+    if as_of_date:
+        result["as_of_date"] = as_of_date
+        result["b2b_status"] = resolve_b2b_status(info, as_of_date)
+    return JSONResponse(content=result)
 
 # ── Document Utility Suite Endpoints ──────────────────────────────────────────
 

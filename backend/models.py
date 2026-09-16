@@ -550,6 +550,7 @@ class GstinRegistry(Base):
     status           = Column(String, nullable=True)   # Active | Cancelled | ...
     state_code       = Column(String, nullable=True)   # 2-digit, from the API's own registered state
     taxpayer_type    = Column(String, nullable=True)   # Regular | Composition | ...
+    status_change_date = Column(String, nullable=True) # DD-MM-YYYY the Cancelled/Suspended status took effect (API's cancellation_date) -- None if never changed or unknown. See RuleGST005: a status that changed AFTER the invoice date still counts as active for that invoice.
     verified_at      = Column(DateTime, default=datetime.utcnow, nullable=False)
     lookup_failed    = Column(Boolean, default=False)  # true if the last API call errored (best-effort, not a real result)
 
