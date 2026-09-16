@@ -28,6 +28,15 @@ const STATUS_STYLES: Record<string, { color: string; bg: string; label: string }
 
   REJECTED:             { color: "var(--red)", bg: "var(--red-soft)", label: "Rejected" },
 
+  // GSTIN registry / B2B-B2C resolution (see RuleGST005, gstin-check page)
+  active:               { color: "var(--green)", bg: "var(--green-soft)", label: "Active" },
+  Active:               { color: "var(--green)", bg: "var(--green-soft)", label: "Active" },
+  inactive:             { color: "var(--red)", bg: "var(--red-soft)", label: "B2C" },
+  Cancelled:            { color: "var(--red)", bg: "var(--red-soft)", label: "Cancelled" },
+  Suspended:            { color: "var(--amber)", bg: "var(--amber-soft)", label: "Suspended" },
+  needs_review:         { color: "var(--amber)", bg: "var(--amber-soft)", label: "Needs review" },
+  unknown:              { color: "var(--text-secondary)", bg: "var(--bg-card)", label: "Unknown" },
+
   // Drive Sync job / Celery task statuses
   completed:            { color: "var(--green)", bg: "var(--green-soft)", label: "Completed" },
   SUCCESS:              { color: "var(--green)", bg: "var(--green-soft)", label: "Done" },

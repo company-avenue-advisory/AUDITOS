@@ -444,6 +444,35 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
     }
   };
 
+  const handleDownloadGSTR1Excel = async () => {
+    if (!batchId) {
+      alert("No active batch to download.");
+      return;
+    }
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/export/${batchId}/gstr1-excel`, {
+        headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: "Export failed" }));
+        throw new Error(err.detail || "Export failed");
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      const cd = res.headers.get("Content-Disposition") || "";
+      const match = cd.match(/filename=([^\s;]+)/);
+      a.download = match ? match[1] : "GSTR1.xlsx";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e: any) {
+      alert("Error downloading GSTR-1 Excel: " + e.message);
+    }
+  };
+
   const handleDownload = async (downloadType: "sales" | "purchase" | "both") => {
     if (!batchId) {
       alert("No active batch to download.");
@@ -1372,6 +1401,18 @@ const [activeTab, setActiveTab] = useState<"sales" | "purchase">("sales");
                           <div>
                             <div className="dl-btn-title">GSTR-1 JSON</div>
                             <div className="dl-btn-sub">Portal-ready · B2B · B2CS · B2CL · HSN</div>
+                          </div>
+                        </div>
+                        <span className="dl-btn-arrow">↓</span>
+                      </button>
+                    )}
+                    {salesItems.length > 0 && (
+                      <button className="dl-btn secondary" onClick={handleDownloadGSTR1Excel}>
+                        <div className="dl-btn-left">
+                          <span className="dl-btn-icon">📘</span>
+                          <div>
+                            <div className="dl-btn-title">GSTR-1 Excel</div>
+                            <div className="dl-btn-sub">Offline-tool template · b2b · cdnr · hsn · b2cs · docs</div>
                           </div>
                         </div>
                         <span className="dl-btn-arrow">↓</span>

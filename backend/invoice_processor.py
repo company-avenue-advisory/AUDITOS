@@ -656,6 +656,51 @@ _CREDIT_NOTE_RATE_RE = re.compile(
 # often left blank on the template
 _CREDIT_NOTE_TOTAL_RE = re.compile(r'([\d,]+\.\d{2})\s*\n?\s*Indian Rupees')
 
+# The line-item table on a credit note prints "Total <letter> <section
+# name>" (same lettered A-J sections as a regular invoice's
+# _LINE_ITEM_SECTIONS) right before the amount columns - e.g. "Total A
+# Soundbox Charges 997319 50 999 49,950.00". This is what tells you which
+# HSN bucket the credit applies to; the blind "any known HSN string found
+# anywhere before Subtotal" fallback below has actually picked the WRONG
+# bucket on a real filing (a Rs 2,033 note landed in 998599 instead of its
+# real bucket 997319, confirmed against the source PDF) when more than one
+# known HSN-like token appears in that window. Keyword-match the section
+# NAME first; only fall back to the blind scan when no section line is
+# printed at all (e.g. Pochampally's credit notes, which print literal "0"
+# placeholders with no descriptive label - genuinely not specified, not a
+# case to guess at from the freeform "Reason for Credit Note" text).
+_CREDIT_NOTE_SECTION_RE = re.compile(r'Total\s+[A-J]\s+(.+?)\s+[\d,]', re.DOTALL)
+_CREDIT_NOTE_SECTION_HSN = [
+    ("soundbox", "997319"),
+    ("saas", "9971"),
+    ("application", "9971"),
+    ("upi 2.0", "998599"),
+    ("upi2", "998599"),
+    ("transactional", "998599"),
+    ("promotional", "998599"),
+    ("kyc", "998529"),
+    ("core banking", None),
+    ("cbs", None),
+    ("late fee", None),
+    ("late payment", None),
+    ("late charges", None),
+    ("ad hoc", None),
+]
+
+
+def _hsn_from_cn_section_line(table_window: str) -> Optional[str]:
+    """Returns the HSN for the credit note's "Total <letter> <name>" line,
+    or None if no such line is present (caller falls back to the blind
+    scan / NOT_SPECIFIED_HSN)."""
+    m = _CREDIT_NOTE_SECTION_RE.search(table_window)
+    if not m:
+        return None
+    section_name = re.sub(r'\s+', ' ', m.group(1)).strip().lower()
+    for keyword, hsn in _CREDIT_NOTE_SECTION_HSN:
+        if keyword in section_name:
+            return hsn or NOT_SPECIFIED_HSN
+    return None
+
 
 def extract_credit_note(full_text: str) -> Optional[dict]:
     """
@@ -710,12 +755,17 @@ def extract_credit_note(full_text: str) -> Optional[dict]:
         result["taxable"] + rates["cgst"] + rates["sgst"] + rates["igst"] + result["round_off"], 2
     )
 
-    # look for a known HSN code printed anywhere between the particulars
-    # table and the Subtotal line - falls back to NOT_SPECIFIED_HSN (some
-    # credit notes, e.g. Pochampally's, print no per-line HSN at all)
+    # Bucket by the credit note's own "Total <letter> <section name>" line
+    # first (see _hsn_from_cn_section_line) - falls back to the blind
+    # "any known HSN string in the window" scan, then NOT_SPECIFIED_HSN,
+    # when no such line is printed at all.
     subtotal_idx = full_text.find("Subtotal")
     table_window = full_text[:subtotal_idx] if subtotal_idx > 0 else full_text
-    result["hsn"] = next((h for h in _CREDIT_NOTE_KNOWN_HSN if h in table_window), NOT_SPECIFIED_HSN)
+    section_hsn = _hsn_from_cn_section_line(table_window)
+    if section_hsn is not None:
+        result["hsn"] = section_hsn
+    else:
+        result["hsn"] = next((h for h in _CREDIT_NOTE_KNOWN_HSN if h in table_window), NOT_SPECIFIED_HSN)
 
     if result["party_name"]:
         # when the PDF has no line break between "Bill To:" and "Original
@@ -1344,7 +1394,7 @@ def classify_gstr1_item(item, seller_gstin=None) -> str:
     if has_gstin:
         try:
             from database import SessionLocal
-            from services.gstin_verification import get_gstin_info
+            from services.gstin_verification import get_gstin_info, resolve_b2b_status
             db = SessionLocal()
             try:
                 info = get_gstin_info(gstin, db)
@@ -1352,7 +1402,15 @@ def classify_gstr1_item(item, seller_gstin=None) -> str:
                 db.close()
             if info and info.get("status"):
                 gstin_verified_status = info["status"]
-                has_gstin = gstin_verified_status.strip().lower() == "active"
+                # AS OF the invoice date, not today's live status -- a
+                # registration suspended/cancelled after this invoice was
+                # raised still counts as B2B. "needs_review" (status
+                # changed but the timing can't be determined) deliberately
+                # leaves has_gstin unchanged rather than guessing B2C --
+                # RuleGST005 surfaces that case for a human to confirm.
+                b2b_status = resolve_b2b_status(info, str(item.voucher_date or ""))
+                if b2b_status == "inactive":
+                    has_gstin = False
         except Exception:
             pass  # verification is a bonus, never a hard dependency
 

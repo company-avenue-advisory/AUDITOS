@@ -246,6 +246,47 @@ def reconcile_period(os_rows: List[dict], client_rows: List[dict],
     return entries
 
 
+def find_duplicate_doc_nos(rows: List[dict]) -> Dict[str, List[dict]]:
+    """
+    Groups rows sharing the same doc_no, returning only groups with more
+    than one row - i.e. an actual duplicate-numbered document.
+
+    reconcile_period's os_by_doc/client_by_doc dicts key by doc_no and
+    silently keep only the LAST row on a collision - fine for matching
+    amounts (reconcile_document needs exactly one row per side), but it
+    means a genuine duplicate-numbered bill (e.g. two client-sheet rows
+    both numbered the same, or the same invoice PDF ingested twice) would
+    vanish with no signal at all. Call this BEFORE reconcile_period on
+    both os_rows and client_rows so duplicates stay visible to a human
+    even though the amount-matching pass only ever sees one row per doc_no.
+    """
+    groups: Dict[str, List[dict]] = {}
+    for r in rows:
+        doc_no = r.get("doc_no")
+        if not doc_no:
+            continue
+        groups.setdefault(doc_no, []).append(r)
+    return {doc_no: rs for doc_no, rs in groups.items() if len(rs) > 1}
+
+
+def detect_duplicates(os_rows: List[dict], client_rows: List[dict]) -> dict:
+    """
+    Duplicate-numbered-document check across both sides of a period's
+    reconciliation. Returns a dict a reviewer can act on -- confirming
+    which occurrence (if any) is genuine and which is the duplicate is a
+    human decision (a re-issued invoice under the same number, a client
+    typo, or a real double-billing all look identical from the data
+    alone), so this only flags, it never auto-drops a row.
+    """
+    os_dupes = find_duplicate_doc_nos(os_rows)
+    client_dupes = find_duplicate_doc_nos(client_rows)
+    return {
+        "os_duplicates": os_dupes,
+        "client_duplicates": client_dupes,
+        "has_duplicates": bool(os_dupes or client_dupes),
+    }
+
+
 def summarize(entries: List[ReconEntry]) -> dict:
     counts = {}
     for e in entries:

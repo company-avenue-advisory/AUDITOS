@@ -95,9 +95,17 @@ SUITES = {
         "label": "Client Sheet Parser (OneStack masterdata schema)",
         "module": "backend.tests.regression.test_client_sheet_parser",
     },
+    "sheet_first_ingestion": {
+        "label": "Sheet-First Ingestion (sheet as ground truth, PDF gap-fill)",
+        "module": "backend.tests.regression.test_sheet_first_ingestion",
+    },
     "sales_reconciliation": {
         "label": "Sales 3-Way Reconciliation (OS vs Client Sheet)",
         "module": "backend.tests.regression.test_sales_reconciliation",
+    },
+    "gstr1_excel_export": {
+        "label": "GSTR-1 Excel Export (GSTN offline-tool template)",
+        "module": "backend.tests.regression.test_gstr1_excel_export",
     },
     "gstr1_filing": {
         "label": "GSTR-1 Filing Orchestration (reconciliation-gated, multi-GSTIN)",
