@@ -613,7 +613,7 @@ async def get_pdf_file(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    import os, tempfile
+    import os, re, tempfile
 
     # Tenant isolation, matching the same pattern as get_job_status /
     # export_to_excel: fetch the owning batch, 404 if it doesn't exist,
@@ -625,6 +625,17 @@ async def get_pdf_file(
 
     with open("pdf_debug.log", "a", encoding="utf-8") as f:
         f.write(f"Requested batch_id: {batch_id}, filename: {filename}\n")
+
+    # Reject Windows-style traversal ("..\\") and drive-letter absolute paths
+    # ("C:\\...") by their literal characters, not by relying on os.path/os.sep
+    # to interpret them — those only mean "path separator"/"absolute path" on
+    # Windows. On Linux (this app's actual runtime, in Docker) a backslash is
+    # just a regular filename character, so the realpath check below alone
+    # would silently 404 on these instead of rejecting them with 400 — safe
+    # in practice (Linux never resolves them outside batch_dir either), but
+    # the rejection should not depend on which OS happens to run the code.
+    if "\\" in filename or re.match(r"^[A-Za-z]:", filename):
+        raise HTTPException(status_code=400, detail="Invalid filename")
 
     # Check direct in batch_id dir
     batch_dir = os.path.join(tempfile.gettempdir(), f"batch_{batch_id}")
