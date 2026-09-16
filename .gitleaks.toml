@@ -11,3 +11,24 @@ useDefault = true
 regexes = [
   '''^YOUR_TOKEN$''',
 ]
+
+# Added 2026-09-16 after finding real client/vendor GSTINs and bank names
+# committed to test fixtures and dev scripts (see the data-cleanup pass
+# that same day) - gitleaks' default rules only catch credentials/API
+# keys, not this kind of business PII, so these are custom.
+
+[[rules]]
+id = "in-gstin"
+description = "Indian GSTIN (15-char GST registration number) - a real client/vendor tax ID must never be committed, even in a test fixture. Use one of the established synthetic patterns instead (a repeated-letter block, e.g. 27AAAAA1111A1Z1, 06BBBBB2222B2Z2)."
+regex = '''\b\d{2}[A-Z]{5}\d{4}[A-Z][0-9A-Z]Z[0-9A-Z]\b'''
+[rules.allowlist]
+regexes = [
+  # repeated-letter block (AAAAA/BBBBB/.../ZZZZZ) - the synthetic
+  # convention already used throughout this test suite.
+  '''\d{2}(AAAAA|BBBBB|CCCCC|DDDDD|EEEEE|FFFFF|GGGGG|HHHHH|ZZZZZ)\d{4}[A-Z][0-9A-Z]Z[0-9A-Z]''',
+]
+
+[[rules]]
+id = "known-real-client-names"
+description = "Specific real client/vendor names found and removed from this repo in the 2026-09-16 data-cleanup pass - must never be reintroduced as a test fixture or example."
+regex = '''(?i)(Ashok Sahakari Bank|Becharaji Nagarik|Pochampally CoOperative|Krushiseva|Pandharpur Merchant|Bijnor Urban Cooperative|Mizoram Urban Cooperative Development|Marquecom Agency)'''
