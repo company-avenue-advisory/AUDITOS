@@ -19,6 +19,7 @@ import {
   Cloud,
   ClipboardCheck,
   ArrowLeftRight,
+  ShieldCheck,
 } from "lucide-react";
 
 /* ─────────── Navigation Items ─────────── */
@@ -112,6 +113,12 @@ const NAV_GROUPS: { label: string | null; items: NavItem[] }[] = [
         label: "Doc Utilities",
         icon: FileText,
         description: "Admin file toolbox",
+      },
+      {
+        href: "/gstin-check",
+        label: "GSTIN Check",
+        icon: ShieldCheck,
+        description: "Registry lookup, B2B/B2C as of invoice date",
       },
     ],
   },

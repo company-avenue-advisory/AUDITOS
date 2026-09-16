@@ -33,6 +33,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../.
 from backend.services.sales_reconciliation import (
     reconcile_document, reconcile_period, ReconStatus, summarize,
     compute_net_taxable_total, reconcile_period_totals,
+    find_duplicate_doc_nos, detect_duplicates,
 )
 
 
@@ -238,6 +239,45 @@ class TestReconcilePeriodTotals(unittest.TestCase):
         client_rows = [{"doc_type": "Invoice", "taxable": 5001.0}]
         result = reconcile_period_totals(os_rows, client_rows, {"total_taxable": 5000.5})
         self.assertTrue(result.matches)
+
+
+class TestDetectDuplicates(unittest.TestCase):
+    """
+    Duplicate-numbered documents (e.g. Muslim/Pragati's duplicate-numbered
+    bills) never show up as a ReconEntry at all - reconcile_period's
+    os_by_doc/client_by_doc dicts key by doc_no and silently keep only the
+    last row on a collision. This is a separate check that must run
+    BEFORE that collapse so a human still sees the duplicate.
+    """
+
+    def test_no_duplicates_returns_empty(self):
+        rows = [{"doc_no": "MH1"}, {"doc_no": "MH2"}]
+        self.assertEqual(find_duplicate_doc_nos(rows), {})
+
+    def test_finds_duplicate_doc_no(self):
+        rows = [{"doc_no": "MH1", "taxable": 100.0}, {"doc_no": "MH1", "taxable": 250.0}, {"doc_no": "MH2", "taxable": 50.0}]
+        dupes = find_duplicate_doc_nos(rows)
+        self.assertEqual(list(dupes.keys()), ["MH1"])
+        self.assertEqual(len(dupes["MH1"]), 2)
+
+    def test_rows_with_no_doc_no_are_ignored(self):
+        rows = [{"doc_no": None}, {"doc_no": ""}, {"doc_no": "MH1"}]
+        self.assertEqual(find_duplicate_doc_nos(rows), {})
+
+    def test_detect_duplicates_flags_both_sides_independently(self):
+        os_rows = [{"doc_no": "MH1"}, {"doc_no": "MH1"}]
+        client_rows = [{"doc_no": "MH2"}, {"doc_no": "MH2"}, {"doc_no": "MH3"}]
+        result = detect_duplicates(os_rows, client_rows)
+        self.assertTrue(result["has_duplicates"])
+        self.assertIn("MH1", result["os_duplicates"])
+        self.assertIn("MH2", result["client_duplicates"])
+        self.assertNotIn("MH3", result["client_duplicates"])
+
+    def test_no_duplicates_on_either_side(self):
+        result = detect_duplicates([{"doc_no": "MH1"}], [{"doc_no": "MH2"}])
+        self.assertFalse(result["has_duplicates"])
+        self.assertEqual(result["os_duplicates"], {})
+        self.assertEqual(result["client_duplicates"], {})
 
 
 if __name__ == "__main__":

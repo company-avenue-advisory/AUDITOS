@@ -35,7 +35,7 @@ class ReviewStateError(Exception):
     decision, once made, is a fact, not something silently overwritten."""
 
 
-def build_recon_summary(recon_entries: List, totals_match=None) -> dict:
+def build_recon_summary(recon_entries: List, totals_match=None, duplicates: Optional[dict] = None) -> dict:
     """
     Turns sales_reconciliation.py's ReconEntry list into the compact
     shape a reviewer actually needs: counts per status, plus the doc_nos
@@ -48,6 +48,13 @@ def build_recon_summary(recon_entries: List, totals_match=None) -> dict:
     to also mean the aggregate total is right (it doesn't always - see
     reconcile_period_totals' docstring for the real MH filing bug this
     catches that per-document checks can't).
+
+    duplicates (sales_reconciliation.detect_duplicates' output, optional)
+    surfaces duplicate-numbered documents on either side -- these never
+    show up in recon_entries at all, since reconcile_period's os_by_doc/
+    client_by_doc dicts key by doc_no and silently keep only one row per
+    collision. Never auto-resolved; a human confirms which occurrence (if
+    any) is genuine.
     """
     counts: dict = {}
     needs_attention = []
@@ -66,6 +73,8 @@ def build_recon_summary(recon_entries: List, totals_match=None) -> dict:
             "deltas": totals_match.deltas,
             "note": totals_match.note,
         }
+    if duplicates is not None:
+        summary["duplicates"] = duplicates
     return summary
 
 
@@ -91,7 +100,8 @@ def build_filings_summary(filings: dict) -> dict:
 
 
 def create_period_review(db, tenant_id: str, period: str,
-                          recon_entries: List, filings: dict, totals_match=None) -> SalesPeriodReview:
+                          recon_entries: List, filings: dict, totals_match=None,
+                          duplicates: Optional[dict] = None) -> SalesPeriodReview:
     """
     Persists a new PENDING_REVIEW record from this period's reconciliation
     + filing-generation output. Always creates a new row rather than
@@ -103,7 +113,7 @@ def create_period_review(db, tenant_id: str, period: str,
         tenant_id=tenant_id,
         period=period,
         status="PENDING_REVIEW",
-        recon_summary_json=json.dumps(build_recon_summary(recon_entries, totals_match)),
+        recon_summary_json=json.dumps(build_recon_summary(recon_entries, totals_match, duplicates)),
         filings_summary_json=json.dumps(build_filings_summary(filings)),
     )
     db.add(review)
@@ -197,7 +207,7 @@ def generate_period_review_for_tenant(db, tenant_id: str, period: str, client_sh
     PENDING_REVIEW was returned instead of a new one being made.
     """
     from services.client_sheet_parser import parse_client_sheet
-    from services.sales_reconciliation import reconcile_period, reconcile_period_totals
+    from services.sales_reconciliation import reconcile_period, reconcile_period_totals, detect_duplicates
     from services.gstr1_filing import generate_gstr1_filings, ONESTACK_REGISTRATION_MAP
     from models import SalesLineItem, InvoiceTask, BatchJob
 
@@ -225,6 +235,7 @@ def generate_period_review_for_tenant(db, tenant_id: str, period: str, client_sh
     } for i in period_items]
 
     recon_entries = reconcile_period(os_rows, client_rows)
+    duplicates = detect_duplicates(os_rows, client_rows)
     filings = generate_gstr1_filings(period_items, recon_entries, ONESTACK_REGISTRATION_MAP)
 
     # 3-way total match: OS vs client sheet vs the GSTR-1 filing(s) about
@@ -238,7 +249,7 @@ def generate_period_review_for_tenant(db, tenant_id: str, period: str, client_sh
     )
     totals_match = reconcile_period_totals(os_rows, client_rows, {"total_taxable": gstr1_total})
 
-    review = create_period_review(db, tenant_id, period, recon_entries, filings, totals_match)
+    review = create_period_review(db, tenant_id, period, recon_entries, filings, totals_match, duplicates)
     return review, True
 
 
