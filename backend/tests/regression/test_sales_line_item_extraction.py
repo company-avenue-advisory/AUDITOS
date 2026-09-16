@@ -3,18 +3,19 @@ Regression tests for invoice_processor.extract_deterministic_line_items /
 _extract_invoice_header - the canonical (regex, no LLM) OneStack sales
 line-item extractor.
 
-Each fixture is real invoice text pulled from actual OneStack invoices this
-session, locking in bugs found and fixed against them:
+Each fixture mirrors real invoice text pulled from actual OneStack
+invoices this session (customer names genericized), locking in bugs
+found and fixed against them:
 
-  - Krushiseva: small intrastate invoice, late fee section has no HSN
-  - Bijnor: single ad-hoc line invoice (no A-J section template at all) -
+  - Bank E: small intrastate invoice, late fee section has no HSN
+  - Bank I: single ad-hoc line invoice (no A-J section template at all) -
     this exact bug caused the invoice to be silently missing from an
     earlier manual pipeline run before extract_deterministic_line_items
     grew the single-line fallback.
-  - Pragati: only 2 of 10 possible sections present, relettered A/B instead
+  - Bank G: only 2 of 10 possible sections present, relettered A/B instead
     of their "canonical" I/J - the letter-agnostic [A-J] anchor exists
     specifically because of this invoice.
-  - Muslim Co-op: Rs.50,000 advance must cascade onto the single largest
+  - Bank H: Rs.50,000 advance must cascade onto the single largest
     section (Transactional Charges), not be spread proportionally across
     every section - the earlier bug here overstated 30 invoices' line-item
     taxable value by exactly the advance amount.
@@ -38,7 +39,7 @@ def _sum(items, key):
 
 class TestDeterministicLineItems(unittest.TestCase):
 
-    def test_krushiseva_small_intrastate_with_late_fee(self):
+    def test_bank_e_small_intrastate_with_late_fee(self):
         text = """A SAAS / Mobile Application / UPI QR 9971
 Saas Mobile Model 1 - Rs. 5 per user - 0 to 1000 Users - RS: 5000 (per month)
 1000 - 0 5,000.00
@@ -78,7 +79,7 @@ Net Cost 2,076.61
         late_fee = [i for i in items if i["particulars"] == "Late Payment Fee"][0]
         self.assertEqual(late_fee["hsn"], NOT_SPECIFIED_HSN)
 
-    def test_bijnor_single_line_invoice_no_section_template(self):
+    def test_bank_i_single_line_invoice_no_section_template(self):
         text = """A
 SoundBox Model 1 - Rs. 999 per
 device / Annual plan
@@ -96,7 +97,7 @@ Final Total
         self.assertEqual(_sum(items, "taxable"), 15984.00)
         self.assertEqual(_sum(items, "igst"), 2877.12)
 
-    def test_sirohi_single_line_invoice_different_wording(self):
+    def test_bank_f_single_line_invoice_different_wording(self):
         text = """A Dun & Bradstreet (DUNS)
 
 Number Generation
@@ -110,7 +111,7 @@ B Final Total 10,000.00
         self.assertEqual(items[0]["hsn"], "998313")
         self.assertEqual(_sum(items, "taxable"), 10000.00)
 
-    def test_pragati_relettered_sections_not_canonical_letters(self):
+    def test_bank_g_relettered_sections_not_canonical_letters(self):
         # Only "Transactional Charges" (canonically I) and "UPI 2.0
         # Transactional Messages" (canonically J) are present on this
         # invoice - they get relettered A and B, not I and J.
@@ -154,7 +155,7 @@ Net Cost
         self.assertEqual(hsn_by_label["High-Volume Transactional Charges"], NOT_SPECIFIED_HSN)
         self.assertEqual(hsn_by_label["UPI 2.0 Transactional Messaging Charges"], "998599")
 
-    def test_muslim_coop_advance_cascades_onto_largest_section_only(self):
+    def test_bank_h_advance_cascades_onto_largest_section_only(self):
         text = """A SAAS / Mobile Application / UPI QR
 9971
 Standard Application Charges @5 Rs Per User
@@ -322,11 +323,11 @@ Net Cost
 
     def test_invoice_header_parses_party_gstin_invoice_no_date(self):
         text = """Customer Name:
-THE BIJNOR URBAN COOPERATIVE BANK LTD
+THE HARBORVIEW URBAN COOPERATIVE BANK LTD
 Billing Month:
 June 2026
 GSTIN:
-09AAAAT1031B1Z6
+09EEEEE5555E5Z5
 Invoice Number: OHR26061001
 PAN:
 AAAAT1031B
@@ -334,8 +335,8 @@ Date of Invoice:
 01-06-2026
 """
         header = _extract_invoice_header(text)
-        self.assertEqual(header["party_name"], "THE BIJNOR URBAN COOPERATIVE BANK LTD")
-        self.assertEqual(header["party_gstin"], "09AAAAT1031B1Z6")
+        self.assertEqual(header["party_name"], "THE HARBORVIEW URBAN COOPERATIVE BANK LTD")
+        self.assertEqual(header["party_gstin"], "09EEEEE5555E5Z5")
         self.assertEqual(header["invoice_no"], "OHR26061001")
         self.assertEqual(header["voucher_date"], "01-06-2026")
         self.assertEqual(header["place_of_supply"], "UTTAR PRADESH")

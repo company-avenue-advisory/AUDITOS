@@ -1,12 +1,12 @@
 """
 Orchestrates GSTR-1 filing generation from OS-extracted SalesLineItem rows,
 gated by sales_reconciliation.py's output, and split across a tenant's
-multiple GST registrations (OneStack files under two: Maharashtra
-27AADCO0061H1ZQ for MH/OMH invoice numbers, Haryana 06AADCO0061H1ZU for
-HR/OHR). The actual per-section JSON building (b2b/b2cl/b2cs/cdnr/cdnur/
-hsn/doc) is unchanged, existing code in gstr1_generator.py - this module
-only decides WHICH items go into WHICH registration's filing, and WHICH
-items don't go in at all.
+multiple GST registrations (e.g. a tenant filing under separate state
+registrations, one per invoice-number prefix - see
+load_registration_map/data/registration_maps/{slug}.json). The actual
+per-section JSON building (b2b/b2cl/b2cs/cdnr/cdnur/hsn/doc) is unchanged,
+existing code in gstr1_generator.py - this module only decides WHICH items
+go into WHICH registration's filing, and WHICH items don't go in at all.
 
 Reconciliation-status gating policy (confirmed with the user 2026-07-08):
   - PASS, CLIENT_SHEET_ERROR, CLIENT_MISSING -> included normally. A
@@ -20,6 +20,7 @@ Reconciliation-status gating policy (confirmed with the user 2026-07-08):
     is nothing usable to file), but surfaced as a clear skipped-list in
     the output rather than silently dropped.
 """
+import json
 import os
 import sys
 
@@ -114,8 +115,8 @@ def split_items_by_registration(items, registration_map: Dict[str, str]) -> Dict
     Splits items by which GST registration they were invoiced under,
     based on invoice-number prefix (or, for credit notes, their original
     invoice's prefix - see _routing_prefix). registration_map maps
-    prefix -> GSTIN, e.g. {"MH": "27AADCO0061H1ZQ", "OMH": "27AADCO0061H1ZQ",
-          "HR": "06AADCO0061H1ZU", "OHR": "06AADCO0061H1ZU"}.
+    prefix -> GSTIN, e.g. {"MH": "27AAAAA1111A1Z1", "OMH": "27AAAAA1111A1Z1",
+          "HR": "06BBBBB2222B2Z2", "OHR": "06BBBBB2222B2Z2"}.
 
     Items whose prefix isn't in registration_map are returned under the
     key None, so callers can see (and investigate) anything unexpected
@@ -172,11 +173,18 @@ def generate_gstr1_filings(items, recon_entries: List[ReconEntry],
     return results
 
 
-# OneStack's real registration prefix mapping, confirmed against 197 real
-# June 2026 invoices this session - kept here as the default for
-# convenience, but callers can always pass their own registration_map for
-# a different tenant.
-ONESTACK_REGISTRATION_MAP = {
-    "MH": "27AADCO0061H1ZQ", "OMH": "27AADCO0061H1ZQ",
-    "HR": "06AADCO0061H1ZU", "OHR": "06AADCO0061H1ZU",
-}
+def load_registration_map(tenant_slug: str) -> Dict[str, str]:
+    """
+    Loads a tenant's invoice-number-prefix -> GSTIN registration map from
+    data/registration_maps/{tenant_slug}.json (gitignored, like
+    data/drive_paths/ and data/vendor_profiles/ - a real GSTIN is tenant-
+    specific configuration, not something to hardcode into tracked source).
+    Returns {} if the tenant has no such file (e.g. a single-registration
+    tenant that doesn't need a split at all) rather than raising - callers
+    should treat an empty map as "no split configured".
+    """
+    path = os.path.join(_backend_dir, "data", "registration_maps", f"{tenant_slug}.json")
+    if not os.path.exists(path):
+        return {}
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)

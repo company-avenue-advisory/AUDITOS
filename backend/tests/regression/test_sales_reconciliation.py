@@ -4,23 +4,23 @@ sheet 3-way audit engine, generalizing the manual reconciliation done by
 hand this session into reusable logic.
 
 Every case below is a REAL situation hit this session, not a hypothetical:
-  - Krushiseva (MH26061040): client sheet wrongly tagged it Interstate/
+  - Bank E (MH26061040): client sheet wrongly tagged it Interstate/
     IGST; source PDF confirmed intrastate CGST+SGST. A genuine tax-type
     contradiction -> CLIENT_SHEET_ERROR.
-  - Muslim Co-op (MH26061076): same pattern, much larger amount - client
+  - Bank J (MH26061076): same pattern, much larger amount - client
     sheet showed IGST, source PDF confirmed CGST+SGST.
-  - CR26061011 (Becharaji credit note): OS said Rs.2,950 total, client
+  - CR26061011 (Bank K credit note): OS said Rs.2,950 total, client
     sheet said Rs.1,180 - same tax type (both IGST) on both sides, no
     contradiction signal, so this was correctly left UNRESOLVED until a
     human found and checked the actual credit-note document (which
     confirmed OS was right - but the engine can't know that without the
     document, so it must not guess).
-  - Bijnor (OHR26061001): was in the client's sheet but genuinely missing
+  - Bank I (OHR26061001): was in the client's sheet but genuinely missing
     from our own extraction until the source PDF was later found in
     Drive's "Other Invoices" folder - MISSING_SOURCE_PDF.
-  - Unava (MH26071001): present in our extraction, absent from the
+  - Bank M (MH26071001): present in our extraction, absent from the
     client's sheet entirely - CLIENT_MISSING (their lag, not ours).
-  - Pochampally's two credit notes originally had no resolved GSTIN on
+  - Bank N's two credit notes originally had no resolved GSTIN on
     our side until their credit-note documents were found -
     UNVERIFIABLE_NO_GSTIN.
 """
@@ -39,13 +39,13 @@ from backend.services.sales_reconciliation import (
 
 class TestReconcileDocument(unittest.TestCase):
 
-    def test_krushiseva_tax_type_contradiction_is_client_sheet_error(self):
+    def test_bank_e_tax_type_contradiction_is_client_sheet_error(self):
         # real client-sheet row for MH26061040: Supplier Location "MH"
         # (state code 27), State of Supply "27" -> should be Intrastate,
         # but the client's own manually-typed flag says "Interstate" -
         # the exact inversion, matching the confirmed 76/196 pattern
         os_data = {"taxable": 76.61, "igst": 0.0, "cgst": 6.89, "sgst": 6.89,
-                   "total": 90.40, "party_gstin": "27AAAAK0891Q2Z3", "doc_type": "Invoice"}
+                   "total": 90.40, "party_gstin": "27CCCCC3333C3Z3", "doc_type": "Invoice"}
         client_data = {"taxable": 76.61, "igst": 13.79, "cgst": 0.0, "sgst": 0.0,
                         "total": 90.40, "doc_type": "Invoice",
                         "supplier_location": "MH", "state_of_supply": "27",
@@ -60,7 +60,7 @@ class TestReconcileDocument(unittest.TestCase):
         # supplier_location/state_of_supply fields needed to check the
         # pattern - must NOT claim a match without evidence
         os_data = {"taxable": 76.61, "igst": 0.0, "cgst": 6.89, "sgst": 6.89,
-                   "total": 90.40, "party_gstin": "27AAAAK0891Q2Z3", "doc_type": "Invoice"}
+                   "total": 90.40, "party_gstin": "27CCCCC3333C3Z3", "doc_type": "Invoice"}
         client_data = {"taxable": 76.61, "igst": 13.79, "cgst": 0.0, "sgst": 0.0,
                         "total": 90.40, "doc_type": "Invoice"}
         entry = reconcile_document(os_data, client_data, "MH26061040", "Invoice")
@@ -73,7 +73,7 @@ class TestReconcileDocument(unittest.TestCase):
         # though OS and client still disagree with EACH OTHER on tax type,
         # this is NOT the known inversion bug and must not claim it is
         os_data = {"taxable": 76.61, "igst": 0.0, "cgst": 6.89, "sgst": 6.89,
-                   "total": 90.40, "party_gstin": "27AAAAK0891Q2Z3", "doc_type": "Invoice"}
+                   "total": 90.40, "party_gstin": "27CCCCC3333C3Z3", "doc_type": "Invoice"}
         client_data = {"taxable": 76.61, "igst": 13.79, "cgst": 0.0, "sgst": 0.0,
                         "total": 90.40, "doc_type": "Invoice",
                         "supplier_location": "MH", "state_of_supply": "29",
@@ -82,9 +82,9 @@ class TestReconcileDocument(unittest.TestCase):
         self.assertEqual(entry.status, ReconStatus.CLIENT_SHEET_ERROR)
         self.assertNotIn("known client-side pattern", entry.note)
 
-    def test_muslim_coop_tax_type_contradiction_is_client_sheet_error(self):
+    def test_bank_j_tax_type_contradiction_is_client_sheet_error(self):
         os_data = {"taxable": 1681071.22, "igst": 0.0, "cgst": 151296.41, "sgst": 151296.41,
-                   "total": 1983664.0, "party_gstin": "27AAAAT0746P2Z2", "doc_type": "Invoice"}
+                   "total": 1983664.0, "party_gstin": "27EEEEE5555E5Z5", "doc_type": "Invoice"}
         client_data = {"taxable": 1732015.45, "igst": 311762.78, "cgst": 0.0, "sgst": 0.0,
                         "total": 2043778.23, "doc_type": "Invoice"}
         entry = reconcile_document(os_data, client_data, "MH26061076", "Invoice")
@@ -95,26 +95,26 @@ class TestReconcileDocument(unittest.TestCase):
         # differs - must NOT be auto-labeled CLIENT_SHEET_ERROR just because
         # it differs from our side
         os_data = {"taxable": 2500.0, "igst": 450.0, "cgst": 0.0, "sgst": 0.0,
-                   "total": 2950.0, "party_gstin": "24AABFT9753E2Z3", "doc_type": "Credit Note"}
+                   "total": 2950.0, "party_gstin": "24BBBBB2222B2Z2", "doc_type": "Credit Note"}
         client_data = {"taxable": 1000.0, "igst": 180.0, "cgst": 0.0, "sgst": 0.0,
                         "total": 1180.0, "doc_type": "Credit Note"}
         entry = reconcile_document(os_data, client_data, "CR26061011", "Credit Note")
         self.assertEqual(entry.status, ReconStatus.UNRESOLVED_CONFLICT)
         self.assertNotEqual(entry.status, ReconStatus.CLIENT_SHEET_ERROR)
 
-    def test_bijnor_missing_from_os_before_source_pdf_was_found(self):
+    def test_bank_i_missing_from_os_before_source_pdf_was_found(self):
         client_data = {"taxable": 15984.0, "igst": 2877.12, "cgst": 0.0, "sgst": 0.0,
                         "total": 18861.12, "doc_type": "Invoice"}
         entry = reconcile_document(None, client_data, "OHR26061001", "Invoice")
         self.assertEqual(entry.status, ReconStatus.MISSING_SOURCE_PDF)
 
-    def test_unava_present_in_os_absent_from_client_sheet(self):
+    def test_bank_m_present_in_os_absent_from_client_sheet(self):
         os_data = {"taxable": 235.51, "igst": 42.39, "cgst": 0.0, "sgst": 0.0,
-                   "total": 277.90, "party_gstin": "09AAAAT0091R1ZW", "doc_type": "Invoice"}
+                   "total": 277.90, "party_gstin": "09GGGGG7777G7Z7", "doc_type": "Invoice"}
         entry = reconcile_document(os_data, None, "MH26071001", "Invoice")
         self.assertEqual(entry.status, ReconStatus.CLIENT_MISSING)
 
-    def test_pochampally_credit_note_no_gstin_is_unverifiable(self):
+    def test_bank_n_credit_note_no_gstin_is_unverifiable(self):
         os_data = {"taxable": 4884.84, "igst": 879.27, "cgst": 0.0, "sgst": 0.0,
                    "total": 5764.11, "party_gstin": None, "doc_type": "Credit Note"}
         client_data = {"taxable": 4884.84, "igst": 879.27, "cgst": 0.0, "sgst": 0.0,
@@ -124,7 +124,7 @@ class TestReconcileDocument(unittest.TestCase):
 
     def test_clean_pass_within_tolerance(self):
         os_data = {"taxable": 30000.0, "igst": 5400.0, "cgst": 0.0, "sgst": 0.0,
-                   "total": 35400.0, "party_gstin": "24AABFT9753E2Z3", "doc_type": "Invoice"}
+                   "total": 35400.0, "party_gstin": "24BBBBB2222B2Z2", "doc_type": "Invoice"}
         client_data = {"taxable": 30000.0, "igst": 5400.01, "cgst": 0.0, "sgst": 0.0,
                         "total": 35400.01, "doc_type": "Invoice"}
         entry = reconcile_document(os_data, client_data, "OMH26061003", "Invoice")
@@ -135,7 +135,7 @@ class TestReconcileDocument(unittest.TestCase):
         # both sides - _tax_type returns None for both, must not be treated
         # as a contradiction
         os_data = {"taxable": 0.0, "igst": 0.0, "cgst": 0.0, "sgst": 0.0,
-                   "total": 0.0, "party_gstin": "24AAAAT2886Q1ZU", "doc_type": "Invoice"}
+                   "total": 0.0, "party_gstin": "24CCCCC3333C3Z3", "doc_type": "Invoice"}
         client_data = {"taxable": 0.0, "igst": 0.0, "cgst": 0.0, "sgst": 0.0,
                         "total": 0.0, "doc_type": "Invoice"}
         entry = reconcile_document(os_data, client_data, "MH26061036", "Invoice")
@@ -151,9 +151,9 @@ class TestReconcilePeriod(unittest.TestCase):
     def test_reconciles_a_full_period_and_summarizes(self):
         os_rows = [
             {"doc_no": "MH26061040", "doc_type": "Invoice", "taxable": 76.61, "igst": 0.0,
-             "cgst": 6.89, "sgst": 6.89, "total": 90.40, "party_gstin": "27AAAAK0891Q2Z3"},
+             "cgst": 6.89, "sgst": 6.89, "total": 90.40, "party_gstin": "27CCCCC3333C3Z3"},
             {"doc_no": "MH26071001", "doc_type": "Invoice", "taxable": 235.51, "igst": 42.39,
-             "cgst": 0.0, "sgst": 0.0, "total": 277.90, "party_gstin": "09AAAAT0091R1ZW"},
+             "cgst": 0.0, "sgst": 0.0, "total": 277.90, "party_gstin": "09GGGGG7777G7Z7"},
         ]
         client_rows = [
             {"doc_no": "MH26061040", "doc_type": "Invoice", "taxable": 76.61, "igst": 13.79,
