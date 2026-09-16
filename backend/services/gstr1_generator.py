@@ -479,6 +479,225 @@ def _build_doc_summary(items, b2b, b2cl, b2cs, exp, cdnr, cdnur) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Flat rows for the GSTN offline-tool Excel template
+# ---------------------------------------------------------------------------
+# generate_gstr1_json above builds the nested JSON format for direct GSP/API
+# filing. The offline Excel utility instead wants one FLAT row per invoice/
+# note/bucket on each of its own sheets (b2b, cdnr, hsn (b2b), hsn (b2c),
+# b2cs, docs) - these builders reuse the exact same grouping/category logic
+# (_group_by_invoice, _resolve_category, _invoice_totals) so the Excel and
+# JSON outputs can never drift into disagreeing about which invoice landed
+# in which section.
+
+# B2B/CDNR line items are "registered" (buyer has a real GSTIN); the HSN
+# summary is conventionally split by whether the underlying supply was to a
+# registered or unregistered buyer, matching the b2b vs b2c/b2cl/b2cs split
+# rather than doc type.
+_B2B_HSN_CATEGORIES = ("B2B", "CDNR")
+
+
+def _build_b2b_rows(groups: dict, firm_state: str) -> List[dict]:
+    """One flat row per B2B invoice - offline-tool "b2b" sheet."""
+    rows = []
+    for (inv_no, gstin, cat), items in groups.items():
+        if cat != "B2B":
+            continue
+        taxable, cgst, sgst, igst, total = _invoice_totals(items)
+        rate = _derive_gst_rate(taxable, cgst, sgst, igst)
+        pos = _state_code_from_gstin(gstin) or _pos_from_row(items[0], firm_state)
+        rows.append({
+            "gstin": gstin,
+            "receiver_name": items[0].party_ledger_name or "",
+            "invoice_number": inv_no,
+            "invoice_date": _parse_date(items[0].voucher_date),
+            "invoice_value": total,
+            "place_of_supply": pos,
+            "reverse_charge": "N",
+            "applicable_tax_rate": "",
+            "invoice_type": "Regular",
+            "ecommerce_gstin": "",
+            "rate": rate,
+            "taxable_value": taxable,
+            "cess": 0.0,
+        })
+    return rows
+
+
+def _build_cdnr_rows(groups: dict, firm_state: str) -> List[dict]:
+    """One flat row per registered credit/debit note - offline-tool "cdnr" sheet."""
+    rows = []
+    for (note_no, gstin, cat), items in groups.items():
+        if cat != "CDNR":
+            continue
+        taxable, cgst, sgst, igst, total = _invoice_totals(items)
+        rate = _derive_gst_rate(taxable, cgst, sgst, igst)
+        pos = _state_code_from_gstin(gstin) or firm_state
+        vtype = str(items[0].voucher_type or "").lower()
+        rows.append({
+            "gstin": gstin,
+            "receiver_name": items[0].party_ledger_name or "",
+            "note_number": note_no,
+            "note_date": _parse_date(items[0].voucher_date),
+            "note_type": "Debit Note" if "debit" in vtype else "Credit Note",
+            "place_of_supply": pos,
+            "reverse_charge": "N",
+            "note_supply_type": "Regular",
+            "note_value": total,
+            "applicable_tax_rate": "",
+            "rate": rate,
+            "taxable_value": taxable,
+            "cess": 0.0,
+        })
+    return rows
+
+
+def _build_b2cs_rows(groups: dict, firm_state: str) -> List[dict]:
+    """One flat row per consolidated (supply_type, POS, rate) bucket - offline-tool "b2cs" sheet."""
+    consolidated_by_key: dict = {}
+    for (inv_no, gstin, cat), items in groups.items():
+        if cat != "B2CS":
+            continue
+        taxable, cgst, sgst, igst, total = _invoice_totals(items)
+        rate = _derive_gst_rate(taxable, cgst, sgst, igst)
+        pos = _pos_from_row(items[0], firm_state)
+        sply_tp = "Inter-State" if pos != firm_state else "Intra-State"
+        key = (sply_tp, pos, rate)
+        consolidated_by_key.setdefault(key, 0.0)
+        consolidated_by_key[key] += taxable
+
+    return [
+        {
+            "type": "OE",
+            "place_of_supply": pos,
+            "applicable_tax_rate": "",
+            "rate": rate,
+            "taxable_value": _round2(taxable),
+            "cess": 0.0,
+            "ecommerce_gstin": "",
+        }
+        for (sply_tp, pos, rate), taxable in consolidated_by_key.items()
+    ]
+
+
+def _build_hsn_rows(items, b2b_only: bool) -> List[dict]:
+    """
+    One flat row per (HSN, rate) bucket, filtered to either registered
+    (b2b_only=True: B2B/CDNR) or unregistered (b2b_only=False: everything
+    else) supplies - offline-tool "hsn (b2b)" / "hsn (b2c)" sheets.
+    Credit/debit notes subtract from their HSN's totals (see _cn_sign).
+    """
+    by_hsn: dict = defaultdict(lambda: {"qty": 0.0, "txval": 0.0, "iamt": 0.0, "camt": 0.0, "samt": 0.0, "val": 0.0, "desc": ""})
+    for item in items:
+        hsn = str(item.hsn or "").strip()
+        if not hsn:
+            continue
+        cat = _resolve_category(item)
+        is_b2b = cat in _B2B_HSN_CATEGORIES
+        if is_b2b != b2b_only:
+            continue
+        sign = _cn_sign(item)
+        taxable = sign * _round2(item.taxable_value)
+        cgst = sign * _round2(item.cgst_amount)
+        sgst = sign * _round2(item.sgst_amount)
+        igst = sign * _round2(item.igst_amount)
+        total = sign * (_round2(item.total_invoice_value) or (abs(taxable) + abs(cgst) + abs(sgst) + abs(igst)))
+        rate = _derive_gst_rate(abs(taxable), abs(cgst), abs(sgst), abs(igst))
+        key = (hsn, rate)
+        row = by_hsn[key]
+        row["qty"] += sign * float(item.qty or 0)
+        row["txval"] += taxable
+        row["iamt"] += igst
+        row["camt"] += cgst
+        row["samt"] += sgst
+        row["val"] += total
+        if not row["desc"]:
+            row["desc"] = str(item.particulars or "")[:30]
+
+    return [
+        {
+            "hsn": hsn,
+            "description": row["desc"],
+            "uqc": "NOS",
+            "total_quantity": _round2(row["qty"]),
+            "total_value": _round2(row["val"]),
+            "rate": rate,
+            "taxable_value": _round2(row["txval"]),
+            "integrated_tax": _round2(row["iamt"]),
+            "central_tax": _round2(row["camt"]),
+            "state_tax": _round2(row["samt"]),
+            "cess": 0.0,
+        }
+        for (hsn, rate), row in by_hsn.items()
+    ]
+
+
+def _build_docs_rows(items) -> List[dict]:
+    """
+    One row per document nature - offline-tool "docs" sheet. Sr. No.
+    From/To is best-effort (the lowest/highest document number actually
+    seen, sorted as strings) since this pipeline doesn't track true
+    portal-registered serial-number ranges or cancelled document numbers -
+    a firm using non-sequential or prefixed invoice numbering should treat
+    these two columns as informational, not authoritative.
+    """
+    def _nature_rows(nature: str, doc_nos: List[str]) -> Optional[dict]:
+        if not doc_nos:
+            return None
+        ordered = sorted(doc_nos)
+        return {
+            "nature_of_document": nature,
+            "sr_no_from": ordered[0],
+            "sr_no_to": ordered[-1],
+            "total_number": len(doc_nos),
+            "cancelled": 0,
+            "net_issued": len(doc_nos),
+        }
+
+    invoice_nos, credit_nos, debit_nos = [], [], []
+    for item in items:
+        vtype = str(item.voucher_type or "").lower()
+        inv_no = str(item.invoice_no or "").strip()
+        if not inv_no:
+            continue
+        if "debit" in vtype:
+            debit_nos.append(inv_no)
+        elif "credit" in vtype:
+            credit_nos.append(inv_no)
+        else:
+            invoice_nos.append(inv_no)
+
+    rows = [
+        _nature_rows("Invoices for outward supply", sorted(set(invoice_nos))),
+        _nature_rows("Credit Note", sorted(set(credit_nos))),
+        _nature_rows("Debit Note", sorted(set(debit_nos))),
+    ]
+    return [r for r in rows if r]
+
+
+def build_gstr1_excel_rows(items, firm_gstin: str = None) -> dict:
+    """
+    Builds every sheet's flat rows for the GSTN offline-tool Excel
+    template, from the same SalesLineItem rows generate_gstr1_json uses.
+    Returns {"b2b": [...], "cdnr": [...], "b2cs": [...], "hsn_b2b": [...],
+    "hsn_b2c": [...], "docs": [...]} - services.gstr1_excel_export.py
+    handles turning this into an actual .xlsx workbook.
+    """
+    if not firm_gstin:
+        firm_gstin = os.getenv("FIRM_GSTIN", "")
+    firm_state = firm_gstin[:2] if len(firm_gstin) >= 2 else "06"
+
+    groups = _group_by_invoice(items)
+    return {
+        "b2b": _build_b2b_rows(groups, firm_state),
+        "cdnr": _build_cdnr_rows(groups, firm_state),
+        "b2cs": _build_b2cs_rows(groups, firm_state),
+        "hsn_b2b": _build_hsn_rows(items, b2b_only=True),
+        "hsn_b2c": _build_hsn_rows(items, b2b_only=False),
+        "docs": _build_docs_rows(items),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 

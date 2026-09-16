@@ -152,7 +152,7 @@ class RuleGST005(BaseRule):
                 if _backend_dir not in _sys.path:
                     _sys.path.insert(0, _backend_dir)
                 from database import SessionLocal
-                from services.gstin_verification import get_gstin_info
+                from services.gstin_verification import get_gstin_info, resolve_b2b_status
                 db = SessionLocal()
                 try:
                     info = get_gstin_info(gstin, db)
@@ -171,29 +171,48 @@ class RuleGST005(BaseRule):
                 execution_time_ms=int((time.time() - t0) * 1000),
             )
 
-        status = (info.get("status") or "").strip().lower()
+        invoice_date = (invoice.invoice_metadata.invoice_date.value or "").strip()
+        # AS OF the invoice date, not today's live status -- a GSTIN
+        # suspended/cancelled after this invoice was raised was still a
+        # valid registration at the time of supply. See resolve_b2b_status.
+        b2b_status = resolve_b2b_status(info, invoice_date)
         real_state = (info.get("state_code") or "").strip()
-        is_active = status == "active"
         state_mismatch = bool(real_state) and bool(declared_state) and real_state != declared_state
-        passed = is_active and not state_mismatch
+        passed = b2b_status == "active" and not state_mismatch
 
         if passed:
-            reason = "Buyer GSTIN is Active and registered state matches the invoice."
+            reason = "Buyer GSTIN was Active as of the invoice date and registered state matches the invoice."
             recommendation = ""
-        elif not is_active:
-            reason = f"Buyer GSTIN registration is '{info.get('status')}', not Active -- this buyer should be treated as unregistered (B2C), not B2B."
+            status_out = "PASS"
+        elif b2b_status == "needs_review":
+            reason = (
+                f"Buyer GSTIN registration is '{info.get('status')}', but its status-change date "
+                f"is unknown, so whether it was already inactive on the invoice date ({invoice_date or 'unknown'}) "
+                f"can't be determined automatically."
+            )
+            recommendation = "Have a human confirm whether this GSTIN was active on the invoice date before filing as B2B or B2C."
+            status_out = "NEEDS_REVIEW"
+        elif b2b_status == "inactive":
+            reason = (
+                f"Buyer GSTIN registration became '{info.get('status')}' on or before the invoice date "
+                f"({invoice_date}) -- this buyer should be treated as unregistered (B2C), not B2B."
+            )
             recommendation = "Reclassify as B2C; do not claim this as a B2B supply."
+            status_out = "FAIL"
         else:
             reason = f"Buyer's real registered state ({real_state}) does not match the invoice's declared state ({declared_state})."
             recommendation = f"Use state code {real_state} (from GST registry) for Interstate/Intrastate determination."
+            status_out = "FAIL"
 
         return RuleResult(
             rule_id=self.rule_id, rule_name=self.rule_name, passed=passed,
-            status="PASS" if passed else "FAIL", severity=self.severity, reason=reason,
+            status=status_out, severity=self.severity, reason=reason,
             evidence={"gstin": gstin, "registry_status": info.get("status"),
+                      "status_change_date": info.get("status_change_date"),
+                      "invoice_date": invoice_date,
                       "registry_state": real_state, "declared_state": declared_state,
                       "legal_name": info.get("legal_name")},
-            recommendation=recommendation, auto_fix=True,
+            recommendation=recommendation, auto_fix=(b2b_status != "needs_review"),
             execution_time_ms=int((time.time() - t0) * 1000),
         )
 
