@@ -26,7 +26,7 @@ import unittest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../../..")))
 
 import backend.celery_app as celery_app_module
-import backend.scripts.setup_sales_ingestion_schedule as setup_module
+import backend.scripts.setup_sales_ingestion_schedule as sales_schedule_script
 
 
 class TestLoadBeatSchedules(unittest.TestCase):
@@ -79,16 +79,16 @@ class TestLoadBeatSchedules(unittest.TestCase):
 class TestSetupSalesIngestionSchedule(unittest.TestCase):
 
     def setUp(self):
-        self._orig_backend_dir = setup_module.backend_dir
+        self._orig_backend_dir = sales_schedule_script.backend_dir
         self.tmp_dir = tempfile.mkdtemp(prefix="setup_schedule_test_")
         os.makedirs(os.path.join(self.tmp_dir, "data"), exist_ok=True)
-        setup_module.backend_dir = self.tmp_dir
+        sales_schedule_script.backend_dir = self.tmp_dir
 
     def tearDown(self):
-        setup_module.backend_dir = self._orig_backend_dir
+        sales_schedule_script.backend_dir = self._orig_backend_dir
 
     def test_writes_tenant_slug_not_a_fixed_folder_id(self):
-        ok = setup_module.setup_celery_beat(
+        ok = sales_schedule_script.setup_celery_beat(
             tenant_id="t1", tenant_slug="onestack",
             excel_output_path="/tmp/out.xlsx", invoice_type="sales",
             cron_expression="0 2 * * *",
@@ -104,7 +104,7 @@ class TestSetupSalesIngestionSchedule(unittest.TestCase):
         self.assertEqual(entry["options"]["queue"], "drive_sync")
 
     def test_rejects_invalid_cron_expression(self):
-        ok = setup_module.setup_celery_beat(
+        ok = sales_schedule_script.setup_celery_beat(
             tenant_id="t1", tenant_slug="onestack",
             excel_output_path="/tmp/out.xlsx", invoice_type="sales",
             cron_expression="not five fields",
@@ -112,8 +112,8 @@ class TestSetupSalesIngestionSchedule(unittest.TestCase):
         self.assertFalse(ok)
 
     def test_second_tenant_does_not_clobber_first(self):
-        setup_module.setup_celery_beat("t1", "onestack", "/tmp/a.xlsx", "sales", "0 2 * * *")
-        setup_module.setup_celery_beat("t2", "otherclient", "/tmp/b.xlsx", "sales", "0 3 * * *")
+        sales_schedule_script.setup_celery_beat("t1", "onestack", "/tmp/a.xlsx", "sales", "0 2 * * *")
+        sales_schedule_script.setup_celery_beat("t2", "otherclient", "/tmp/b.xlsx", "sales", "0 3 * * *")
         registry_path = os.path.join(self.tmp_dir, "data", "beat_schedules.json")
         with open(registry_path, encoding="utf-8") as f:
             registry = json.load(f)
@@ -127,7 +127,7 @@ class TestSetupSalesIngestionSchedule(unittest.TestCase):
         # Purchase was requested. purchase_ingestion_task resolves
         # against purchase_root_folder_id instead - a different Drive
         # tree entirely.
-        ok = setup_module.setup_celery_beat(
+        ok = sales_schedule_script.setup_celery_beat(
             tenant_id="t1", tenant_slug="onestack",
             excel_output_path="/tmp/out.xlsx", invoice_type="purchase",
             cron_expression="0 3 * * *",
@@ -145,8 +145,8 @@ class TestSetupSalesIngestionSchedule(unittest.TestCase):
         self.assertEqual(entry["kwargs"]["tenant_slug"], "onestack")
 
     def test_sales_and_purchase_schedules_for_the_same_tenant_coexist(self):
-        setup_module.setup_celery_beat("t1", "onestack", "/tmp/a.xlsx", "sales", "0 2 * * *")
-        setup_module.setup_celery_beat("t1", "onestack", "/tmp/a.xlsx", "purchase", "0 3 * * *")
+        sales_schedule_script.setup_celery_beat("t1", "onestack", "/tmp/a.xlsx", "sales", "0 2 * * *")
+        sales_schedule_script.setup_celery_beat("t1", "onestack", "/tmp/a.xlsx", "purchase", "0 3 * * *")
         registry_path = os.path.join(self.tmp_dir, "data", "beat_schedules.json")
         with open(registry_path, encoding="utf-8") as f:
             registry = json.load(f)

@@ -36,6 +36,22 @@ this known pattern when it recurs, rather than reporting a generic
 """
 from typing import List, Optional
 
+# Same bucket->HSN mapping invoice_processor.py's _LINE_ITEM_SECTIONS uses
+# for a PDF's own A-J billing sections - kept in sync deliberately, since
+# both are describing the same OneStack product categories, just read from
+# two different documents (the client's sheet here vs. the PDF there).
+# None means the OneStack template genuinely carries no HSN for that
+# section (confirmed against source PDFs) - NOT_SPECIFIED_HSN, not a guess.
+_SECTION_KEY_TO_HSN = {
+    "saas_net": "9971",
+    "soundbox_net": "997319",
+    "transactional_net": "998599",
+    "kyc_net": "998529",
+    "promotional_net": "998599",
+    "late_charges": None,
+}
+NOT_SPECIFIED_HSN = "NOT SPECIFIED ON INVOICE"
+
 # real header text -> normalized key. Matched by substring (case/whitespace
 # -insensitive) since these headers contain embedded newlines and irregular
 # spacing in the real file - a header COULD shift by a column if the client
@@ -191,3 +207,75 @@ def parse_client_sheet(xlsx_path: str) -> List[dict]:
             },
         })
     return results
+
+
+def sections_to_line_items(row: dict) -> Optional[List[dict]]:
+    """
+    Expands ONE client-sheet row's per-section net amounts into per-bucket
+    line items (hsn/taxable/cgst/sgst/igst/total), for sheet-first
+    ingestion where the client's own sheet - not a fresh PDF extraction -
+    is the ground truth for HSN and amounts (see services/
+    sheet_first_ingestion.py). CGST/SGST/IGST are apportioned across
+    non-zero buckets by taxable share, the last bucket absorbing the
+    rounding remainder - identical technique to invoice_processor.py's
+    extract_deterministic_line_items, which does the same apportionment
+    from a PDF's own per-section Sub Totals.
+
+    Returns None for Credit Note / Debit Note rows: OneStack's masterdata
+    sheet formula columns for these buckets don't compute for CN/DN rows
+    at all (confirmed against the real workbook - the cells are blank or
+    stale for those rows), so the sheet cannot be trusted as the HSN
+    source for a credit/debit note even though it IS trusted for regular
+    invoices. Callers should resolve a credit/debit note's HSN from its
+    own PDF (see invoice_processor.extract_credit_note) instead.
+
+    Returns [] if the row is an Invoice but every section bucket is zero -
+    genuinely no breakdown available (caller falls back to a single
+    NOT_SPECIFIED_HSN line using the row's own top-level taxable/total).
+    """
+    doc_type = str(row.get("doc_type") or "").strip().lower()
+    if "credit" in doc_type or "debit" in doc_type:
+        return None
+
+    sections = row.get("sections") or {}
+    buckets = [(key, amt) for key, amt in sections.items() if amt and amt > 0.005]
+    if not buckets:
+        return []
+
+    section_sum = round(sum(amt for _, amt in buckets), 2)
+    total_cgst = row.get("cgst") or 0.0
+    total_sgst = row.get("sgst") or 0.0
+    total_igst = row.get("igst") or 0.0
+
+    items = []
+    cgst_running = sgst_running = igst_running = 0.0
+    for idx, (key, amt) in enumerate(buckets):
+        is_last = (idx == len(buckets) - 1)
+        hsn = _SECTION_KEY_TO_HSN.get(key) or NOT_SPECIFIED_HSN
+        # Apportion by this bucket's share of the row's own section total,
+        # not the row's overall "taxable" figure - taxable can legitimately
+        # differ from the section sum (e.g. an advance-paid deduction
+        # applied only to the top-level total), and the tax actually
+        # printed against each bucket is proportional to the bucket
+        # breakdown itself.
+        share = (amt / section_sum) if section_sum else 0.0
+        if is_last:
+            cgst = round(total_cgst - cgst_running, 2)
+            sgst = round(total_sgst - sgst_running, 2)
+            igst = round(total_igst - igst_running, 2)
+        else:
+            cgst = round(total_cgst * share, 2)
+            sgst = round(total_sgst * share, 2)
+            igst = round(total_igst * share, 2)
+            cgst_running += cgst
+            sgst_running += sgst
+            igst_running += igst
+        items.append({
+            "hsn": hsn,
+            "taxable": amt,
+            "cgst": cgst,
+            "sgst": sgst,
+            "igst": igst,
+            "total": round(amt + cgst + sgst + igst, 2),
+        })
+    return items
