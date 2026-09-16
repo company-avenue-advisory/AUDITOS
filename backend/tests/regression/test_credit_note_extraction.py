@@ -190,6 +190,37 @@ Indian Rupees - Fifty Eight Thousand Nine Hundred Forty One"""
         self.assertEqual(r["igst"], 8991.00)
         self.assertEqual(r["total"], 58941.00)
 
+    def test_section_name_wins_over_unrelated_hsn_elsewhere_in_table(self):
+        # Reproduces the real Rs 2,033 misallocation: a Soundbox credit note
+        # whose table window ALSO happens to contain an unrelated 998599
+        # token (e.g. printed in a nearby rate/tax note) earlier than its
+        # own "Total A Soundbox Charges" line. The blind "first known HSN
+        # string found" scan would have wrongly returned 998599; reading
+        # the section name itself must return 997319 instead.
+        text = """Credit Note Credit Note Number : CR26071099 Date: 15-07-2026
+
+Bill To:
+
+Some Cooperative Bank Ltd Original Invoice Number : MH26061099 Original Invoice Date: 30-06-2026
+
+Reason for Credit Note: Charges Reversed
+
+Note: reference rate schedule 998599 applies to transactional messaging tiers.
+
+Particulars HSN Code/SAC Number Month INR chargs
+
+Total A Soundbox Charges
+
+997319 1 999 2,033.00
+
+Subtotal: 2,033.00 CGST @9% - SGST @9% - IGST @18% 365.94 Rounding off : - Total Amount Credited:
+
+2,398.94 Amount In words:
+
+Indian Rupees - Two Thousand Three Hundred Ninety Eight"""
+        r = extract_credit_note(text)
+        self.assertEqual(r["hsn"], "997319")
+
 
 class TestResolveCreditNoteGstin(unittest.TestCase):
 
