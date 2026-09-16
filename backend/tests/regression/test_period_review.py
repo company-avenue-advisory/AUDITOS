@@ -67,6 +67,16 @@ class TestBuildSummaries(unittest.TestCase):
         summary = build_recon_summary([_entry("MH1", ReconStatus.PASS)])
         self.assertNotIn("totals_match", summary)
 
+    def test_recon_summary_includes_duplicates_when_given(self):
+        duplicates = {"os_duplicates": {}, "client_duplicates": {"MH1": [{}, {}]}, "has_duplicates": True}
+        summary = build_recon_summary([_entry("MH1", ReconStatus.PASS)], duplicates=duplicates)
+        self.assertIn("duplicates", summary)
+        self.assertTrue(summary["duplicates"]["has_duplicates"])
+
+    def test_recon_summary_omits_duplicates_when_not_given(self):
+        summary = build_recon_summary([_entry("MH1", ReconStatus.PASS)])
+        self.assertNotIn("duplicates", summary)
+
     def test_filings_summary_shape(self):
         filings = {
             "27AADCO0061H1ZQ": {

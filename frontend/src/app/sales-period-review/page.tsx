@@ -44,10 +44,24 @@ interface TotalsMatch {
   note: string;
 }
 
+interface DuplicateRow {
+  doc_no: string;
+  doc_type: string;
+  taxable: number;
+  party_gstin?: string;
+}
+
+interface Duplicates {
+  os_duplicates: Record<string, DuplicateRow[]>;
+  client_duplicates: Record<string, DuplicateRow[]>;
+  has_duplicates: boolean;
+}
+
 interface ReconSummary {
   counts: Record<string, number>;
   needs_attention: NeedsAttentionItem[];
   totals_match?: TotalsMatch;
+  duplicates?: Duplicates;
 }
 
 interface FilingSummaryEntry {
@@ -87,6 +101,15 @@ export default function SalesPeriodReviewPage() {
   const [clientSheet, setClientSheet] = useState<File | null>(null);
   const [generating, setGenerating] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  // Sheet-first ingestion (see services/sheet_first_ingestion.py) - builds
+  // SalesLineItem rows FROM the sheet directly, PDFs zip only fills gaps.
+  const [sfSheet, setSfSheet] = useState<File | null>(null);
+  const [sfZip, setSfZip] = useState<File | null>(null);
+  const [ingesting, setIngesting] = useState(false);
+  const [ingestResult, setIngestResult] = useState<any>(null);
+  const sfSheetRef = useRef<HTMLInputElement>(null);
+  const sfZipRef = useRef<HTMLInputElement>(null);
 
   const canDecide = ["owner", "auditor"].includes(
     (typeof window !== "undefined" ? localStorage.getItem("user_role") : "") || ""
@@ -145,6 +168,41 @@ export default function SalesPeriodReviewPage() {
       setError(e.message || "Generate failed.");
     } finally {
       setGenerating(false);
+    }
+  };
+
+  const handleSheetFirstIngest = async () => {
+    if (!period || !sfSheet) {
+      setError("Choose a client sheet.");
+      return;
+    }
+    setIngesting(true);
+    setError("");
+    setIngestResult(null);
+    try {
+      const form = new FormData();
+      form.append("period", period);
+      form.append("client_sheet", sfSheet);
+      if (sfZip) form.append("pdfs_zip", sfZip);
+      const res = await fetch(`${API_BASE_URL}/api/sales/sheet-first-ingest`, {
+        method: "POST",
+        headers: authHdr(),
+        body: form,
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || "Ingestion failed.");
+      }
+      const d = await res.json();
+      setIngestResult(d);
+      setSfSheet(null);
+      setSfZip(null);
+      if (sfSheetRef.current) sfSheetRef.current.value = "";
+      if (sfZipRef.current) sfZipRef.current.value = "";
+    } catch (e: any) {
+      setError(e.message || "Ingestion failed.");
+    } finally {
+      setIngesting(false);
     }
   };
 
@@ -243,6 +301,45 @@ export default function SalesPeriodReviewPage() {
               {generating ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
               {generating ? "Generating..." : "Generate"}
             </button>
+          </div>
+
+          <div className="glass" style={{ borderRadius: "var(--radius-md)", padding: 16, marginBottom: 16 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>Ingest from sheet</div>
+            <p style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 10 }}>
+              Sheet-first: the sheet's own HSN/amounts become the records. A PDFs zip (optional) only fills
+              genuine gaps - a document with no matching row in the sheet, or a Credit/Debit Note's HSN bucket.
+            </p>
+            <input
+              ref={sfSheetRef}
+              type="file"
+              accept=".xlsx,.xls"
+              onChange={(e) => setSfSheet(e.target.files?.[0] || null)}
+              style={{ width: "100%", fontSize: 12, marginBottom: 8, color: "var(--text-secondary)" }}
+            />
+            <input
+              ref={sfZipRef}
+              type="file"
+              accept=".zip"
+              onChange={(e) => setSfZip(e.target.files?.[0] || null)}
+              style={{ width: "100%", fontSize: 12, marginBottom: 10, color: "var(--text-secondary)" }}
+            />
+            <button
+              className="btn-primary"
+              onClick={handleSheetFirstIngest}
+              disabled={ingesting}
+              style={{ width: "100%", padding: "10px", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, fontSize: 13 }}
+            >
+              {ingesting ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
+              {ingesting ? "Ingesting..." : "Ingest"}
+            </button>
+            {ingestResult && (
+              <div style={{ marginTop: 10, fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.6 }}>
+                {ingestResult.sheet_documents_stored} document(s) from the sheet ({ingestResult.sheet_line_items_stored} line items).
+                {ingestResult.gap_files_found > 0 && (
+                  <> {ingestResult.gap_files_extracted} of {ingestResult.gap_files_found} gap PDF(s) extracted.</>
+                )}
+              </div>
+            )}
           </div>
 
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
@@ -381,6 +478,33 @@ export default function SalesPeriodReviewPage() {
                           <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{item.note}</div>
                         </div>
                         <StatusBadge status={item.status} />
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+
+              {detail.recon_summary.duplicates?.has_duplicates && (
+                <>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
+                    <AlertTriangle size={13} color="var(--amber)" />
+                    Duplicate-numbered documents - confirm before filing
+                  </div>
+                  <div style={{ border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", overflow: "hidden", marginBottom: 16 }}>
+                    {Object.entries(detail.recon_summary.duplicates.client_duplicates || {}).map(([docNo, rows]) => (
+                      <div key={`client-${docNo}`} style={{ padding: "10px 12px", background: "var(--bg-card)", borderBottom: "1px solid var(--border)" }}>
+                        <div style={{ fontSize: 13, fontWeight: 600 }}>{docNo}</div>
+                        <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                          Appears {rows.length}x in the client sheet - amounts: {rows.map(r => r.taxable?.toLocaleString()).join(", ")}
+                        </div>
+                      </div>
+                    ))}
+                    {Object.entries(detail.recon_summary.duplicates.os_duplicates || {}).map(([docNo, rows]) => (
+                      <div key={`os-${docNo}`} style={{ padding: "10px 12px", background: "var(--bg-card)", borderBottom: "1px solid var(--border)" }}>
+                        <div style={{ fontSize: 13, fontWeight: 600 }}>{docNo}</div>
+                        <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                          Appears {rows.length}x in our extracted records - amounts: {rows.map(r => r.taxable?.toLocaleString()).join(", ")}
+                        </div>
                       </div>
                     ))}
                   </div>
