@@ -23,6 +23,16 @@ ENV PYTHONPATH=/app
 # Copy requirements
 COPY requirements.txt .
 
+# docling and easyocr both pull in torch as a transitive dependency, and
+# pip's default PyPI wheel for torch bundles the full CUDA/nvidia toolkit
+# (~4-5GB of nvidia-cudnn/cublas/cusparselt/triton etc.) even though this
+# image runs on CPU-only hosts with no GPU at all -- confirmed this blew
+# past a droplet's disk during a real deploy (no space left on device
+# extracting libtorch_cuda.so). Installing the CPU-only wheel FIRST, from
+# PyTorch's own CPU index, satisfies requirements.txt's transitive
+# torch>=2.2.2 constraint before pip ever considers the CUDA build.
+RUN pip install --no-cache-dir torch==2.14.0 torchvision==0.29.0 --index-url https://download.pytorch.org/whl/cpu
+
 # Install dependencies (fastapi/uvicorn/python-multipart already come from
 # requirements.txt via the fastapi[standard] extra — no need to reinstall them)
 RUN pip install --no-cache-dir -r requirements.txt
