@@ -31,7 +31,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
-          python-version: "3.12"
+          python-version: "3.10"
           cache: "pip"
           cache-dependency-path: |
             backend/requirements.txt
@@ -53,7 +53,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
-          python-version: "3.12"
+          python-version: "3.10"
           cache: "pip"
           cache-dependency-path: backend/requirements-dev.txt
       - name: Install ruff
@@ -74,7 +74,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
-          python-version: "3.12"
+          python-version: "3.10"
           cache: "pip"
           cache-dependency-path: |
             backend/requirements.txt
@@ -91,7 +91,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
-          python-version: "3.12"
+          python-version: "3.10"
       - name: Install pip-audit
         # Pinned to match backend/requirements-dev.txt -- keep both in sync.
         run: pip install pip-audit==2.10.1

@@ -21,7 +21,7 @@ bcrypt
 sentry-sdk[fastapi]>=2.69.1
 
 # Image processing & OCR (Document Utilities)
-numpy>=2.5.3
+numpy>=2.0.0
 opencv-python-headless>=5.0.0.93
 pillow>=12.3.0
 
