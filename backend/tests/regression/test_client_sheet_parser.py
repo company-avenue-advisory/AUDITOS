@@ -31,7 +31,7 @@ import shutil
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../../..")))
 
-from backend.services.client_sheet_parser import parse_client_sheet
+from backend.services.client_sheet_parser import parse_client_sheet, sections_to_line_items, NOT_SPECIFIED_HSN
 
 
 def _build_fixture_workbook(path):
@@ -133,6 +133,64 @@ class TestClientSheetParser(unittest.TestCase):
         wb.save(path)
         with self.assertRaises(ValueError):
             parse_client_sheet(path)
+
+
+class TestSectionsToLineItems(unittest.TestCase):
+    """
+    sections_to_line_items powers sheet-first ingestion (see
+    services/sheet_first_ingestion.py): expanding one client-sheet row
+    into per-bucket line items trusting the sheet's own HSN/amounts.
+    """
+
+    def _invoice_row(self, **overrides):
+        row = {
+            "doc_type": "Invoice", "doc_no": "MH1",
+            "taxable": 3000.0, "cgst": 270.0, "sgst": 270.0, "igst": 0.0, "total": 3540.0,
+            "sections": {
+                "saas_net": 2000.0, "soundbox_net": 1000.0,
+                "transactional_net": 0.0, "kyc_net": 0.0,
+                "promotional_net": 0.0, "late_charges": 0.0,
+            },
+        }
+        row.update(overrides)
+        return row
+
+    def test_credit_note_row_returns_none_sheet_not_trusted(self):
+        row = self._invoice_row(doc_type="Credit Note")
+        self.assertIsNone(sections_to_line_items(row))
+
+    def test_debit_note_row_returns_none_sheet_not_trusted(self):
+        row = self._invoice_row(doc_type="Debit Note")
+        self.assertIsNone(sections_to_line_items(row))
+
+    def test_invoice_with_all_zero_sections_returns_empty_list(self):
+        row = self._invoice_row(sections={k: 0.0 for k in self._invoice_row()["sections"]})
+        self.assertEqual(sections_to_line_items(row), [])
+
+    def test_expands_nonzero_buckets_with_correct_hsn(self):
+        items = sections_to_line_items(self._invoice_row())
+        self.assertEqual(len(items), 2)
+        hsns = {i["hsn"] for i in items}
+        self.assertEqual(hsns, {"9971", "997319"})
+
+    def test_tax_apportioned_by_bucket_share_and_sums_to_total(self):
+        items = sections_to_line_items(self._invoice_row())
+        saas = next(i for i in items if i["hsn"] == "9971")
+        soundbox = next(i for i in items if i["hsn"] == "997319")
+        # 2000/3000 share of 270 cgst = 180.0, 1000/3000 share = 90.0
+        self.assertEqual(saas["cgst"], 180.0)
+        self.assertEqual(soundbox["cgst"], 90.0)
+        self.assertEqual(round(sum(i["taxable"] for i in items), 2), 3000.0)
+        self.assertEqual(round(sum(i["total"] for i in items), 2), 3540.0)
+
+    def test_bucket_with_no_known_hsn_gets_not_specified(self):
+        row = self._invoice_row(sections={
+            "saas_net": 0.0, "soundbox_net": 0.0, "transactional_net": 0.0,
+            "kyc_net": 0.0, "promotional_net": 0.0, "late_charges": 500.0,
+        }, taxable=500.0, cgst=45.0, sgst=45.0, total=590.0)
+        items = sections_to_line_items(row)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["hsn"], NOT_SPECIFIED_HSN)
 
 
 if __name__ == "__main__":
