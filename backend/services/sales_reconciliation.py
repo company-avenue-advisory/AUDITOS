@@ -15,7 +15,7 @@ mismatch has no such signal and is correctly left as UNRESOLVED_CONFLICT
 for a human to check against the source document - this mirrors exactly
 how CR26061011 (a genuine unresolved amount mismatch, no tax-type
 contradiction) was correctly NOT auto-resolved this session, while
-Krushiseva and the Muslim Co-op invoice (both genuine tax-type
+Bank E and the Bank J invoice (both genuine tax-type
 contradictions) were correctly identified as client-sheet errors once
 verified.
 
@@ -38,7 +38,7 @@ Supply column shows 76 of 196 rows (39%) where the manually-entered
 Interstate/Intrastate flag is the EXACT logical inversion of what their
 own GSTIN-derived data implies - zero exceptions across all 76, which
 rules out random data-entry error. Independently verified against 3 real
-source PDFs (Krushiseva MH26061040, Muslim Co-op MH26061076, Vaishya
+source PDFs (Bank E MH26061040, Bank J MH26061076, Vaishya
 Nagari MH26061037) - all 3 confirm our side is correct and the client's
 manual flag (and the tax amounts entered under it) are backwards. See
 _matches_known_inversion_pattern below, which names this specific
@@ -106,7 +106,7 @@ def _within_tolerance(a: float, b: float, tolerance: float) -> bool:
 
 # Supplier Location -> the state code of that OneStack registration.
 # MH -> Maharashtra (27), HR -> Haryana (06) - matches the two real
-# GSTINs OneStack files under (27AADCO0061H1ZQ / 06AADCO0061H1ZU).
+# GSTINs OneStack files under (27AAAAA1111A1Z1 / 06BBBBB2222B2Z2).
 _SUPPLIER_LOCATION_STATE_CODE = {"MH": "27", "HR": "06"}
 
 
