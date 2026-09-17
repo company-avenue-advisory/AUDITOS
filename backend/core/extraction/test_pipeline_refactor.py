@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, patch
 import os
 from backend.core.schema.processing import ProcessingContext
 from backend.core.extraction.loader import load_document
-from backend.core.extraction.ocr import extract_ocr_document
+from backend.core.extraction.ocr import extract_ocr_document, _text_layer_from_pymupdf, needs_heavy_ocr
 from backend.core.extraction.layout import analyze_layout
 from backend.core.extraction.candidate_detector import run_all_detectors
 from backend.core.resolver import resolve_all_candidates
@@ -23,6 +23,45 @@ class TestExtractionPipelineRefactor(unittest.TestCase):
         doc = load_document(self.test_pdf)
         self.assertEqual(doc.metadata.filename, "mock_sales_b2b.pdf")
         self.assertIsNotNone(doc.metadata.checksum)
+
+    def test_ocr_fast_path_skips_docling_for_digital_pdf(self):
+        # Digitally-generated PDF (has a real text layer) must be handled by
+        # the pymupdf fast path, not docling — this is the whole point of
+        # the fast path: no heavy OCR models loaded for the common case.
+        result = _text_layer_from_pymupdf(self.test_pdf)
+        self.assertIsNotNone(result)
+        self.assertTrue(any(p.raw_text.strip() for p in result.pages))
+
+    def test_ocr_fast_path_falls_back_for_scanned_pdf(self):
+        # A page with no embedded text (e.g. a scanned photo) has no text
+        # layer for pymupdf to read, so the fast path must decline and let
+        # extract_ocr_document() fall back to docling's OCR pipeline.
+        import fitz
+        scanned_pdf = os.path.abspath("mock_scanned_blank.pdf")
+        doc = fitz.open()
+        doc.new_page()
+        doc.save(scanned_pdf)
+        doc.close()
+        try:
+            self.assertIsNone(_text_layer_from_pymupdf(scanned_pdf))
+        finally:
+            os.remove(scanned_pdf)
+
+    def test_needs_heavy_ocr_lane_routing(self):
+        # async_tasks.py's fast/heavy semaphore split depends on this
+        # returning False for digital PDFs and True for scans.
+        self.assertFalse(needs_heavy_ocr(self.test_pdf))
+
+        import fitz
+        scanned_pdf = os.path.abspath("mock_scanned_blank2.pdf")
+        doc = fitz.open()
+        doc.new_page()
+        doc.save(scanned_pdf)
+        doc.close()
+        try:
+            self.assertTrue(needs_heavy_ocr(scanned_pdf))
+        finally:
+            os.remove(scanned_pdf)
 
     def test_ocr_and_layout(self):
         ocr_doc = extract_ocr_document(self.test_pdf)

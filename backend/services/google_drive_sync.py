@@ -809,15 +809,15 @@ class GoogleDriveSyncPipeline:
     async def _extract_batch_concurrent(self, jobs: List[Dict], model_config: Dict) -> Dict[str, Tuple]:
         """
         Run LLM extraction for multiple plain-PDF jobs concurrently, bounded by
-        the same llm_semaphore + RpmGuard already tuned in async_tasks.py for
-        the interactive upload pipeline. This is the only part of the sync that
-        actually benefits from concurrency — DB/Excel writes are fast and stay
-        sequential in run() (see _finish_invoice).
+        the same fast/heavy lane semaphores + RpmGuard already tuned in
+        async_tasks.py for the interactive upload pipeline. This is the only
+        part of the sync that actually benefits from concurrency — DB/Excel
+        writes are fast and stay sequential in run() (see _finish_invoice).
 
         jobs: list of {"drive_file": ..., "local_path": ..., "task": ...}
         Returns: {drive_file_id: (res, pre_recon_status, attempts_used, error)}
         """
-        from async_tasks import llm_semaphore, _get_rpm_guard
+        from async_tasks import lane_semaphore, _get_rpm_guard
 
         process_type = self.invoice_type if self.invoice_type != "both" else "both"
         rpm_guard = _get_rpm_guard(model_config or {})
@@ -829,7 +829,7 @@ class GoogleDriveSyncPipeline:
             local_path = job["local_path"]
             try:
                 await rpm_guard.acquire()
-                async with llm_semaphore:
+                async with lane_semaphore(local_path):
                     res, status, attempts = await asyncio.to_thread(
                         self._extract_with_retry, local_path, model_config, process_type, filename
                     )

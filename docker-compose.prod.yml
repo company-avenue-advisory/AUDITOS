@@ -55,7 +55,13 @@ services:
     build:
       context: ./backend
     restart: unless-stopped
-    command: celery -A celery_app worker --loglevel=info -Q celery,default,ocr,drive_sync
+    # Pinned to 1 (not left to Celery's default of os.cpu_count()): the
+    # fast/heavy OCR lane split in async_tasks.py (FAST_LANE_CONCURRENCY /
+    # HEAVY_LANE_CONCURRENCY) uses in-process asyncio semaphores, so each
+    # additional worker process gets its own copy and the heavy lane is no
+    # longer capped at 1 system-wide. Raising this requires first splitting
+    # the heavy lane onto its own dedicated single-concurrency queue/worker.
+    command: celery -A celery_app worker --loglevel=info --concurrency=${CELERY_WORKER_CONCURRENCY:-1} -Q celery,default,ocr,drive_sync
     env_file: .env
     environment:
       DATABASE_URL: postgresql://auditos:${POSTGRES_PASSWORD}@db:5432/auditos
@@ -91,6 +97,7 @@ services:
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
+    env_file: .env
     ports:
       - "80:80"
       - "443:443"

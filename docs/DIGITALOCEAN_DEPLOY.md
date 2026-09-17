@@ -9,13 +9,15 @@ Droplet: `159.65.152.27` (Ubuntu 24.04, Docker marketplace image).
 
 ## 1. Point DNS for the API
 
-Add an A record for `api.yourfirm.example` → `159.65.152.27`.
+Add an A record for your API subdomain → `159.65.152.27`.
 Caddy issues a Let's Encrypt cert for it automatically once DNS resolves —
 no manual cert steps needed.
 
 If you don't have a domain yet, you can use a free wildcard DNS service to
 unblock testing: `159-65-152-27.nip.io` resolves straight to the droplet IP
-with no setup. Swap in a real domain later by editing the Caddyfile.
+with no setup. The domain lives in `.env` (`CADDY_DOMAIN`, see step 3), not
+in the Caddyfile itself — swapping domains later is a `.env` edit, not a
+repo change.
 
 ## 2. SSH in and clone the repo
 
@@ -41,9 +43,7 @@ Fill in `.env`:
 - `ALLOWED_ORIGINS` — your Vercel URL(s), e.g. `https://auditos.vercel.app` (comma-separated if you add a custom domain later; **no wildcard** — the backend refuses to start in production with one, see [main.py](../backend/main.py))
 - `GCS_BUCKET_NAME`, `GCP_CREDS_JSON`, `OPENROUTER_API_KEY`, `GROQ_API_KEY` — copy from current Render env vars
 - `GOOGLE_DRIVE_FOLDER_ID` — copy from Render
-
-Edit [Caddyfile](../Caddyfile) — replace `api.yourfirm.example` with your real domain
-(or the nip.io address from step 1).
+- `CADDY_DOMAIN` — the domain(s)/IP from step 1, comma-separated (e.g. `api.yourfirm.com, 203-0-113-1.nip.io`)
 
 ## 4. Bring the backend stack up
 
@@ -91,10 +91,43 @@ Once verified for a few days:
 1. Point any client-facing bookmarks at the new Vercel URL.
 2. Cancel the Render services (backend, worker, beat, redis, postgres, frontend).
 
+## 9. Continuous deployment (GitHub Actions)
+
+Every push to `main` auto-deploys after CI passes — see the `deploy` job in
+[.github/workflows/ci.yml](../.github/workflows/ci.yml). One-time setup:
+
+1. **Generate a dedicated deploy keypair** (don't reuse a personal key —
+   this one lives in GitHub's secret store and should be revocable on its
+   own):
+   ```bash
+   ssh-keygen -t ed25519 -f deploy_key -N ""
+   ```
+2. **Install the public key on the droplet**:
+   ```bash
+   ssh root@159.65.152.27 "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys" < deploy_key.pub
+   ```
+3. **Add GitHub repo settings** (Settings → Secrets and variables → Actions):
+   - Secret `DEPLOY_SSH_KEY` = contents of `deploy_key` (the private key)
+   - Variable `DEPLOY_HOST` = `159.65.152.27`
+4. Delete the local `deploy_key`/`deploy_key.pub` files once both are saved in GitHub.
+
+**What it does on each push to `main`:** SSHes in, checks out that exact
+commit, rebuilds `backend`/`worker`/`beat`, then polls for up to 60s for
+the backend's healthcheck to report `healthy` and the worker to be
+`running`. If either fails to come up, it automatically checks out and
+rebuilds the *previously*-deployed commit instead, so a bad deploy
+self-heals back to the last known-good state without anyone needing to
+notice at 2am.
+
+**Manual rollback** (if a bad deploy passes its health check but is wrong
+in some other way): either
+- `git revert <bad-commit> && git push` — triggers a fresh deploy of the reverted state, or
+- open the Actions tab, find the last-known-good "CI" run, and click **Re-run all jobs** — redeploys that exact commit.
+
 ## Day-2 operations (things Render did for you, now yours)
 
 - **Backups**: [scripts/backup_postgres.sh](../scripts/backup_postgres.sh) — cron it nightly (see the file's header comment for the crontab line). Configure the commented-out `rclone` line to copy dumps offsite (a droplet-only backup dies with the droplet).
-- **Updates**: `git pull && docker compose -f docker-compose.prod.yml up -d --build`.
+- **Updates**: pushes to `main` auto-deploy (see step 9 above). Manual fallback: `git pull && docker compose -f docker-compose.prod.yml up -d --build`.
 - **OS patching**: `apt update && apt upgrade` periodically, reboot when kernel updates land.
 - **Monitoring**: `docker compose -f docker-compose.prod.yml ps` / `logs`; DO's free droplet monitoring covers CPU/memory/disk alerts.
 
