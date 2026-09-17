@@ -33,15 +33,21 @@ def _get_redis():
     return _redis_client
 
 
-def _pdf_cache_key(file_path: str, invoice_type: str, model_config: dict) -> str:
-    """SHA-256 of file bytes + type + model → deterministic cache key."""
+def _pdf_cache_key(file_path: str, invoice_type: str, model_config: dict, tenant_id: str = None) -> str:
+    """
+    SHA-256 of file bytes + type + model + tenant → deterministic cache key.
+    tenant_id is part of the key (not just an extra dimension) because
+    extraction can now be tenant-dependent — vision extraction uses the
+    tenant's own GSTIN to tell buyer from vendor, so two tenants uploading a
+    byte-identical scan must never share a cached result.
+    """
     try:
         with open(file_path, "rb") as f:
             file_hash = hashlib.sha256(f.read()).hexdigest()
     except OSError:
         return ""
     model_key = json.dumps(model_config or {}, sort_keys=True)
-    compound = f"{file_hash}:{invoice_type}:{model_key}"
+    compound = f"{file_hash}:{invoice_type}:{model_key}:{tenant_id or ''}"
     return f"auditOS:pdf_cache:{hashlib.sha256(compound.encode()).hexdigest()}"
 
 
@@ -162,7 +168,7 @@ def _get_rpm_guard(model_config: dict) -> RpmGuard:
     return _rpm_guards["default"]
 
 
-async def extract_invoice_async(file_path: str, model_config: dict, invoice_type: str, logger=None):
+async def extract_invoice_async(file_path: str, model_config: dict, invoice_type: str, logger=None, tenant_id: str = None):
     """
     Wraps the synchronous process_pdf in an async thread.
     Guarded by:
@@ -170,7 +176,7 @@ async def extract_invoice_async(file_path: str, model_config: dict, invoice_type
       2. lane_semaphore       — fast vs heavy concurrency lane (see above)
       3. RpmGuard             — sliding-window RPM limiter per model family
     """
-    cache_key = _pdf_cache_key(file_path, invoice_type, model_config)
+    cache_key = _pdf_cache_key(file_path, invoice_type, model_config, tenant_id)
     cached = _cache_get(cache_key)
     if cached:
         print(f"[PDF Cache] HIT for {os.path.basename(file_path)} — skipping LLM extraction.")
@@ -179,7 +185,7 @@ async def extract_invoice_async(file_path: str, model_config: dict, invoice_type
     rpm_guard = _get_rpm_guard(model_config)
     await rpm_guard.acquire()
     async with lane_semaphore(file_path):
-        res = await asyncio.to_thread(process_pdf, file_path, model_config, invoice_type, logger=logger)
+        res = await asyncio.to_thread(process_pdf, file_path, model_config, invoice_type, logger=logger, tenant_id=tenant_id)
         _cache_set(cache_key, res)
         return res
 
@@ -306,7 +312,7 @@ async def process_batch(batch_id: str, tasks: list, model_config: dict, type_val
                 gcs_blob_name = f"batches/{batch_id}/{task.file_name}"
                 gcs_storage.download_file(gcs_blob_name, file_path)
                 
-            res: InvoiceExtractionResponse = await extract_invoice_async(file_path, model_config, type_val, logger=logger)
+            res: InvoiceExtractionResponse = await extract_invoice_async(file_path, model_config, type_val, logger=logger, tenant_id=_tenant_id)
             
             # Serialize the results to SQL rows
             if res.sales_items:

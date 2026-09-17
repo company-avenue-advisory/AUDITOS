@@ -4,6 +4,21 @@ from .metadata_extractor import extract_metadata
 from .item_extractor import extract_items, extract_purchase_items
 from .totals_extractor import extract_totals
 
+
+def sum_line_item_taxes(items: List[Dict[str, Any]]) -> Dict[str, float]:
+    """
+    Deterministically sums the tax fields already present on extracted line
+    items. See run_ai_extraction's comment for why this is preferred over
+    the totals-region LLM call for these specific fields.
+    """
+    return {
+        "overall_taxable_value": sum(float(it.get("taxable_value") or 0.0) for it in items),
+        "overall_cgst_amount": sum(float(it.get("cgst_amount") or 0.0) for it in items),
+        "overall_sgst_amount": sum(float(it.get("sgst_amount") or 0.0) for it in items),
+        "overall_igst_amount": sum(float(it.get("igst_amount") or 0.0) for it in items),
+    }
+
+
 def run_ai_extraction(regions, candidates: List[Candidate], client, model_name: str, invoice_type: str = "both", vendor_hints: str = "") -> Dict[str, Any]:
     """
     Coordinates metadata, line items, and totals extraction.
@@ -59,11 +74,24 @@ def run_ai_extraction(regions, candidates: List[Candidate], client, model_name: 
 
     totals_res = extract_totals(regions.get_region_text("totals_region"), candidates, client, model_name)
 
+    # Prefer summing the already-extracted line items' own tax fields over the
+    # totals-region LLM call for taxable/CGST/SGST/IGST. The totals call has to
+    # re-derive these from free-text in one shot, and silently returns 0 on
+    # invoices whose tax breakdown is only ever printed per-line (e.g. a table
+    # with a CGST/SGST column per row but no separate "Total CGST" summary row)
+    # -- confirmed on a real invoice where the totals call returned 0 for both
+    # while the correctly-extracted line items summed to the exact missing
+    # amount. Line items are extracted per-row against a table, which is more
+    # grounded, and the item-extraction prompt already requires their sum to
+    # match the invoice's printed grand total, so this is not a new invariant.
+    _all_items_raw = purchase_items_raw + sales_items_raw
+    _line_sums = sum_line_item_taxes(_all_items_raw)
+
     consolidated = {
-        "overall_taxable_value":      totals_res.get("overall_taxable_value") or 0.0,
-        "overall_cgst_amount":        totals_res.get("overall_cgst_amount") or 0.0,
-        "overall_sgst_amount":        totals_res.get("overall_sgst_amount") or 0.0,
-        "overall_igst_amount":        totals_res.get("overall_igst_amount") or 0.0,
+        "overall_taxable_value":      _line_sums["overall_taxable_value"] if _all_items_raw else (totals_res.get("overall_taxable_value") or 0.0),
+        "overall_cgst_amount":        _line_sums["overall_cgst_amount"] if _all_items_raw else (totals_res.get("overall_cgst_amount") or 0.0),
+        "overall_sgst_amount":        _line_sums["overall_sgst_amount"] if _all_items_raw else (totals_res.get("overall_sgst_amount") or 0.0),
+        "overall_igst_amount":        _line_sums["overall_igst_amount"] if _all_items_raw else (totals_res.get("overall_igst_amount") or 0.0),
         "overall_round_off":          totals_res.get("overall_round_off") or 0.0,
         "overall_advance_amount":     totals_res.get("overall_advance_amount") or 0.0,
         "overall_total_invoice_value":totals_res.get("overall_total_invoice_value") or 0.0,

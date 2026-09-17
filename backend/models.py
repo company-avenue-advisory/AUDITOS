@@ -26,6 +26,12 @@ class Tenant(Base):
     is_active  = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
+    # This tenant's own GSTIN -- the "buyer" identity on purchase invoices.
+    # Used to disambiguate buyer vs. vendor during vision-based scan
+    # extraction (see backend/vision_scan_extraction.py); nullable because
+    # vision extraction is opt-in per tenant until this is set.
+    gstin      = Column(String, nullable=True)
+
     # GSTR-2B gap-trigger destination + policy (see Gstr2bGapTrigger / services/gstr2b_trigger_engine.py).
     # One contact email per tenant for now — matches the per-tenant granularity
     # already used by GoogleDriveSyncConfig, revisit per-GSTIN only if a client

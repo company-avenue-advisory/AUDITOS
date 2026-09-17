@@ -257,6 +257,7 @@ def validate_suvit_item(item: dict) -> List[str]:
 class TenantCreateRequest(BaseModel):
     name: str
     slug: str
+    gstin: Optional[str] = None
 
 @app.post("/api/admin/tenants", status_code=201)
 async def create_tenant(
@@ -268,7 +269,7 @@ async def create_tenant(
     existing = db.query(Tenant).filter(Tenant.slug == req.slug).first()
     if existing:
         raise HTTPException(status_code=400, detail=f"Tenant slug '{req.slug}' already exists.")
-    tenant = Tenant(name=req.name, slug=req.slug)
+    tenant = Tenant(name=req.name, slug=req.slug, gstin=req.gstin)
     db.add(tenant)
     db.commit()
     db.refresh(tenant)
@@ -280,7 +281,7 @@ async def create_tenant(
     if current_user.role == "owner" and current_user.tenant_id is None:
         current_user.tenant_id = tenant.id
         db.commit()
-    return {"tenant_id": tenant.id, "name": tenant.name, "slug": tenant.slug}
+    return {"tenant_id": tenant.id, "name": tenant.name, "slug": tenant.slug, "gstin": tenant.gstin}
 
 @app.get("/api/admin/tenants")
 async def list_tenants(
@@ -289,7 +290,7 @@ async def list_tenants(
 ):
     """Lists all tenants. Owner/developer only."""
     tenants = db.query(Tenant).all()
-    return {"tenants": [{"id": t.id, "name": t.name, "slug": t.slug, "is_active": t.is_active, "created_at": t.created_at.isoformat()} for t in tenants]}
+    return {"tenants": [{"id": t.id, "name": t.name, "slug": t.slug, "gstin": t.gstin, "is_active": t.is_active, "created_at": t.created_at.isoformat()} for t in tenants]}
 
 @app.post("/api/admin/tenants/{tenant_id}/assign-user")
 async def assign_user_to_tenant(
@@ -421,9 +422,11 @@ async def update_tenant(
         raise HTTPException(status_code=404, detail="Firm not found.")
     tenant.name = req.name
     tenant.slug = req.slug
+    if req.gstin is not None:
+        tenant.gstin = req.gstin.strip().upper() or None
     db.commit()
     db.refresh(tenant)
-    return {"id": tenant.id, "name": tenant.name, "slug": tenant.slug}
+    return {"id": tenant.id, "name": tenant.name, "slug": tenant.slug, "gstin": tenant.gstin}
 
 
 @app.get("/api/me/tenant")
@@ -437,7 +440,7 @@ async def get_my_tenant(
     tenant = db.query(Tenant).filter(Tenant.id == current_user.tenant_id).first()
     if not tenant:
         return {"tenant": None}
-    return {"tenant": {"id": tenant.id, "name": tenant.name, "slug": tenant.slug}}
+    return {"tenant": {"id": tenant.id, "name": tenant.name, "slug": tenant.slug, "gstin": tenant.gstin}}
 
 
 @app.get("/health")
