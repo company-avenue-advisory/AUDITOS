@@ -1,6 +1,6 @@
 name: CI
 
-# Bootstrap Program 8 (CI/CD Made Real). Two independent jobs:
+# Bootstrap Program 8 (CI/CD Made Real). Three jobs:
 #   regression — runs the full deterministic regression suite. Required to pass.
 #   lint       — ruff, scoped to only the files a PR actually changes, with a
 #                narrow blocking select (E9,F63,F7,F82,F811,F821,F822 — real
@@ -11,6 +11,12 @@ name: CI
 #                so much as touches that file. Tightening the blocking gate to
 #                the full default rule set repo-wide is a deliberate future
 #                decision, not a default to slide into silently.
+#   deploy     — push-to-main only, after regression+lint pass. SSHes into the
+#                single production droplet, checks out the deployed commit,
+#                rebuilds, and health-checks — automatically rolling back to
+#                the previously-deployed commit if the new one fails to come
+#                up healthy. See docs/DIGITALOCEAN_DEPLOY.md #9 for setup
+#                (DEPLOY_HOST/DEPLOY_SSH_KEY) and manual rollback.
 
 on:
   pull_request:
@@ -80,3 +86,63 @@ jobs:
       - name: No changed Python files
         if: steps.changed.outputs.files == ''
         run: echo "No changed .py files in this diff — nothing to lint."
+
+  deploy:
+    name: Deploy to production
+    needs: [regression, lint]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    # Queue rather than cancel: never interrupt a deploy that's mid-rebuild.
+    concurrency:
+      group: production-deploy
+      cancel-in-progress: false
+    steps:
+      - name: Deploy over SSH with automatic rollback
+        env:
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          TARGET_SHA: ${{ github.sha }}
+        run: |
+          set -e
+          mkdir -p ~/.ssh
+          echo "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=yes root@"$DEPLOY_HOST" \
+            "TARGET_SHA=$TARGET_SHA bash -s" <<'REMOTE'
+            set -e
+            cd /opt/auditos
+            PREV_SHA=$(git rev-parse HEAD)
+            echo "Currently deployed: $PREV_SHA"
+            echo "Deploying:          $TARGET_SHA"
+
+            deploy_and_check() {
+              local sha="$1"
+              git fetch origin main
+              git checkout --quiet "$sha"
+              docker compose -f docker-compose.prod.yml up -d --build backend worker beat
+
+              for i in $(seq 1 12); do
+                sleep 5
+                backend_status=$(docker inspect --format='{{.State.Health.Status}}' auditos-backend-1 2>/dev/null || echo "unknown")
+                worker_status=$(docker inspect --format='{{.State.Status}}' auditos-worker-1 2>/dev/null || echo "unknown")
+                if [ "$backend_status" = "healthy" ] && [ "$worker_status" = "running" ]; then
+                  return 0
+                fi
+              done
+              return 1
+            }
+
+            if deploy_and_check "$TARGET_SHA"; then
+              echo "Deploy succeeded: $TARGET_SHA is live and healthy."
+            else
+              echo "Deploy failed health check — rolling back to $PREV_SHA"
+              if deploy_and_check "$PREV_SHA"; then
+                echo "Rollback to $PREV_SHA succeeded."
+              else
+                echo "Rollback ALSO failed health check — manual intervention needed." >&2
+              fi
+              exit 1
+            fi
+          REMOTE

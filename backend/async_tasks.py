@@ -7,6 +7,7 @@ import time
 from database import SessionLocal
 from models import InvoiceTask, TaskStatus, BatchJob, SalesLineItem, PurchaseLineItem
 from invoice_processor import process_pdf, InvoiceExtractionResponse
+from backend.core.extraction.ocr import needs_heavy_ocr
 from services.observability import ObsLogger, now_utc, calc_cost_inr
 from services.gcs_storage import gcs_storage
 
@@ -78,15 +79,38 @@ def _cache_set(key: str, result: InvoiceExtractionResponse):
 # while the hardcoded values kept every batch throttled to free-tier speed
 # regardless of the actual API tier in use).
 #
-# llm_semaphore   : max simultaneous LLM threads in-flight across all batches.
-#                   LLM_CONCURRENCY env var, default 3 (free-tier safe).
+# Two independent lanes, chosen per-file via needs_heavy_ocr() before the
+# semaphore is acquired:
+#   fast_lane_semaphore  : digitally-generated invoices (the common case —
+#                          pymupdf text layer + one LLM call, near-zero RAM).
+#                          FAST_LANE_CONCURRENCY env var, default 4.
+#   heavy_lane_semaphore : genuine scans/photos that need docling's full
+#                          layout+table+easyocr pipeline — the thing that
+#                          OOM'd the production droplet. Kept at 1 by default
+#                          so at most one heavy conversion runs at a time
+#                          *within this worker process*, and no longer blocks
+#                          fast-lane invoices behind the same slot.
+#                          HEAVY_LANE_CONCURRENCY env var, default 1.
 #
-# RpmGuard        : sliding-window RPM limiter per model family.
-#                   RPM_GEMINI_FLASH / RPM_GEMINI_PRO / RPM_GROQ / RPM_DEFAULT
-#                   env vars, defaulting to the same free-tier-safe values as
-#                   before. Falls back to no-op when provider is unknown.
+#   Note: these are per-process asyncio semaphores. If Celery worker
+#   concurrency is ever raised above 1 (or more worker replicas are added),
+#   each process gets its own copy — the heavy lane is no longer capped at 1
+#   system-wide. Don't raise Celery concurrency without first giving the
+#   heavy lane its own dedicated single-concurrency queue/worker.
+#
+# RpmGuard        : sliding-window RPM limiter per model family, unrelated
+#                   to the lane split above — this bounds LLM API call rate,
+#                   not memory. RPM_GEMINI_FLASH / RPM_GEMINI_PRO / RPM_GROQ /
+#                   RPM_DEFAULT env vars. Falls back to no-op when provider
+#                   is unknown.
 # ---------------------------------------------------------------------------
-llm_semaphore = asyncio.Semaphore(int(os.getenv("LLM_CONCURRENCY", "3")))
+fast_lane_semaphore = asyncio.Semaphore(int(os.getenv("FAST_LANE_CONCURRENCY", "4")))
+heavy_lane_semaphore = asyncio.Semaphore(int(os.getenv("HEAVY_LANE_CONCURRENCY", "1")))
+
+
+def lane_semaphore(file_path: str) -> asyncio.Semaphore:
+    """Picks the fast or heavy concurrency lane for a given file."""
+    return heavy_lane_semaphore if needs_heavy_ocr(file_path) else fast_lane_semaphore
 
 
 class RpmGuard:
@@ -143,7 +167,7 @@ async def extract_invoice_async(file_path: str, model_config: dict, invoice_type
     Wraps the synchronous process_pdf in an async thread.
     Guarded by:
       1. Redis SHA-256 cache  — returns instantly if same PDF was processed before
-      2. llm_semaphore        — caps total concurrent LLM threads
+      2. lane_semaphore       — fast vs heavy concurrency lane (see above)
       3. RpmGuard             — sliding-window RPM limiter per model family
     """
     cache_key = _pdf_cache_key(file_path, invoice_type, model_config)
@@ -154,7 +178,7 @@ async def extract_invoice_async(file_path: str, model_config: dict, invoice_type
 
     rpm_guard = _get_rpm_guard(model_config)
     await rpm_guard.acquire()
-    async with llm_semaphore:
+    async with lane_semaphore(file_path):
         res = await asyncio.to_thread(process_pdf, file_path, model_config, invoice_type, logger=logger)
         _cache_set(cache_key, res)
         return res
@@ -162,8 +186,7 @@ async def extract_invoice_async(file_path: str, model_config: dict, invoice_type
 async def process_batch(batch_id: str, tasks: list, model_config: dict, type_val: str):
     """
     Background task that processes an entire batch of invoices concurrently.
-    Concurrency is governed by llm_semaphore (3 slots) + per-model RpmGuard.
-    Stays safely under Gemini Flash free tier 15 RPM limit.
+    Concurrency is governed by the fast/heavy lane semaphores + per-model RpmGuard.
     """
     from ws_manager import manager
     total = len(tasks)
