@@ -20,9 +20,13 @@ deploy_and_check() {
   # silently needs its own explicit `|| return 1` — do not rely on the
   # outer `set -e` here.
   local sha="$1"
-  if [ -n "$(git status --porcelain)" ]; then
-    echo "Working tree is dirty before checkout — refusing to risk discarding local changes." >&2
-    git status --short >&2
+  # --untracked-files=no on purpose: an untracked file (e.g. a stray backup
+  # left by a manual hotfix) never blocks `git checkout` and isn't at risk
+  # of being discarded, so it shouldn't block a deploy. Only *tracked*
+  # uncommitted changes are the real hazard here.
+  if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+    echo "Working tree has uncommitted tracked changes — refusing to risk discarding them." >&2
+    git status --short --untracked-files=no >&2
     return 1
   fi
   git fetch origin main || return 1
