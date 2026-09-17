@@ -802,7 +802,66 @@ def resolve_credit_note_gstin(original_invoice_no: str, lookup_fn) -> Optional[s
     return lookup_fn(original_invoice_no)
 
 
-def process_pdf(pdf_path, model_override=None, invoice_type="both", logger=None):
+def _try_vision_extraction(pdf_path, tenant_id):
+    """
+    Attempts direct vision extraction for a scanned/photographed PDF (see
+    backend/vision_scan_extraction.py). Returns a populated
+    InvoiceExtractionResponse on success, or None to fall through to the
+    standard docling-based OCR pipeline -- no tenant GSTIN on file yet
+    (vision needs it to tell buyer from vendor), vision found nothing
+    usable, or the call failed for any reason.
+    """
+    try:
+        from database import SessionLocal
+        from models import Tenant
+        db = SessionLocal()
+        try:
+            tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
+        finally:
+            db.close()
+        if not tenant or not tenant.gstin:
+            return None
+
+        from vision_scan_extraction import extract_scan_via_vision
+        invoices = extract_scan_via_vision(pdf_path, tenant.name, tenant.gstin)
+        if not invoices:
+            return None
+
+        all_res = InvoiceExtractionResponse()
+        for inv in invoices:
+            for item in inv.get("items", []):
+                all_res.purchase_items.append(SuvitPurchaseItem(
+                    voucher_date=inv.get("invoice_date"),
+                    invoice_no=inv.get("invoice_no"),
+                    party_ledger_name=inv.get("party_ledger_name"),
+                    party_gstin=inv.get("party_gstin"),
+                    place_of_supply=inv.get("place_of_supply"),
+                    particulars=item.get("name_of_item"),
+                    hsn=item.get("hsn"),
+                    qty=item.get("quantity") or 0.0,
+                    rate=item.get("rate") or 0.0,
+                    taxable_value=item.get("amount") or 0.0,
+                    cgst_amount=item.get("cgst") or 0.0,
+                    sgst_amount=item.get("sgst") or 0.0,
+                    igst_amount=item.get("igst") or 0.0,
+                    total_invoice_value=item.get("total_amount") or 0.0,
+                ))
+
+        if not all_res.purchase_items:
+            return None
+
+        all_res.overall_taxable_value = sum(it.taxable_value for it in all_res.purchase_items)
+        all_res.overall_cgst_amount = sum(it.cgst_amount for it in all_res.purchase_items)
+        all_res.overall_sgst_amount = sum(it.sgst_amount for it in all_res.purchase_items)
+        all_res.overall_igst_amount = sum(it.igst_amount for it in all_res.purchase_items)
+        all_res.overall_total_invoice_value = sum(it.total_invoice_value for it in all_res.purchase_items)
+        return all_res
+    except Exception as e:
+        print(f"  [VisionExtraction] Falling back to OCR pipeline: {e}")
+        return None
+
+
+def process_pdf(pdf_path, model_override=None, invoice_type="both", logger=None, tenant_id=None):
     import time
     from services.observability import now_utc
 
@@ -833,6 +892,17 @@ def process_pdf(pdf_path, model_override=None, invoice_type="both", logger=None)
             completed_at=completed_intake,
             scan_type=scan_type
         )
+
+    # Scanned/photographed documents: try direct vision extraction first
+    # (reads the image directly, no docling/OCR-text step) when this tenant
+    # has a GSTIN on file to identify the buyer. Purchase-side only, matching
+    # vision_extractor.py's existing usage. Falls through to the standard
+    # docling-based pipeline below on any failure.
+    if scan_type == "scanned_ocr" and tenant_id and invoice_type.lower() in ("purchase", "both"):
+        vision_res = _try_vision_extraction(pdf_path, tenant_id)
+        if vision_res is not None:
+            doc.close()
+            return vision_res
 
     # 2. Model Selection Stage
     started_model = now_utc()

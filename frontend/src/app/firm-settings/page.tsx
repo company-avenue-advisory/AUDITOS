@@ -16,6 +16,7 @@ type Firm = {
   id: string;
   name: string;
   slug: string;
+  gstin: string | null;
 };
 
 function authHeaders() {
@@ -39,6 +40,7 @@ export default function FirmSettingsPage() {
   const [editing, setEditing] = useState(false);
   const [editName, setEditName] = useState("");
   const [editSlug, setEditSlug] = useState("");
+  const [editGstin, setEditGstin] = useState("");
   const [editError, setEditError] = useState("");
 
   // Invite member
@@ -58,6 +60,7 @@ export default function FirmSettingsPage() {
         setFirm(data.tenant);
         setEditName(data.tenant.name);
         setEditSlug(data.tenant.slug);
+        setEditGstin(data.tenant.gstin || "");
         // Fetch members
         const mRes = await fetch(`${API_BASE_URL}/api/admin/tenants/${data.tenant.id}/users`, { headers: authHeaders() });
         const mData = await mRes.json();
@@ -114,7 +117,7 @@ export default function FirmSettingsPage() {
       const res = await fetch(`${API_BASE_URL}/api/admin/tenants/${firm.id}`, {
         method: "PUT",
         headers: authHeaders(),
-        body: JSON.stringify({ name: editName, slug: editSlug }),
+        body: JSON.stringify({ name: editName, slug: editSlug, gstin: editGstin.trim().toUpperCase() }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Failed to update firm");
@@ -322,10 +325,20 @@ export default function FirmSettingsPage() {
                     required
                   />
                 </div>
+                <div>
+                  <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-secondary)", display: "block", marginBottom: 6 }}>
+                    Firm GSTIN <span style={{ fontWeight: 400, color: "var(--text-muted)" }}>(optional)</span>
+                  </label>
+                  <input style={{ ...input, fontFamily: "monospace" }} value={editGstin}
+                    onChange={(e) => setEditGstin(e.target.value.toUpperCase())}
+                    placeholder="e.g. 27AAAAA1111A1Z1"
+                    maxLength={15}
+                  />
+                </div>
                 {editError && <div style={{ fontSize: 12, color: "var(--red)" }}>{editError}</div>}
                 <div style={{ display: "flex", gap: 10 }}>
                   <button type="submit" style={btn("primary")}>Save Changes</button>
-                  <button type="button" onClick={() => { setEditing(false); setEditName(firm.name); setEditSlug(firm.slug); setEditError(""); }} style={btn("secondary")}>Cancel</button>
+                  <button type="button" onClick={() => { setEditing(false); setEditName(firm.name); setEditSlug(firm.slug); setEditGstin(firm.gstin || ""); setEditError(""); }} style={btn("secondary")}>Cancel</button>
                 </div>
               </form>
             )}
@@ -416,11 +429,17 @@ export default function FirmSettingsPage() {
           {/* GSTIN info */}
           <div style={{ ...card, background: "var(--accent-soft)", border: "1px solid var(--accent-glow)" }}>
             <div style={{ fontSize: 12, fontWeight: 600, color: "var(--accent)", marginBottom: 8 }}>Firm GSTIN</div>
-            <div style={{ fontSize: 13, color: "var(--text-secondary)", marginBottom: 4 }}>
-              Contact your administrator to update the firm GSTIN.
-            </div>
+            {firm.gstin ? (
+              <div style={{ fontSize: 15, fontWeight: 700, fontFamily: "monospace", color: "var(--text-primary)", marginBottom: 4 }}>{firm.gstin}</div>
+            ) : (
+              <div style={{ fontSize: 13, color: "var(--text-secondary)", marginBottom: 4 }}>
+                Not set yet — click Edit above to add it.
+              </div>
+            )}
             <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
-              The first 2 digits determine your state code for B2B/B2CS/B2CL inter-state split in GSTR-1 exports. Update this before exporting.
+              The first 2 digits determine your state code for B2B/B2CS/B2CL inter-state split in GSTR-1 exports.
+              Also used to identify your firm as the buyer when reading scanned/photographed vendor invoices —
+              set this before uploading scans for best results.
             </div>
           </div>
         </>

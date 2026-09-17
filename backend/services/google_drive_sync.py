@@ -599,7 +599,7 @@ class GoogleDriveSyncPipeline:
             # Determine invoice type for processing
             process_type = self.invoice_type if self.invoice_type != "both" else "both"
 
-            res = process_pdf(file_path, model_config or {}, process_type)
+            res = process_pdf(file_path, model_config or {}, process_type, tenant_id=self.tenant_id)
 
             # Save extraction results to DB
             if res.sales_items:
@@ -776,7 +776,7 @@ class GoogleDriveSyncPipeline:
         best_res, best_status, best_variance = None, None, float("inf")
 
         for attempt in range(1, self.MAX_EXTRACTION_ATTEMPTS + 1):
-            res = process_pdf(file_path, model_config or {}, process_type)
+            res = process_pdf(file_path, model_config or {}, process_type, tenant_id=self.tenant_id)
             try:
                 canonical = build_canonical_invoice(
                     sales_items=res.sales_items,
