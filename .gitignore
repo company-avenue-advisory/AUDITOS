@@ -44,6 +44,9 @@ MANIFEST
 *.xlsx
 *.csv
 *.xls
+# ...except real runtime templates the backend loads at request time (not
+# generated scratch output), which must actually deploy with the code.
+!backend/services/templates/*.xlsx
 
 # Logs
 logs
