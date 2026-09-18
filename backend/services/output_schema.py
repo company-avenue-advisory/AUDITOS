@@ -195,27 +195,24 @@ SALES_REGISTER_VIEW: List[Column] = [
     Column("source_file",         "Source File",    ctx_key="source_file"),
 ]
 
-# Purchase Register (prod: services/excel_sync.py, PURCHASE_COLUMNS) — 19 columns.
+# Purchase Register (prod: services/excel_sync.py, PURCHASE_COLUMNS) — 13 columns,
+# matching Vendor Invoices/Vendor_Invoice_OneStack_Template.xlsx exactly (the
+# new standard purchase-register format for every client, replacing the prior
+# 19-column Tally-style layout below column-for-column).
 PURCHASE_REGISTER_VIEW: List[Column] = [
-    Column("voucher_date",        "Voucher Date"),
-    Column("voucher_type",        "Voucher Type"),
-    Column("invoice_no",          "Invoice No"),
-    Column("party_ledger_name",   "Party Name"),        # canonical: "Party Ledger Name"
-    Column("party_gstin",         "Party GSTIN"),
-    Column("place_of_supply",     "Place of Supply"),
-    Column("particulars",         "Particulars"),
-    Column("hsn",                 "HSN"),               # canonical: "HSN/SAC"
-    Column("qty",                 "Qty"),
-    Column("rate",                "Rate"),
-    Column("taxable_value",       "Taxable Value"),
-    Column("cgst_amount",         "CGST"),              # canonical: "CGST Amount"
-    Column("sgst_amount",         "SGST"),              # canonical: "SGST Amount"
-    Column("igst_amount",         "IGST"),              # canonical: "IGST Amount"
-    Column("total_invoice_value", "Total Invoice Value"),
-    Column("itc_eligibility",     "ITC Eligibility"),
+    Column("invoice_no",          "SUPPLIER INV NO"),
+    Column("voucher_date",        "INVOICE DATE"),
+    Column("party_gstin",         "GST NO"),
+    Column("party_ledger_name",   "PARTY A/C NAME"),
+    Column("place_of_supply",     "PLACE OF SUPPLY"),
+    Column("particulars",         "PARTICULARS"),
+    Column("taxable_value",       "AMOUNT"),
+    Column("sgst_amount",         "SGST"),
+    Column("cgst_amount",         "CGST"),
+    Column("igst_amount",         "IGST"),
+    Column("total_invoice_value", "TOTAL AMOUNT"),
     Column("narration",           "Narration"),
-    Column("processed_date",      "Processed Date", ctx_key="processed_date"),
-    Column("source_file",         "Source File",    ctx_key="source_file"),
+    Column("hsn",                 "HSN"),
 ]
 
 # Auditor QA workbook (tools/batch_excel_export.py, COLUMNS) — 25 columns.

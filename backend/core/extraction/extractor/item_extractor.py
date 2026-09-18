@@ -133,6 +133,7 @@ Rules:
     - Freight, Packing, Insurance, or any other named charge → include as its own normal taxable line item if it has a rupee amount, same as any product row.
     - If a monetary row does not clearly fit any category above, still include it as a line item with your best-guess particulars and its printed amount in taxable_value rather than omitting it — an uncategorized row that reconciles is better than a dropped row that doesn't.
     - Sum of all extracted line items' (taxable_value + cgst_amount + sgst_amount + igst_amount − discount − advances) MUST equal the invoice's own Grand Total / Total Invoice Value. Verify this before returning your answer.
+11. narration: write ONE narration describing the invoice as a whole — the actual product/service purchased or sold (with identifying detail: model, quantity, period, etc.) and the vendor/party name. If the invoice has multiple line items, use the EXACT SAME narration text on every one of them — it always describes the whole invoice, never a single line differently from the others.
 
 Table region:
 {_truncate(text, 8000)}
@@ -165,6 +166,7 @@ Rules:
 6. itc_category per item: ITC_ELIGIBLE | ITC_BLOCKED | ITC_RESTRICTED | ITC_EXEMPT | ITC_UNKNOWN.
    Sec 17(5) blocks: motor vehicles (HSN 8703/8711), club memberships, health/beauty, outdoor catering, works contract for immovable property.
 7. HSN ≠ invoice number — different fields.
+8. narration: write ONE narration describing the invoice as a whole — the actual product/service purchased (with identifying detail: model, quantity, period, etc.) and the vendor/party name. If the invoice has multiple line items, use the EXACT SAME narration text on every one of them — it always describes the whole invoice, never a single line differently from the others.
 
 Purchase table region:
 {_truncate(text, 8000)}
