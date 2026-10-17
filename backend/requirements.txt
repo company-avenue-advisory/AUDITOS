@@ -1,7 +1,7 @@
 fastapi[standard]
 python-multipart
 pymupdf
-docling==2.126.0
+docling==2.139.0
 pdfplumber>=0.11.10
 pandas
 openpyxl
@@ -18,10 +18,10 @@ pyjwt
 bcrypt
 
 # Observability
-sentry-sdk[fastapi]>=2.69.1
+sentry-sdk[fastapi]>=2.72.0
 
 # Image processing & OCR (Document Utilities)
-numpy>=2.0.0
+numpy>=2.5.4
 opencv-python-headless>=5.0.0.93
 pillow>=12.3.0
 
@@ -33,7 +33,7 @@ easyocr>=1.7.2
 # pytesseract>=0.3.10      # Tier 2 OCR (requires system tesseract-ocr binary)
 
 # Google Drive integration
-google-auth>=2.58.0
-google-auth-oauthlib>=1.4.1
-google-auth-httplib2>=0.4.2
-google-api-python-client>=2.200.0
+google-auth>=2.62.0
+google-auth-oauthlib>=1.5.0
+google-auth-httplib2>=0.4.4
+google-api-python-client>=2.201.0
